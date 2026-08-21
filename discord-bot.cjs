@@ -40,64 +40,125 @@ const validCodes = new Map();
 const activeCaptchas = new Map();
 const verificationRoles = new Map();
 
-// Active Panels & Channels Store
-let verifyPanelMsg = null, verifyChannelId = null;
-let redeemPanelMsg = null, redeemChannelId = null;
-let ticketPanelMsg = null, ticketChannelId = null;
-
-// Helpers
-function generateBuyerCode() {
-  const seg1 = Math.floor(1000 + Math.random() * 9000);
-  const seg2 = Math.floor(1000 + Math.random() * 9000);
-  return `BUYER-${seg1}-${seg2}`;
-}
+// Saved Channel Tracking
+let verifyChannelId = null;
+let redeemChannelId = null;
 
 // UI Embed Creators
 function createVerifyEmbed() {
   return new EmbedBuilder()
     .setTitle('🛡️ Server Verification Gate')
-    .setDescription('To access channels, complete verification below.\n\n1️⃣ Click **Verify Now**.\n2️⃣ Solve the security text code.\n3️⃣ Gain full access instantly.')
+    .setDescription(
+      'To access channels and participate in this server, complete verification below.\n\n' +
+      '**Steps to verify:**\n' +
+      '1️⃣ Click **Verify Now**.\n' +
+      '2️⃣ Solve the security text code.\n' +
+      '3️⃣ Gain full access instantly.\n\n' +
+      `*Auto-refreshed: <t:${Math.floor(Date.now() / 1000)}:R>*</small>`
+    )
     .setColor(0x2B2D31);
 }
 
 function createRedeemEmbed() {
   return new EmbedBuilder()
     .setTitle('🎁 Buyer Role Verification')
-    .setDescription('Redeem your unique buyer key below to claim your role.\n\n1️⃣ Click **Redeem Code**.\n2️⃣ Paste your key (`BUYER-XXXX-XXXX`).\n3️⃣ Click **Submit**.')
+    .setDescription(
+      'Redeem your unique buyer key below to claim your Discord role.\n\n' +
+      '**How to Redeem:**\n' +
+      '1️⃣ Click **Redeem Code**.\n' +
+      '2️⃣ Paste your key (`BUYER-XXXX-XXXX`).\n' +
+      '3️⃣ Click **Submit** to claim your role.\n\n' +
+      `*Auto-refreshed: <t:${Math.floor(Date.now() / 1000)}:R>*</small>`
+    )
     .setColor(0x5865F2);
 }
 
 function createTicketEmbed() {
   return new EmbedBuilder()
     .setTitle('📩 Support & Help Desk')
-    .setDescription('Need help or have questions? Click the button below to open a private support ticket.\n\nOur automated support agent will assist you immediately, and staff can jump in if needed.')
+    .setDescription('Need help? Click below to open a private support ticket.\n\nOur automated agent will assist immediately.')
     .setColor(0x57F287);
 }
 
-// Command Definitions
+function createVerifyRow() {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId('open_verify_modal').setLabel('Verify Now').setEmoji('✅').setStyle(ButtonStyle.Primary)
+  );
+}
+
+function createRedeemRow() {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId('open_redeem_modal').setLabel('Redeem Code').setEmoji('🔑').setStyle(ButtonStyle.Success)
+  );
+}
+
+// 3. Command Definitions
 const commands = [
   new SlashCommandBuilder().setName('setup-verify').setDescription('Posts server verification panel').setDefaultMemberPermissions(PermissionFlagsBits.Administrator).addRoleOption(opt => opt.setName('role').setDescription('Role to give').setRequired(true)),
   new SlashCommandBuilder().setName('setup-redeem').setDescription('Posts buyer redemption panel').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-  new SlashCommandBuilder().setName('setup-tickets').setDescription('Posts the support ticket creation panel').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+  new SlashCommandBuilder().setName('setup-tickets').setDescription('Posts support ticket creation panel').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
   new SlashCommandBuilder().setName('generate-code').setDescription('Generates a new buyer code').setDefaultMemberPermissions(PermissionFlagsBits.ManageRoles).addRoleOption(opt => opt.setName('role').setDescription('Role to grant').setRequired(true)),
   new SlashCommandBuilder().setName('ping').setDescription('Check bot response speed')
 ].map(cmd => cmd.toJSON());
 
-// Startup Sync
+// 4. Startup & Resilient 5-Minute Refresh Loop
 client.once('clientReady', async () => {
   console.log(`Bot logged in as ${client.user.tag}`);
   const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
+
   try {
     for (const guild of client.guilds.cache.values()) {
       await rest.put(Routes.applicationGuildCommands(client.user.id, guild.id), { body: [] });
     }
     await rest.put(Routes.applicationCommands(client.user.id), { body: commands });
+    console.log('Commands synced successfully!');
   } catch (err) {
     console.error('Registration failed:', err);
   }
+
+  // 🔄 Refresh or Respawn Panels Every 5 Minutes
+  setInterval(async () => {
+    // 1. Check Verification Panel
+    if (verifyChannelId) {
+      try {
+        const channel = await client.channels.fetch(verifyChannelId);
+        if (channel) {
+          const messages = await channel.messages.fetch({ limit: 10 });
+          const existingMsg = messages.find(m => m.author.id === client.user.id && m.embeds[0]?.title?.includes('Verification Gate'));
+
+          if (existingMsg) {
+            await existingMsg.edit({ embeds: [createVerifyEmbed()], components: [createVerifyRow()] });
+          } else {
+            await channel.send({ embeds: [createVerifyEmbed()], components: [createVerifyRow()] });
+          }
+        }
+      } catch (e) {
+        console.error('Error refreshing verification panel:', e);
+      }
+    }
+
+    // 2. Check Redeem Panel
+    if (redeemChannelId) {
+      try {
+        const channel = await client.channels.fetch(redeemChannelId);
+        if (channel) {
+          const messages = await channel.messages.fetch({ limit: 10 });
+          const existingMsg = messages.find(m => m.author.id === client.user.id && m.embeds[0]?.title?.includes('Buyer Role Verification'));
+
+          if (existingMsg) {
+            await existingMsg.edit({ embeds: [createRedeemEmbed()], components: [createRedeemRow()] });
+          } else {
+            await channel.send({ embeds: [createRedeemEmbed()], components: [createRedeemRow()] });
+          }
+        }
+      } catch (e) {
+        console.error('Error refreshing redeem panel:', e);
+      }
+    }
+  }, 5 * 60 * 1000);
 });
 
-// Auto-Role on Join
+// 5. Auto-Role on Join
 client.on('guildMemberAdd', async member => {
   const roleId = verificationRoles.get(member.guild.id);
   if (!roleId) return;
@@ -107,7 +168,7 @@ client.on('guildMemberAdd', async member => {
   } catch (err) {}
 });
 
-// Interaction Handling
+// 6. Interaction Handlers
 client.on('interactionCreate', async interaction => {
   
   if (interaction.isChatInputCommand()) {
@@ -116,29 +177,29 @@ client.on('interactionCreate', async interaction => {
     if (commandName === 'setup-verify') {
       verificationRoles.set(interaction.guildId, interaction.options.getRole('role').id);
       verifyChannelId = interaction.channelId;
-      const row = new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('open_verify_modal').setLabel('Verify Now').setEmoji('✅').setStyle(ButtonStyle.Primary));
+
       await interaction.reply({ content: 'Creating verification panel...', ephemeral: true });
-      verifyPanelMsg = await interaction.channel.send({ embeds: [createVerifyEmbed()], components: [row] });
+      await interaction.channel.send({ embeds: [createVerifyEmbed()], components: [createVerifyRow()] });
     }
 
     if (commandName === 'setup-redeem') {
       redeemChannelId = interaction.channelId;
-      const row = new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('open_redeem_modal').setLabel('Redeem Code').setEmoji('🔑').setStyle(ButtonStyle.Success));
+
       await interaction.reply({ content: 'Creating buyer panel...', ephemeral: true });
-      redeemPanelMsg = await interaction.channel.send({ embeds: [createRedeemEmbed()], components: [row] });
+      await interaction.channel.send({ embeds: [createRedeemEmbed()], components: [createRedeemRow()] });
     }
 
     if (commandName === 'setup-tickets') {
-      ticketChannelId = interaction.channelId;
       const row = new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('create_ticket').setLabel('Open Ticket').setEmoji('📩').setStyle(ButtonStyle.Secondary));
       await interaction.reply({ content: 'Creating ticket panel...', ephemeral: true });
-      ticketPanelMsg = await interaction.channel.send({ embeds: [createTicketEmbed()], components: [row] });
+      await interaction.channel.send({ embeds: [createTicketEmbed()], components: [row] });
     }
 
     if (commandName === 'generate-code') {
       const targetRole = interaction.options.getRole('role');
-      const newCode = generateBuyerCode();
+      const newCode = `BUYER-${Math.floor(1000 + Math.random() * 9000)}-${Math.floor(1000 + Math.random() * 9000)}`;
       validCodes.set(newCode, { roleId: targetRole.id, claimedBy: null });
+
       const genEmbed = new EmbedBuilder().setTitle('⚡ New Code Generated').addFields({ name: 'Buyer Code', value: `\`${newCode}\``, inline: true }, { name: 'Target Role', value: `${targetRole}`, inline: true }).setColor(0x57F287);
       await interaction.reply({ embeds: [genEmbed], ephemeral: true });
     }
@@ -174,11 +235,7 @@ client.on('interactionCreate', async interaction => {
         ]
       });
 
-      const ticketEmbed = new EmbedBuilder()
-        .setTitle(`🎫 Ticket: ${interaction.user.username}`)
-        .setDescription('Welcome! Describe your question or issue below.\n\n🤖 **AI Assistant:** Type your question in this channel to get instant automated help.')
-        .setColor(0x5865F2);
-
+      const ticketEmbed = new EmbedBuilder().setTitle(`🎫 Ticket: ${interaction.user.username}`).setDescription('Welcome! Describe your issue below. An automated assistant will answer common questions.').setColor(0x5865F2);
       const row = new ActionRowBuilder().addComponents(
         new ButtonBuilder().setCustomId('close_ticket').setLabel('Close Ticket').setEmoji('🔒').setStyle(ButtonStyle.Danger),
         new ButtonBuilder().setCustomId('claim_ticket').setLabel('Claim Ticket').setEmoji('✋').setStyle(ButtonStyle.Success)
@@ -241,24 +298,31 @@ client.on('interactionCreate', async interaction => {
   }
 });
 
-// Automatic AI-Style Ticket Answers
+// Auto AI Ticket Responder & Backup Commands
 client.on('messageCreate', async message => {
-  if (message.author.bot || !message.channel.name.startsWith('ticket-')) return;
+  if (message.author.bot) return;
 
-  const query = message.content.toLowerCase();
-
-  let autoReply = '';
-
-  if (query.includes('code') || query.includes('redeem') || query.includes('key')) {
-    autoReply = '🤖 **Auto Help:** To redeem a code, go to the buyer redemption channel and click the **Redeem Code** button.';
-  } else if (query.includes('verify') || query.includes('access')) {
-    autoReply = '🤖 **Auto Help:** Head to the verification channel and click **Verify Now** to solve the captcha.';
-  } else if (query.includes('buy') || query.includes('purchase')) {
-    autoReply = '🤖 **Auto Help:** Check our announcements or pricing channels for purchase details!';
+  // Prefix fallback for tickets panel
+  if (message.content === '!tickets' && message.member.permissions.has(PermissionFlagsBits.Administrator)) {
+    const row = new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('create_ticket').setLabel('Open Ticket').setEmoji('📩').setStyle(ButtonStyle.Secondary));
+    await message.channel.send({ embeds: [createTicketEmbed()], components: [row] });
+    return message.delete().catch(() => {});
   }
 
-  if (autoReply) {
-    await message.reply(autoReply);
+  // AI Support Responses inside Tickets
+  if (message.channel.name.startsWith('ticket-')) {
+    const query = message.content.toLowerCase();
+    let autoReply = '';
+
+    if (query.includes('code') || query.includes('redeem') || query.includes('key')) {
+      autoReply = '🤖 **Auto Help:** To redeem a code, go to the buyer redemption channel and click **Redeem Code**.';
+    } else if (query.includes('verify') || query.includes('access')) {
+      autoReply = '🤖 **Auto Help:** Head to the verification channel and click **Verify Now** to solve the captcha.';
+    } else if (query.includes('buy') || query.includes('purchase')) {
+      autoReply = '🤖 **Auto Help:** Check our announcements channel for purchase details!';
+    }
+
+    if (autoReply) await message.reply(autoReply);
   }
 });
 
