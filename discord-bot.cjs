@@ -15,7 +15,7 @@ const {
 } = require('discord.js');
 const http = require('http');
 
-// Web Server for Render
+// Web Server for Render Keep-Alive
 const port = process.env.PORT || 10000;
 http.createServer((req, res) => {
   res.writeHead(200, { 'Content-Type': 'text/plain' });
@@ -26,7 +26,7 @@ http.createServer((req, res) => {
 
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 
-// Store active codes: { "BUYER-1234-5678": { roleId: "...", claimedBy: null } }
+// In-memory store for active buyer codes
 const validCodes = new Map();
 
 function generateBuyerCode() {
@@ -35,7 +35,7 @@ function generateBuyerCode() {
   return `BUYER-${seg1}-${seg2}`;
 }
 
-// Register ONLY /setup-redeem and /generate-code
+// Strictly define ONLY the 2 commands you want to keep
 const commands = [
   new SlashCommandBuilder()
     .setName('setup-redeem')
@@ -50,12 +50,14 @@ const commands = [
 
 client.once('clientReady', async () => {
   console.log(`Bot logged in as ${client.user.tag}`);
+  
   const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
   try {
+    // This overwrites Discord's command registry, deleting any commands NOT in the list above
     await rest.put(Routes.applicationCommands(client.user.id), { body: commands });
-    console.log('Slash commands registered successfully!');
+    console.log('Successfully updated slash commands! All old commands removed.');
   } catch (err) {
-    console.error('Registration failed:', err);
+    console.error('Command update failed:', err);
   }
 });
 
@@ -105,7 +107,7 @@ client.on('interactionCreate', async interaction => {
     }
   }
 
-  // --- BUTTON HANDLER ---
+  // Handle Redeem Button
   if (interaction.isButton() && interaction.customId === 'open_redeem_modal') {
     const modal = new ModalBuilder()
       .setCustomId('redeem_code_modal')
@@ -122,7 +124,7 @@ client.on('interactionCreate', async interaction => {
     await interaction.showModal(modal);
   }
 
-  // --- MODAL SUBMISSION HANDLER ---
+  // Handle Modal Submission
   if (interaction.isModalSubmit() && interaction.customId === 'redeem_code_modal') {
     const enteredCode = interaction.fields.getTextInputValue('buyer_code_input').trim();
     const codeData = validCodes.get(enteredCode);
