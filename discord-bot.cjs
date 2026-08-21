@@ -15,6 +15,7 @@ const {
   Routes, 
   Events 
 } = require('discord.js');
+const { GoogleGenAI } = require('@google/genai');
 
 const client = new Client({
   intents: [
@@ -25,7 +26,10 @@ const client = new Client({
   ]
 });
 
-// Updated Authorized User ID
+// Initialize Gemini API
+const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+
+// Authorized User ID Constant
 const AUTHORIZED_USER_ID = '1363240484818128926';
 
 // Memory Stores
@@ -33,9 +37,8 @@ const validCodes = new Map();
 const activeCaptchas = new Map();
 const verificationRoles = new Map();
 
-// Saved Channel Tracking
-let verifyChannelId = null;
-let redeemChannelId = null;
+// Ticket Tracking (Channel ID => { userId, replyCount })
+const activeTickets = new Map();
 
 // UI Embed Creators
 function createVerifyEmbed() {
@@ -71,7 +74,7 @@ function createRedeemEmbed() {
 function createTicketEmbed() {
   return new EmbedBuilder()
     .setTitle('🎫 Support & Help Desk')
-    .setDescription('Need help? Click below to open a private support ticket.\n\nOur team will assist you immediately.')
+    .setDescription('Need help? Click below to open a private support ticket.\n\nOur AI Assistant will assist you immediately (Up to 35 messages per ticket).')
     .setColor(0x57F287);
 }
 
@@ -90,6 +93,12 @@ function createRedeemRow() {
 function createTicketRow() {
   return new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId('open_ticket').setLabel('Create Ticket').setEmoji('📩').setStyle(ButtonStyle.Secondary)
+  );
+}
+
+function createCloseTicketRow() {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId('close_ticket').setLabel('Close Ticket').setEmoji('🔒').setStyle(ButtonStyle.Danger)
   );
 }
 
@@ -137,7 +146,6 @@ client.once(Events.ClientReady, async (c) => {
 client.on(Events.InteractionCreate, async (interaction) => {
   // 1. Slash Commands
   if (interaction.isChatInputCommand()) {
-    // Restrict commands exclusively to user ID 1363240484818128926
     if (interaction.user.id !== AUTHORIZED_USER_ID) {
       return interaction.reply({
         content: '❌ You do not have permission to run this command.',
@@ -148,29 +156,18 @@ client.on(Events.InteractionCreate, async (interaction) => {
     const { commandName } = interaction;
 
     if (commandName === 'setup-verify') {
-      verifyChannelId = interaction.channelId;
       await interaction.reply({ content: 'Creating verification panel...', ephemeral: true });
-      await interaction.channel.send({
-        embeds: [createVerifyEmbed()],
-        components: [createVerifyRow()]
-      });
+      await interaction.channel.send({ embeds: [createVerifyEmbed()], components: [createVerifyRow()] });
     }
 
     if (commandName === 'setup-redeem') {
-      redeemChannelId = interaction.channelId;
       await interaction.reply({ content: 'Creating buyer panel...', ephemeral: true });
-      await interaction.channel.send({
-        embeds: [createRedeemEmbed()],
-        components: [createRedeemRow()]
-      });
+      await interaction.channel.send({ embeds: [createRedeemEmbed()], components: [createRedeemRow()] });
     }
 
     if (commandName === 'setup-ticket') {
       await interaction.reply({ content: 'Creating ticket panel...', ephemeral: true });
-      await interaction.channel.send({
-        embeds: [createTicketEmbed()],
-        components: [createTicketRow()]
-      });
+      await interaction.channel.send({ embeds: [createTicketEmbed()], components: [createTicketRow()] });
     }
 
     if (commandName === 'nuke-and-rebuild') {
@@ -197,24 +194,21 @@ client.on(Events.InteractionCreate, async (interaction) => {
         }
       }
 
-      // Information Category
+      // Rebuild structure
       const infoCat = await guild.channels.create({ name: '📌 Information', type: ChannelType.GuildCategory });
       await guild.channels.create({ name: 'rules', type: ChannelType.GuildText, parent: infoCat.id });
       await guild.channels.create({ name: 'announcements', type: ChannelType.GuildText, parent: infoCat.id });
 
-      // Text Channels Category
       const textCat = await guild.channels.create({ name: '💬 Text Channels', type: ChannelType.GuildCategory });
       await guild.channels.create({ name: 'general', type: ChannelType.GuildText, parent: textCat.id });
       await guild.channels.create({ name: 'bot-commands', type: ChannelType.GuildText, parent: textCat.id });
       await guild.channels.create({ name: 'memes', type: ChannelType.GuildText, parent: textCat.id });
 
-      // Gaming Category
       const gamingCat = await guild.channels.create({ name: '🎮 Gaming', type: ChannelType.GuildCategory });
       await guild.channels.create({ name: 'gaming-chat', type: ChannelType.GuildText, parent: gamingCat.id });
       await guild.channels.create({ name: 'clips-and-highlights', type: ChannelType.GuildText, parent: gamingCat.id });
       await guild.channels.create({ name: 'looking-for-group', type: ChannelType.GuildText, parent: gamingCat.id });
 
-      // Voice Channels Category
       const voiceCat = await guild.channels.create({ name: '🔊 Voice Channels', type: ChannelType.GuildCategory });
       await guild.channels.create({ name: 'General VC', type: ChannelType.GuildVoice, parent: voiceCat.id });
       await guild.channels.create({ name: 'Gaming Lounge 1', type: ChannelType.GuildVoice, parent: voiceCat.id });
@@ -230,31 +224,15 @@ client.on(Events.InteractionCreate, async (interaction) => {
       const captchaText = Math.random().toString(36).substring(2, 8).toUpperCase();
       activeCaptchas.set(interaction.user.id, captchaText);
 
-      const modal = new ModalBuilder()
-        .setCustomId('verify_modal')
-        .setTitle(`Verification Code: ${captchaText}`);
-
-      const input = new TextInputBuilder()
-        .setCustomId('captcha_input')
-        .setLabel(`Type exact code: ${captchaText}`)
-        .setStyle(TextInputStyle.Short)
-        .setRequired(true);
-
+      const modal = new ModalBuilder().setCustomId('verify_modal').setTitle(`Verification Code: ${captchaText}`);
+      const input = new TextInputBuilder().setCustomId('captcha_input').setLabel(`Type exact code: ${captchaText}`).setStyle(TextInputStyle.Short).setRequired(true);
       modal.addComponents(new ActionRowBuilder().addComponents(input));
       await interaction.showModal(modal);
     }
 
     if (interaction.customId === 'open_redeem_modal') {
-      const modal = new ModalBuilder()
-        .setCustomId('redeem_code_modal')
-        .setTitle('Redeem Buyer Code');
-
-      const input = new TextInputBuilder()
-        .setCustomId('buyer_code_input')
-        .setLabel('Enter key (BUYER-XXXX-XXXX)')
-        .setStyle(TextInputStyle.Short)
-        .setRequired(true);
-
+      const modal = new ModalBuilder().setCustomId('redeem_code_modal').setTitle('Redeem Buyer Code');
+      const input = new TextInputBuilder().setCustomId('buyer_code_input').setLabel('Enter key (BUYER-XXXX-XXXX)').setStyle(TextInputStyle.Short).setRequired(true);
       modal.addComponents(new ActionRowBuilder().addComponents(input));
       await interaction.showModal(modal);
     }
@@ -264,22 +242,28 @@ client.on(Events.InteractionCreate, async (interaction) => {
         name: `ticket-${interaction.user.username}`,
         type: ChannelType.GuildText,
         permissionOverwrites: [
-          {
-            id: interaction.guild.roles.everyone.id,
-            deny: [PermissionFlagsBits.ViewChannel],
-          },
-          {
-            id: interaction.user.id,
-            allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages],
-          },
+          { id: interaction.guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel] },
+          { id: interaction.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] },
         ],
       });
 
+      // Track active ticket with a reply count starting at 0
+      activeTickets.set(ticketChannel.id, { userId: interaction.user.id, replyCount: 0 });
+
       await ticketChannel.send({
-        content: `Welcome <@${interaction.user.id}>! Support will be with you shortly.`,
+        content: `Welcome <@${interaction.user.id}>! I am your AI Support Assistant. Ask me anything below.\n*(AI responses remaining: 35/35)*`,
+        components: [createCloseTicketRow()]
       });
 
       await interaction.reply({ content: `✅ Created ticket channel: ${ticketChannel}`, ephemeral: true });
+    }
+
+    if (interaction.customId === 'close_ticket') {
+      await interaction.reply({ content: '🔒 Closing ticket channel in 5 seconds...' });
+      activeTickets.delete(interaction.channelId);
+      setTimeout(() => {
+        interaction.channel.delete().catch(() => {});
+      }, 5000);
     }
   }
 
@@ -295,33 +279,55 @@ client.on(Events.InteractionCreate, async (interaction) => {
       }
 
       const roleId = verificationRoles.get(interaction.guildId);
-      if (!roleId) {
-        return interaction.reply({ content: '⚠️ Configure role with `/setup-verify`.', ephemeral: true });
-      }
-
-      try {
+      if (roleId) {
         const role = interaction.guild.roles.cache.get(roleId);
         if (role) await interaction.member.roles.add(role);
-        await interaction.reply({ content: '✅ Verified!', ephemeral: true });
-      } catch (err) {
-        await interaction.reply({ content: '⚠️ Failed to give role.', ephemeral: true });
       }
+      await interaction.reply({ content: '✅ Verified!', ephemeral: true });
     }
 
     if (interaction.customId === 'redeem_code_modal') {
       const enteredCode = interaction.fields.getTextInputValue('buyer_code_input').trim();
       const codeData = validCodes.get(enteredCode);
 
-      if (!codeData) {
-        return interaction.reply({ content: '❌ Invalid code.', ephemeral: true });
-      }
-      if (codeData.claimedBy) {
-        return interaction.reply({ content: '❌ Code already claimed.', ephemeral: true });
-      }
+      if (!codeData) return interaction.reply({ content: '❌ Invalid code.', ephemeral: true });
+      if (codeData.claimedBy) return interaction.reply({ content: '❌ Code already claimed.', ephemeral: true });
 
       codeData.claimedBy = interaction.user.id;
       await interaction.reply({ content: '✅ Code redeemed successfully!', ephemeral: true });
     }
+  }
+});
+
+// 4. AI Message Listener
+client.on(Events.MessageCreate, async (message) => {
+  if (message.author.bot) return;
+
+  const ticketData = activeTickets.get(message.channelId);
+  if (!ticketData) return;
+
+  if (ticketData.replyCount >= 35) {
+    return message.reply('⚠️ Limit of 35 AI replies reached for this ticket. A human staff member will assist shortly.');
+  }
+
+  try {
+    await message.channel.sendTyping();
+
+    const response = await ai.models.generateContent({
+      model: 'gemini-2.5-flash',
+      contents: message.content,
+      config: {
+        systemInstruction: 'You are a helpful Discord support assistant. Keep answers clear and concise.'
+      }
+    });
+
+    ticketData.replyCount++;
+    const remaining = 35 - ticketData.replyCount;
+
+    await message.reply(`${response.text}\n\n*🤖 AI replies remaining: ${remaining}/35*`);
+  } catch (err) {
+    console.error('Gemini AI Error:', err);
+    await message.reply('⚠️ Error generating AI response.');
   }
 });
 
