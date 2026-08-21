@@ -46,6 +46,7 @@ let redeemChannelId = null;
 
 // UI Embed Creators
 function createVerifyEmbed() {
+  const currentUnix = Math.floor(Date.now() / 1000);
   return new EmbedBuilder()
     .setTitle('🛡️ Server Verification Gate')
     .setDescription(
@@ -54,12 +55,13 @@ function createVerifyEmbed() {
       '1️⃣ Click **Verify Now**.\n' +
       '2️⃣ Solve the security text code.\n' +
       '3️⃣ Gain full access instantly.\n\n' +
-      `*Auto-refreshed: <t:${Math.floor(Date.now() / 1000)}:R>*</small>`
+      `*Auto-refreshed: <t:${currentUnix}:R>*`
     )
     .setColor(0x2B2D31);
 }
 
 function createRedeemEmbed() {
+  const currentUnix = Math.floor(Date.now() / 1000);
   return new EmbedBuilder()
     .setTitle('🎁 Buyer Role Verification')
     .setDescription(
@@ -68,7 +70,7 @@ function createRedeemEmbed() {
       '1️⃣ Click **Redeem Code**.\n' +
       '2️⃣ Paste your key (`BUYER-XXXX-XXXX`).\n' +
       '3️⃣ Click **Submit** to claim your role.\n\n' +
-      `*Auto-refreshed: <t:${Math.floor(Date.now() / 1000)}:R>*</small>`
+      `*Auto-refreshed: <t:${currentUnix}:R>*`
     )
     .setColor(0x5865F2);
 }
