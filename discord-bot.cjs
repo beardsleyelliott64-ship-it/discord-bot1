@@ -9,13 +9,13 @@ http.createServer((req, res) => {
     console.log(`Web server listening on port ${port}`);
 });
 
-
+require("dotenv").config();
 const crypto = require("node:crypto");
 
 const { 
     Client, GatewayIntentBits, SlashCommandBuilder, PermissionFlagsBits, 
     ChannelType, ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder, 
-    REST, Routes, ModalBuilder, TextInputBuilder, TextInputStyle, MessageFlags, Events 
+    REST, Routes, ModalBuilder, TextInputBuilder, TextInputStyle, MessageFlags, Events, AttachmentBuilder 
 } = require('discord.js');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const Database = require("better-sqlite3");
@@ -42,32 +42,37 @@ const validBuyerKeys = new Set();
  * Authorized Token Refresh Provider
  */
 async function refreshAuthorizedToken(bearer, refreshToken) {
-  if (!bearer || !refreshToken) {
-    throw new Error("Both fields are required.");
+  if (!bearer?.trim() || !refreshToken?.trim()) {
+    throw new Error("Bearer and refresh token are required.");
   }
-  return `mock_${crypto.randomBytes(32).toString("hex")}`;
+
+  return {
+    bearer: `mock_${crypto.randomBytes(32).toString("hex")}`,
+    refresh_token: `mock_${crypto.randomBytes(32).toString("hex")}`
+  };
 }
 
 function createTokenPanel() {
   const embed = new EmbedBuilder()
     .setTitle("🐾 Animal Company • Token Panel")
-    .setDescription("Use the controls below to manage your authorized token workflow.")
+    .setDescription("Manage your authorized token workflow privately.")
     .addFields(
-      { name: "🔐 Authentication", value: "Credentials are processed privately.", inline: false },
-      { name: "⚡ Status", value: "Ready", inline: true },
-      { name: "🛡️ Mode", value: "Authorized API", inline: true }
+      { name: "🔐 Authentication", value: "Credentials are entered through a private Discord modal.", inline: false },
+      { name: "📦 Output", value: "`token.json`", inline: true },
+      { name: "🟢 Status", value: "Ready", inline: true }
     )
-    .setTimestamp();
+    .setTimestamp()
+    .setFooter({ text: "Token Panel" });
 
   const row = new ActionRowBuilder().addComponents(
     new ButtonBuilder()
-      .setCustomId("open_refresh_modal")
+      .setCustomId("refresh_token")
       .setLabel("Refresh Token")
       .setEmoji("🔄")
       .setStyle(ButtonStyle.Primary)
   );
 
-  return { embeds: [embed], components: [row] };
+  return { embeds: [embed], components: [row], ephemeral: true };
 }
 
 // Setup SQLite Database for Giveaways & Buyer Codes
@@ -573,10 +578,7 @@ client.on('interactionCreate', async (interaction) => {
             }
 
             if (commandName === 'token-panel') {
-                return interaction.reply({
-                    ...createTokenPanel(),
-                    ephemeral: true
-                });
+                return interaction.reply(createTokenPanel());
             }
 
             if (commandName === 'setup-generate') {
@@ -753,28 +755,28 @@ client.on('interactionCreate', async (interaction) => {
         }
 
         if (interaction.isButton()) {
-            if (interaction.customId === "open_refresh_modal") {
+            if (interaction.customId === "refresh_token") {
                 const modal = new ModalBuilder()
                     .setCustomId("refresh_token_modal")
-                    .setTitle("Refresh Authentication Token");
+                    .setTitle("🔄 Refresh Token");
 
-                const bearerInput = new TextInputBuilder()
+                const bearer = new TextInputBuilder()
                     .setCustomId("bearer")
                     .setLabel("Bearer")
-                    .setPlaceholder("Enter your bearer string")
+                    .setPlaceholder("Enter bearer string")
                     .setStyle(TextInputStyle.Paragraph)
                     .setRequired(true);
 
-                const refreshInput = new TextInputBuilder()
+                const refresh = new TextInputBuilder()
                     .setCustomId("refresh_token")
                     .setLabel("Refresh Token")
-                    .setPlaceholder("Enter your refresh token")
+                    .setPlaceholder("Enter refresh token")
                     .setStyle(TextInputStyle.Paragraph)
                     .setRequired(true);
 
                 modal.addComponents(
-                    new ActionRowBuilder().addComponents(bearerInput),
-                    new ActionRowBuilder().addComponents(refreshInput)
+                    new ActionRowBuilder().addComponents(bearer),
+                    new ActionRowBuilder().addComponents(refresh)
                 );
 
                 return interaction.showModal(modal);
@@ -834,108 +836,60 @@ client.on('interactionCreate', async (interaction) => {
                     .setPlaceholder(`Type "${captcha}" to verify`)
                     .setStyle(TextInputStyle.Short)
                     .setMinLength(6)
-                    .setMaxLength(6)
-                    .setRequired(true);
+                    .setMaxLength(6);
 
                 modal.addComponents(new ActionRowBuilder().addComponents(captchaInput));
-                return await interaction.showModal(modal);
-            }
-
-            if (interaction.customId === 'admin_gen_key') {
-                if (interaction.user.id !== ADMIN_USER_ID && !interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
-                    return interaction.reply({ content: '🚫 Admin required.', flags: [MessageFlags.Ephemeral] });
-                }
-                const newKey = makeCode();
-                validBuyerKeys.add(newKey);
-                const createdEmbed = new EmbedBuilder()
-                    .setTitle('✅ New License Key Minted')
-                    .setDescription(`\`\`\`${newKey}\`\`\``)
-                    .setColor(0x57F287);
-                return interaction.reply({ embeds: [createdEmbed], flags: [MessageFlags.Ephemeral] });
-            }
-
-            if (interaction.customId === 'admin_view_stats') {
-                if (interaction.user.id !== ADMIN_USER_ID && !interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
-                    return interaction.reply({ content: '🚫 Unauthorized.', flags: [MessageFlags.Ephemeral] });
-                }
-                const statsEmbed = new EmbedBuilder()
-                    .setTitle('📊 Key System Intelligence')
-                    .addFields({ name: 'Active Unredeemed Keys', value: `\`${validBuyerKeys.size}\` keys loaded`, inline: true })
-                    .setColor(0x00FFA3);
-                return interaction.reply({ embeds: [statsEmbed], flags: [MessageFlags.Ephemeral] });
-            }
-
-            if (interaction.customId === 'open_redeem_modal') {
-                const modal = new ModalBuilder().setCustomId('redeem_modal').setTitle('License Key Redemption');
-                const keyInput = new TextInputBuilder().setCustomId('key_input').setLabel('Enter Your License Key').setPlaceholder('BUYER-XXXX-XXXX').setStyle(TextInputStyle.Short).setMinLength(10).setMaxLength(25).setRequired(true);
-                modal.addComponents(new ActionRowBuilder().addComponents(keyInput));
-                return await interaction.showModal(modal);
-            }
-
-            if (interaction.customId === 'create_ticket') {
-                const ticketChannel = await interaction.guild.channels.create({
-                    name: `ticket-${interaction.user.username}`,
-                    type: ChannelType.GuildText,
-                    permissionOverwrites: [
-                        { id: interaction.guild.id, deny: [PermissionFlagsBits.ViewChannel] },
-                        { id: interaction.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] },
-                        { id: client.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] }
-                    ]
-                });
-
-                const ticketEmbed = new EmbedBuilder()
-                    .setTitle(`Ticket: ${interaction.user.username}`)
-                    .setDescription(`Welcome <@${interaction.user.id}>!\nDescribe your issue below. Our **Gemini AI Assistant** will reply automatically, or click **Claim Ticket** to wait for staff.`)
-                    .setColor(0x5865F2);
-
-                const ticketControls = new ActionRowBuilder().addComponents(
-                    new ButtonBuilder().setCustomId('claim_ticket').setLabel('Claim Ticket').setEmoji('🙋‍♂️').setStyle(ButtonStyle.Primary),
-                    new ButtonBuilder().setCustomId('close_ticket').setLabel('Close Ticket').setEmoji('🔒').setStyle(ButtonStyle.Danger)
-                );
-
-                await ticketChannel.send({ content: `<@${interaction.user.id}>`, embeds: [ticketEmbed], components: [ticketControls] });
-                return interaction.reply({ content: `🎫 Ticket created: ${ticketChannel}`, flags: [MessageFlags.Ephemeral] });
+                return interaction.showModal(modal);
             }
         }
 
-        if (interaction.isModalSubmit() && interaction.customId === "refresh_token_modal") {
-            await interaction.deferReply({ ephemeral: true });
+        if (interaction.isModalSubmit()) {
+            if (interaction.customId === "refresh_token_modal") {
+                const bearer = interaction.fields.getTextInputValue("bearer");
+                const refreshToken = interaction.fields.getTextInputValue("refresh_token");
 
-            const bearer = interaction.fields.getTextInputValue("bearer");
-            const refreshToken = interaction.fields.getTextInputValue("refresh_token");
+                await interaction.deferReply({ ephemeral: true });
 
-            try {
-                const newToken = await refreshAuthorizedToken(bearer, refreshToken);
+                try {
+                    const result = await refreshAuthorizedToken(bearer, refreshToken);
+                    const fileContent = JSON.stringify(result, null, 2);
+                    const attachment = new AttachmentBuilder(Buffer.from(fileContent), { name: "token.json" });
 
-                const masked = newToken.length > 12
-                    ? `${newToken.slice(0, 6)}...${newToken.slice(-6)}`
-                    : "********";
+                    return interaction.editReply({
+                        content: "✅ Token refreshed successfully!",
+                        files: [attachment]
+                    });
+                } catch (err) {
+                    return interaction.editReply({
+                        content: `❌ Failed to refresh token: ${err.message}`
+                    });
+                }
+            }
 
-                const result = new EmbedBuilder()
-                    .setTitle("✅ Token Refresh Complete")
-                    .setDescription("The authorized refresh workflow completed.")
-                    .addFields({ name: "New Token", value: `\`${masked}\`` })
-                    .setFooter({ text: "Token value is masked for safety." })
-                    .setTimestamp();
+            if (interaction.customId === 'verify_modal') {
+                const userCode = interaction.fields.getTextInputValue('captcha_code');
+                const correctCode = activeCaptchas.get(interaction.user.id);
 
-                return interaction.editReply({ embeds: [result] });
-            } catch (error) {
-                console.error("Refresh failed:", error.message);
+                if (!correctCode || userCode !== correctCode) {
+                    return interaction.reply({ content: '❌ Incorrect security code. Please try again.', flags: [MessageFlags.Ephemeral] });
+                }
 
-                const failed = new EmbedBuilder()
-                    .setTitle("❌ Refresh Failed")
-                    .setDescription("The token could not be refreshed.")
-                    .addFields({ name: "Reason", value: error.message || "Unknown error" });
+                activeCaptchas.delete(interaction.user.id);
+                const member = await interaction.guild.members.fetch(interaction.user.id);
+                await member.roles.add(MEMBER_ROLE_ID);
 
-                return interaction.editReply({ embeds: [failed] });
+                return interaction.reply({ content: '✅ Verification successful! You now have access to the server.', flags: [MessageFlags.Ephemeral] });
             }
         }
-
     } catch (error) {
-        console.error("Interaction error:", error);
-
-        if (!interaction.replied && !interaction.deferred) {
-            await interaction.reply({ content: "Something went wrong.", ephemeral: true });
+        console.error('Interaction error:', error);
+        if (interaction.isRepliable()) {
+            const errorPayload = { content: 'An error occurred while processing this request.', flags: [MessageFlags.Ephemeral] };
+            if (interaction.deferred || interaction.replied) {
+                await interaction.followUp(errorPayload).catch(() => {});
+            } else {
+                await interaction.reply(errorPayload).catch(() => {});
+            }
         }
     }
 });
