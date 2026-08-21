@@ -21,7 +21,9 @@ const TOKEN = process.env.DISCORD_TOKEN;
 const GEMINI_KEY = process.env.GEMINI_API_KEY;
 const CLIENT_ID = process.env.CLIENT_ID;
 const ADMIN_USER_ID = process.env.YOUR_DISCORD_USER_ID;
-const BUYER_ROLE_ID = '1539706476871032922'; // Target Buyer Role ID
+
+const BUYER_ROLE_ID = '1539706476871032922';  // Target Buyer Role ID
+const MEMBER_ROLE_ID = '1539945420501950535'; // Target Verified Member Role ID
 const VERIFY_CHANNEL_ID = '1540382318856765490'; // Target Verification Channel ID
 
 // Temporary storage for active verification captchas and valid buyer keys
@@ -448,10 +450,15 @@ client.on('interactionCreate', async (interaction) => {
             if (expectedCaptcha && inputCaptcha === expectedCaptcha) {
                 activeCaptchas.delete(interaction.user.id);
 
-                // Add verified status/role if present, or grant access
+                // Assign Verified Member Role by ID
+                const memberRole = interaction.guild.roles.cache.get(MEMBER_ROLE_ID);
+                if (memberRole) {
+                    await interaction.member.roles.add(memberRole);
+                }
+
                 const verifiedEmbed = new EmbedBuilder()
                     .setTitle('✅ Verification Successful')
-                    .setDescription('Your identity has been confirmed! You now have full access to the server.')
+                    .setDescription('Your identity has been confirmed! Your **Verified Member** role has been assigned and you now have full access to the server.')
                     .setColor(0x57F287);
 
                 return interaction.reply({ embeds: [verifiedEmbed], ephemeral: true });
