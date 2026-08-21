@@ -1,351 +1,177 @@
-const { 
-  Client, 
-  GatewayIntentBits, 
-  SlashCommandBuilder, 
-  PermissionFlagsBits, 
-  ChannelType, 
-  EmbedBuilder, 
-  ActionRowBuilder, 
-  ButtonBuilder, 
-  ButtonStyle, 
-  ModalBuilder, 
-  TextInputBuilder, 
-  TextInputStyle, 
-  REST, 
-  Routes, 
-  Events 
-} = require('discord.js');
-const { GoogleGenAI } = require('@google/genai');
+const { Client, GatewayIntentBits, SlashCommandBuilder, PermissionFlagsBits, ChannelType, ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder, REST, Routes } = require('discord.js');
+const { GoogleGenerativeAI } = require('@google/generative-ai');
+const crypto = require('crypto');
 
+// ---------------------- CONFIGURATION ----------------------
+const TOKEN = process.env.DISCORD_TOKEN;
+const GEMINI_KEY = process.env.GEMINI_API_KEY;
+const CLIENT_ID = process.env.CLIENT_ID; // Your Discord Bot Client ID
+const ADMIN_USER_ID = 'YOUR_DISCORD_USER_ID'; // Replace with your exact User ID for override
+
+// In-memory key database (Use a persistent database like MongoDB/SQLite for production)
+const validBuyerKeys = new Set(); 
+
+// Setup Gemini API
+const genAI = new GoogleGenerativeAI(GEMINI_KEY);
+const aiModel = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
+
+// Setup Discord Client
 const client = new Client({
-  intents: [
-    GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMembers,
-    GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent
-  ]
+    intents: [
+        GatewayIntentBits.Guilds,
+        GatewayIntentBits.GuildMessages,
+        GatewayIntentBits.MessageContent,
+    ]
 });
 
-// Initialize Gemini API Client safely
-let ai = null;
-if (process.env.GEMINI_API_KEY) {
-  ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-}
-
-// Authorized User ID Constant
-const AUTHORIZED_USER_ID = '1363240484818128926';
-
-// Memory Stores
-const validCodes = new Map();
-const activeCaptchas = new Map();
-const verificationRoles = new Map();
-
-// Ticket Tracking (Channel ID => { userId, replyCount })
-const activeTickets = new Map();
-
-// UI Embed Creators
-function createVerifyEmbed() {
-  const currentUnix = Math.floor(Date.now() / 1000);
-  return new EmbedBuilder()
-    .setTitle('🛡️ Server Verification Gate')
-    .setDescription(
-      'To access channels and participate in this server, complete verification below.\n\n' +
-      '**Steps to verify:**\n' +
-      '1️⃣ Click **Verify Now**.\n' +
-      '2️⃣ Solve the security text code.\n' +
-      '3️⃣ Gain full access instantly.\n\n' +
-      `*Auto-refreshed: <t:${currentUnix}:R>*`
-    )
-    .setColor(0x2B2D31);
-}
-
-function createRedeemEmbed() {
-  const currentUnix = Math.floor(Date.now() / 1000);
-  return new EmbedBuilder()
-    .setTitle('🎁 Buyer Role Verification')
-    .setDescription(
-      'Redeem your unique buyer key below to claim your Discord role.\n\n' +
-      '**How to Redeem:**\n' +
-      '1️⃣ Click **Redeem Code**.\n' +
-      '2️⃣ Paste your key (`BUYER-XXXX-XXXX`).\n' +
-      '3️⃣ Click **Submit** to claim your role.\n\n' +
-      `*Auto-refreshed: <t:${currentUnix}:R>*`
-    )
-    .setColor(0x5865F2);
-}
-
-function createTicketEmbed() {
-  return new EmbedBuilder()
-    .setTitle('🎫 Support & Help Desk')
-    .setDescription('Need help? Click below to open a private support ticket.\n\nOur AI Assistant will assist you immediately (Up to 35 messages per ticket).')
-    .setColor(0x57F287);
-}
-
-function createVerifyRow() {
-  return new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId('open_verify_modal').setLabel('Verify Now').setEmoji('🛡️').setStyle(ButtonStyle.Primary)
-  );
-}
-
-function createRedeemRow() {
-  return new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId('open_redeem_modal').setLabel('Redeem Code').setEmoji('🔑').setStyle(ButtonStyle.Success)
-  );
-}
-
-function createTicketRow() {
-  return new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId('open_ticket').setLabel('Create Ticket').setEmoji('📩').setStyle(ButtonStyle.Secondary)
-  );
-}
-
-function createCloseTicketRow() {
-  return new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId('close_ticket').setLabel('Close Ticket').setEmoji('🔒').setStyle(ButtonStyle.Danger)
-  );
-}
-
-// Slash Commands Definition
+// ---------------------- COMMAND DEFINITIONS ----------------------
 const commands = [
-  new SlashCommandBuilder()
-    .setName('setup-verify')
-    .setDescription('Setup server verification panel')
-    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-
-  new SlashCommandBuilder()
-    .setName('setup-redeem')
-    .setDescription('Setup buyer role redemption panel')
-    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-
-  new SlashCommandBuilder()
-    .setName('setup-ticket')
-    .setDescription('Setup ticket support panel')
-    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-
-  new SlashCommandBuilder()
-    .setName('nuke-and-rebuild')
-    .setDescription('Deletes all channels (except protected IDs) and creates a standard gaming setup')
-    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+    new SlashCommandBuilder()
+        .setName('generate-code')
+        .setDescription('Generate a new buyer key (Format: buyer-XXXX-XXXX)'),
+    new SlashCommandBuilder()
+        .setName('redeem')
+        .setDescription('Redeem your buyer license key')
+        .addStringOption(opt => opt.setName('code').setDescription('Your buyer code').setRequired(true)),
+    new SlashCommandBuilder()
+        .setName('setup-ticket')
+        .setDescription('Post the AI Ticket Creation embed in this channel')
+        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    new SlashCommandBuilder()
+        .setName('nuke')
+        .setDescription('Nuke and rebuild the current channel')
+        .setDefaultMemberPermissions(PermissionFlagsBits.ManageChannels),
 ];
 
-// Register Slash Commands
-client.once(Events.ClientReady, async (c) => {
-  console.log(`Ready! Logged in as ${c.user.tag}`);
-  
-  const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
-  try {
-    console.log('Started refreshing application (/) commands.');
-    await rest.put(
-      Routes.applicationCommands(c.user.id),
-      { body: commands }
-    );
-    console.log('Successfully reloaded application (/) commands.');
-  } catch (error) {
-    console.error('Failed to register slash commands:', error);
-  }
+// Helper: Generate Key
+function createBuyerCode() {
+    const p1 = Math.floor(1000 + Math.random() * 9000); // 4 digits
+    const p2 = Math.floor(1000 + Math.random() * 9000); // 4 digits
+    return `buyer-${p1}-${p2}`;
+}
+
+// ---------------------- BOT INITIALIZATION ----------------------
+client.once('ready', async () => {
+    console.log(`Logged in as ${client.user.tag}!`);
+
+    // Register Slash Commands
+    const rest = new REST({ version: '10' }).setToken(TOKEN);
+    try {
+        await rest.put(Routes.applicationCommands(CLIENT_ID), { body: commands });
+        console.log('Successfully registered slash commands.');
+    } catch (error) {
+        console.error('Error registering commands:', error);
+    }
 });
 
-// Interaction Handling
-client.on(Events.InteractionCreate, async (interaction) => {
-  try {
-    // 1. Slash Commands
+// ---------------------- INTERACTION HANDLER ----------------------
+client.on('interactionCreate', async (interaction) => {
+    // 1. Slash Command Handling
     if (interaction.isChatInputCommand()) {
-      if (interaction.user.id !== AUTHORIZED_USER_ID) {
-        return interaction.reply({
-          content: '❌ You do not have permission to run this command.',
-          ephemeral: true
-        });
-      }
+        const { commandName } = interaction;
 
-      const { commandName } = interaction;
-
-      if (commandName === 'setup-verify') {
-        await interaction.reply({ content: 'Creating verification panel...', ephemeral: true });
-        await interaction.channel.send({ embeds: [createVerifyEmbed()], components: [createVerifyRow()] });
-      }
-
-      if (commandName === 'setup-redeem') {
-        await interaction.reply({ content: 'Creating buyer panel...', ephemeral: true });
-        await interaction.channel.send({ embeds: [createRedeemEmbed()], components: [createRedeemRow()] });
-      }
-
-      if (commandName === 'setup-ticket') {
-        await interaction.reply({ content: 'Creating ticket panel...', ephemeral: true });
-        await interaction.channel.send({ embeds: [createTicketEmbed()], components: [createTicketRow()] });
-      }
-
-      if (commandName === 'nuke-and-rebuild') {
-        const keepChannelIds = [
-          '1540060774800564294',
-          '1539797201876689006',
-          '1539797202908749964',
-          '1539797203902668820'
-        ];
-
-        await interaction.reply({ content: '⚙️ Starting server cleanup and channel setup...', ephemeral: true });
-
-        const guild = interaction.guild;
-        const allChannels = await guild.channels.fetch();
-
-        // Delete unprotected channels
-        for (const [id, channel] of allChannels) {
-          if (channel && !keepChannelIds.includes(id)) {
-            try {
-              await channel.delete('Nuke and Rebuild Command');
-            } catch (err) {
-              console.error(`Failed to delete channel ${id}:`, err);
+        // Command: /generate-code
+        if (commandName === 'generate-code') {
+            if (interaction.user.id !== ADMIN_USER_ID && !interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
+                return interaction.reply({ content: 'Unauthorized.', ephemeral: true });
             }
-          }
+            const newKey = createBuyerCode();
+            validBuyerKeys.add(newKey);
+            return interaction.reply({ content: `**New Buyer Key Generated:** \`${newKey}\``, ephemeral: true });
         }
 
-        // Rebuild structure
-        const infoCat = await guild.channels.create({ name: '📌 Information', type: ChannelType.GuildCategory });
-        await guild.channels.create({ name: 'rules', type: ChannelType.GuildText, parent: infoCat.id });
-        await guild.channels.create({ name: 'announcements', type: ChannelType.GuildText, parent: infoCat.id });
+        // Command: /redeem
+        if (commandName === 'redeem') {
+            const inputCode = interaction.options.getString('code').trim();
+            if (validBuyerKeys.has(inputCode)) {
+                validBuyerKeys.delete(inputCode); // Consume the key
+                
+                // Add your Buyer Role logic here:
+                // const buyerRole = interaction.guild.roles.cache.find(r => r.name === 'Buyer');
+                // if (buyerRole) await interaction.member.roles.add(buyerRole);
 
-        const textCat = await guild.channels.create({ name: '💬 Text Channels', type: ChannelType.GuildCategory });
-        await guild.channels.create({ name: 'general', type: ChannelType.GuildText, parent: textCat.id });
-        await guild.channels.create({ name: 'bot-commands', type: ChannelType.GuildText, parent: textCat.id });
-        await guild.channels.create({ name: 'memes', type: ChannelType.GuildText, parent: textCat.id });
+                return interaction.reply({ content: `Success! \`${inputCode}\` redeemed. Welcome, Buyer!`, ephemeral: true });
+            } else {
+                return interaction.reply({ content: 'Invalid or already redeemed key.', ephemeral: true });
+            }
+        }
 
-        const gamingCat = await guild.channels.create({ name: '🎮 Gaming', type: ChannelType.GuildCategory });
-        await guild.channels.create({ name: 'gaming-chat', type: ChannelType.GuildText, parent: gamingCat.id });
-        await guild.channels.create({ name: 'clips-and-highlights', type: ChannelType.GuildText, parent: gamingCat.id });
-        await guild.channels.create({ name: 'looking-for-group', type: ChannelType.GuildText, parent: gamingCat.id });
+        // Command: /setup-ticket
+        if (commandName === 'setup-ticket') {
+            const embed = new EmbedBuilder()
+                .setTitle('AI Support Desk')
+                .setDescription('Click the button below to open a private ticket powered by Gemini AI.')
+                .setColor(0x5865F2);
 
-        const voiceCat = await guild.channels.create({ name: '🔊 Voice Channels', type: ChannelType.GuildCategory });
-        await guild.channels.create({ name: 'General VC', type: ChannelType.GuildVoice, parent: voiceCat.id });
-        await guild.channels.create({ name: 'Gaming Lounge 1', type: ChannelType.GuildVoice, parent: voiceCat.id });
-        await guild.channels.create({ name: 'Gaming Lounge 2', type: ChannelType.GuildVoice, parent: voiceCat.id });
+            const row = new ActionRowBuilder().addComponents(
+                new ButtonBuilder()
+                    .setCustomId('create_ticket')
+                    .setLabel('Open Ticket')
+                    .setStyle(ButtonStyle.Primary)
+            );
 
-        await interaction.followUp({ content: '✅ Server setup complete! Protected channels were kept.', ephemeral: true });
-      }
+            await interaction.channel.send({ embeds: [embed], components: [row] });
+            return interaction.reply({ content: 'Ticket panel posted.', ephemeral: true });
+        }
+
+        // Command: /nuke
+        if (commandName === 'nuke') {
+            if (interaction.user.id !== ADMIN_USER_ID && !interaction.member.permissions.has(PermissionFlagsBits.ManageChannels)) {
+                return interaction.reply({ content: 'Unauthorized.', ephemeral: true });
+            }
+
+            const currentChannel = interaction.channel;
+            const position = currentChannel.position;
+
+            await interaction.reply({ content: 'Nuking channel...' });
+            
+            // Clone channel and place it in the same spot
+            const newChannel = await currentChannel.clone();
+            await currentChannel.delete();
+            await newChannel.setPosition(position);
+            await newChannel.send('💥 **Channel Nuked and Rebuilt!**');
+            return;
+        }
     }
 
-    // 2. Button Handlers
+    // 2. Button Click Handling (Ticket Creation)
     if (interaction.isButton()) {
-      if (interaction.customId === 'open_verify_modal') {
-        const captchaText = Math.random().toString(36).substring(2, 8).toUpperCase();
-        activeCaptchas.set(interaction.user.id, captchaText);
+        if (interaction.customId === 'create_ticket') {
+            const ticketChannel = await interaction.guild.channels.create({
+                name: `ticket-${interaction.user.username}`,
+                type: ChannelType.GuildText,
+                permissionOverwrites: [
+                    { id: interaction.guild.id, deny: [PermissionFlagsBits.ViewChannel] },
+                    { id: interaction.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] },
+                    { id: client.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] }
+                ]
+            });
 
-        const modal = new ModalBuilder().setCustomId('verify_modal').setTitle(`Verification Code: ${captchaText}`);
-        const input = new TextInputBuilder().setCustomId('captcha_input').setLabel(`Type exact code: ${captchaText}`).setStyle(TextInputStyle.Short).setRequired(true);
-        modal.addComponents(new ActionRowBuilder().addComponents(input));
-        await interaction.showModal(modal);
-      }
-
-      if (interaction.customId === 'open_redeem_modal') {
-        const modal = new ModalBuilder().setCustomId('redeem_code_modal').setTitle('Redeem Buyer Code');
-        const input = new TextInputBuilder().setCustomId('buyer_code_input').setLabel('Enter key (BUYER-XXXX-XXXX)').setStyle(TextInputStyle.Short).setRequired(true);
-        modal.addComponents(new ActionRowBuilder().addComponents(input));
-        await interaction.showModal(modal);
-      }
-
-      if (interaction.customId === 'open_ticket') {
-        await interaction.deferReply({ ephemeral: true });
-
-        const ticketChannel = await interaction.guild.channels.create({
-          name: `ticket-${interaction.user.username}`,
-          type: ChannelType.GuildText,
-          permissionOverwrites: [
-            { id: interaction.guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel] },
-            { id: interaction.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] },
-          ],
-        });
-
-        activeTickets.set(ticketChannel.id, { userId: interaction.user.id, replyCount: 0 });
-
-        await ticketChannel.send({
-          content: `Welcome <@${interaction.user.id}>! I am your AI Support Assistant. Ask me anything below.\n*(AI replies remaining: 35/35)*`,
-          components: [createCloseTicketRow()]
-        });
-
-        await interaction.editReply({ content: `✅ Created ticket channel: ${ticketChannel}` });
-      }
-
-      if (interaction.customId === 'close_ticket') {
-        await interaction.reply({ content: '🔒 Closing ticket channel in 5 seconds...' });
-        activeTickets.delete(interaction.channelId);
-        setTimeout(() => {
-          interaction.channel.delete().catch(() => {});
-        }, 5000);
-      }
-    }
-
-    // 3. Modal Submissions
-    if (interaction.isModalSubmit()) {
-      if (interaction.customId === 'verify_modal') {
-        const enteredCaptcha = interaction.fields.getTextInputValue('captcha_input').trim().toUpperCase();
-        const expectedCaptcha = activeCaptchas.get(interaction.user.id);
-        activeCaptchas.delete(interaction.user.id);
-
-        if (!expectedCaptcha || enteredCaptcha !== expectedCaptcha) {
-          return interaction.reply({ content: '❌ Incorrect verification code.', ephemeral: true });
+            await ticketChannel.send(`Welcome <@${interaction.user.id}>! Describe your issue below, and our **Gemini AI Assistant** will reply automatically.`);
+            return interaction.reply({ content: `Ticket created: ${ticketChannel}`, ephemeral: true });
         }
-
-        const roleId = verificationRoles.get(interaction.guildId);
-        if (roleId) {
-          const role = interaction.guild.roles.cache.get(roleId);
-          if (role) await interaction.member.roles.add(role);
-        }
-        await interaction.reply({ content: '✅ Verified!', ephemeral: true });
-      }
-
-      if (interaction.customId === 'redeem_code_modal') {
-        const enteredCode = interaction.fields.getTextInputValue('buyer_code_input').trim();
-        const codeData = validCodes.get(enteredCode);
-
-        if (!codeData) return interaction.reply({ content: '❌ Invalid code.', ephemeral: true });
-        if (codeData.claimedBy) return interaction.reply({ content: '❌ Code already claimed.', ephemeral: true });
-
-        codeData.claimedBy = interaction.user.id;
-        await interaction.reply({ content: '✅ Code redeemed successfully!', ephemeral: true });
-      }
     }
-  } catch (err) {
-    console.error('Interaction Error:', err);
-    if (interaction.deferred || interaction.replied) {
-      await interaction.followUp({ content: '⚠️ An error occurred executing this action.', ephemeral: true }).catch(() => {});
-    } else {
-      await interaction.reply({ content: '⚠️ An error occurred executing this action.', ephemeral: true }).catch(() => {});
-    }
-  }
 });
 
-// 4. AI Support Ticket Listener
-client.on(Events.MessageCreate, async (message) => {
-  if (message.author.bot) return;
+// ---------------------- GEMINI AI TICKET RESPONSE ----------------------
+client.on('messageCreate', async (message) => {
+    if (message.author.bot) return;
 
-  const ticketData = activeTickets.get(message.channelId);
-  if (!ticketData) return;
+    // Process messages inside active ticket channels
+    if (message.channel.name.startsWith('ticket-')) {
+        try {
+            await message.channel.sendTyping();
+            const result = await aiModel.generateContent(message.content);
+            const responseText = result.response.text();
 
-  if (ticketData.replyCount >= 35) {
-    return message.reply('⚠️ Limit of 35 AI replies reached for this ticket. A human staff member will assist shortly.');
-  }
-
-  if (!ai) {
-    return message.reply('⚠️ AI service is missing GEMINI_API_KEY environment variable.');
-  }
-
-  try {
-    await message.channel.sendTyping();
-
-    const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash',
-      contents: message.content,
-      config: {
-        systemInstruction: 'You are a helpful Discord support assistant. Keep answers clear and concise.'
-      }
-    });
-
-    ticketData.replyCount++;
-    const remaining = 35 - ticketData.replyCount;
-
-    await message.reply(`${response.text}\n\n*🤖 AI replies remaining: ${remaining}/35*`);
-  } catch (err) {
-    console.error('Gemini AI Error:', err);
-    await message.reply('⚠️ Error generating AI response. Check bot console or GEMINI_API_KEY.');
-  }
+            // Truncate response if it exceeds Discord's max limit
+            const reply = responseText.length > 2000 ? responseText.slice(0, 1997) + '...' : responseText;
+            await message.reply(reply);
+        } catch (err) {
+            console.error('Gemini Error:', err);
+            await message.reply('⚠️ Unable to query Gemini AI service at this time.');
+        }
+    }
 });
 
-client.login(process.env.DISCORD_TOKEN);
+client.login(TOKEN);
