@@ -14,7 +14,7 @@ const {
     ChannelType, ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder, 
     REST, Routes, ModalBuilder, TextInputBuilder, TextInputStyle 
 } = require('discord.js');
-const { GoogleGenerativeAI } = require('@google/generative-ai');
+const { GoogleGenAI } = require('@google/genai');
 
 // ---------------------- CONFIGURATION ----------------------
 const TOKEN = process.env.DISCORD_TOKEN;
@@ -30,9 +30,8 @@ const VERIFY_CHANNEL_ID = '1540382318856765490'; // Target Verification Channel 
 const activeCaptchas = new Map();
 const validBuyerKeys = new Set(); 
 
-// Setup Gemini API
-const genAI = new GoogleGenerativeAI(GEMINI_KEY);
-const aiModel = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
+// Setup Gemini API using current @google/genai SDK
+const ai = new GoogleGenAI({ apiKey: GEMINI_KEY });
 
 // Setup Discord Client
 const client = new Client({
@@ -127,11 +126,10 @@ client.once('ready', async () => {
         console.error('Error registering commands:', error);
     }
 
-    // Auto-Deploy Verification Panel to channel ID 1540382318856765490
+    // Auto-Deploy Verification Panel
     try {
         const verifyChannel = await client.channels.fetch(VERIFY_CHANNEL_ID);
         if (verifyChannel && verifyChannel.isTextBased()) {
-            // Clean up previous bot messages in channel
             const messages = await verifyChannel.messages.fetch({ limit: 10 });
             const botMessages = messages.filter(m => m.author.id === client.user.id);
             if (botMessages.size > 0) {
@@ -163,7 +161,7 @@ client.once('ready', async () => {
             );
 
             await verifyChannel.send({ embeds: [verifyEmbed], components: [verifyRow] });
-            console.log('Verification panel automatically posted in channel ID 1540382318856765490.');
+            console.log(`Verification panel automatically posted in channel ID ${VERIFY_CHANNEL_ID}.`);
         }
     } catch (err) {
         console.error('Error deploying automatic verification panel:', err);
@@ -177,12 +175,10 @@ client.on('interactionCreate', async (interaction) => {
     if (interaction.isChatInputCommand()) {
         const { commandName } = interaction;
 
-        // Command: /ping
         if (commandName === 'ping') {
             return interaction.reply({ content: `Pong! Latency: ${client.ws.ping}ms`, ephemeral: true });
         }
 
-        // Command: /userinfo
         if (commandName === 'userinfo') {
             const user = interaction.options.getUser('target') || interaction.user;
             const member = await interaction.guild.members.fetch(user.id);
@@ -197,7 +193,6 @@ client.on('interactionCreate', async (interaction) => {
             return interaction.reply({ embeds: [embed], ephemeral: true });
         }
 
-        // Command: /setup-generate (Admin Panel)
         if (commandName === 'setup-generate') {
             const embed = new EmbedBuilder()
                 .setTitle('⚡ License Key Generator Portal')
@@ -222,7 +217,6 @@ client.on('interactionCreate', async (interaction) => {
             return interaction.reply({ content: '⚡ Admin Key Generator Panel deployed!', ephemeral: true });
         }
 
-        // Command: /setup-redeem (Public Panel)
         if (commandName === 'setup-redeem') {
             const embed = new EmbedBuilder()
                 .setTitle('✨ Vault Access & License Activation')
@@ -246,17 +240,17 @@ client.on('interactionCreate', async (interaction) => {
             return interaction.reply({ content: '✨ Redemption Panel deployed successfully!', ephemeral: true });
         }
 
-        // Command: /setup-ticket
         if (commandName === 'setup-ticket') {
             const embed = new EmbedBuilder()
-                .setTitle('AI Support Desk')
-                .setDescription('Click the button below to open a private ticket powered by Gemini AI.')
+                .setTitle('📩 Support Desk')
+                .setDescription('Click the button below to open a private support ticket.')
                 .setColor(0x5865F2);
 
             const row = new ActionRowBuilder().addComponents(
                 new ButtonBuilder()
                     .setCustomId('create_ticket')
                     .setLabel('Open Ticket')
+                    .setEmoji('🎫')
                     .setStyle(ButtonStyle.Primary)
             );
 
@@ -264,7 +258,6 @@ client.on('interactionCreate', async (interaction) => {
             return interaction.reply({ content: 'Ticket panel posted.', ephemeral: true });
         }
 
-        // Command: /generate-code (Direct Slash Command)
         if (commandName === 'generate-code') {
             if (interaction.user.id !== ADMIN_USER_ID && !interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
                 return interaction.reply({ content: 'Unauthorized.', ephemeral: true });
@@ -280,7 +273,6 @@ client.on('interactionCreate', async (interaction) => {
             return interaction.reply({ embeds: [createdEmbed], ephemeral: true });
         }
 
-        // Command: /redeem (Direct Slash Command)
         if (commandName === 'redeem') {
             const inputCode = interaction.options.getString('code').trim().toUpperCase();
             if (validBuyerKeys.has(inputCode)) {
@@ -295,7 +287,6 @@ client.on('interactionCreate', async (interaction) => {
             }
         }
 
-        // Command: /purge
         if (commandName === 'purge') {
             const amount = interaction.options.getInteger('amount');
             if (amount < 1 || amount > 100) return interaction.reply({ content: 'Amount must be between 1 and 100.', ephemeral: true });
@@ -304,7 +295,6 @@ client.on('interactionCreate', async (interaction) => {
             return interaction.reply({ content: `Deleted ${amount} messages.`, ephemeral: true });
         }
 
-        // Command: /kick
         if (commandName === 'kick') {
             const target = interaction.options.getUser('target');
             const reason = interaction.options.getString('reason') || 'No reason provided';
@@ -314,7 +304,6 @@ client.on('interactionCreate', async (interaction) => {
             return interaction.reply({ content: `Kicked ${target.tag}. Reason: ${reason}` });
         }
 
-        // Command: /ban
         if (commandName === 'ban') {
             const target = interaction.options.getUser('target');
             const reason = interaction.options.getString('reason') || 'No reason provided';
@@ -324,7 +313,6 @@ client.on('interactionCreate', async (interaction) => {
             return interaction.reply({ content: `Banned ${target.tag}. Reason: ${reason}` });
         }
 
-        // Command: /nuke
         if (commandName === 'nuke') {
             if (interaction.user.id !== ADMIN_USER_ID && !interaction.member.permissions.has(PermissionFlagsBits.ManageChannels)) {
                 return interaction.reply({ content: 'Unauthorized.', ephemeral: true });
@@ -346,7 +334,6 @@ client.on('interactionCreate', async (interaction) => {
     // 2. Button Interactions
     if (interaction.isButton()) {
 
-        // Verification Button Clicked
         if (interaction.customId === 'trigger_verify') {
             const captcha = generateCaptcha();
             activeCaptchas.set(interaction.user.id, captcha);
@@ -368,7 +355,6 @@ client.on('interactionCreate', async (interaction) => {
             return await interaction.showModal(modal);
         }
 
-        // Admin: Mint Key Modal Trigger
         if (interaction.customId === 'admin_gen_key') {
             if (interaction.user.id !== ADMIN_USER_ID && !interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
                 return interaction.reply({ content: '🚫 **Access Denied:** Administrator authorization required.', ephemeral: true });
@@ -389,7 +375,6 @@ client.on('interactionCreate', async (interaction) => {
             return await interaction.showModal(modal);
         }
 
-        // Admin: View Key Stats Trigger
         if (interaction.customId === 'admin_view_stats') {
             if (interaction.user.id !== ADMIN_USER_ID && !interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
                 return interaction.reply({ content: '🚫 Unauthorized.', ephemeral: true });
@@ -403,7 +388,6 @@ client.on('interactionCreate', async (interaction) => {
             return interaction.reply({ embeds: [statsEmbed], ephemeral: true });
         }
 
-        // Public: Redeem Modal Trigger
         if (interaction.customId === 'open_redeem_modal') {
             const modal = new ModalBuilder()
                 .setCustomId('redeem_modal')
@@ -422,7 +406,7 @@ client.on('interactionCreate', async (interaction) => {
             return await interaction.showModal(modal);
         }
 
-        // Ticket Creation
+        // Open Ticket Channel
         if (interaction.customId === 'create_ticket') {
             const ticketChannel = await interaction.guild.channels.create({
                 name: `ticket-${interaction.user.username}`,
@@ -434,15 +418,58 @@ client.on('interactionCreate', async (interaction) => {
                 ]
             });
 
-            await ticketChannel.send(`Welcome <@${interaction.user.id}>! Describe your issue below, and our **Gemini AI Assistant** will reply automatically.`);
+            const ticketEmbed = new EmbedBuilder()
+                .setTitle(`Ticket: ${interaction.user.username}`)
+                .setDescription(`Welcome <@${interaction.user.id}>!\nDescribe your issue below. Our **Gemini AI Assistant** will reply automatically, or click **Claim Ticket** to wait for staff.`)
+                .setColor(0x5865F2);
+
+            const ticketControls = new ActionRowBuilder().addComponents(
+                new ButtonBuilder()
+                    .setCustomId('claim_ticket')
+                    .setLabel('Claim Ticket')
+                    .setEmoji('🙋‍♂️')
+                    .setStyle(ButtonStyle.Primary),
+                new ButtonBuilder()
+                    .setCustomId('close_ticket')
+                    .setLabel('Close Ticket')
+                    .setEmoji('🔒')
+                    .setStyle(ButtonStyle.Danger)
+            );
+
+            await ticketChannel.send({ embeds: [ticketEmbed], components: [ticketControls] });
             return interaction.reply({ content: `Ticket created: ${ticketChannel}`, ephemeral: true });
+        }
+
+        // Claim Ticket Button
+        if (interaction.customId === 'claim_ticket') {
+            if (!interaction.member.permissions.has(PermissionFlagsBits.ManageMessages)) {
+                return interaction.reply({ content: '🚫 Staff permission required to claim tickets.', ephemeral: true });
+            }
+
+            const claimedEmbed = new EmbedBuilder()
+                .setDescription(`🙋‍♂️ **Ticket Claimed:** <@${interaction.user.id}> is now handling this ticket.`)
+                .setColor(0x00FFA3);
+
+            return interaction.reply({ embeds: [claimedEmbed] });
+        }
+
+        // Close Ticket Button
+        if (interaction.customId === 'close_ticket') {
+            await interaction.reply({ content: '🔒 **Closing ticket in 5 seconds...**' });
+            setTimeout(async () => {
+                try {
+                    await interaction.channel.delete();
+                } catch (e) {
+                    console.error('Failed to delete channel:', e);
+                }
+            }, 5000);
+            return;
         }
     }
 
     // 3. Modal Form Submissions
     if (interaction.isModalSubmit()) {
 
-        // Handle Verification Modal Submission
         if (interaction.customId === 'verify_modal') {
             const inputCaptcha = interaction.fields.getTextInputValue('captcha_code').toUpperCase().trim();
             const expectedCaptcha = activeCaptchas.get(interaction.user.id);
@@ -450,7 +477,6 @@ client.on('interactionCreate', async (interaction) => {
             if (expectedCaptcha && inputCaptcha === expectedCaptcha) {
                 activeCaptchas.delete(interaction.user.id);
 
-                // Assign Verified Member Role by ID
                 const memberRole = interaction.guild.roles.cache.get(MEMBER_ROLE_ID);
                 if (memberRole) {
                     await interaction.member.roles.add(memberRole);
@@ -474,7 +500,6 @@ client.on('interactionCreate', async (interaction) => {
             }
         }
 
-        // Handle Admin Key Creation
         if (interaction.customId === 'gen_key_modal') {
             const prefix = interaction.fields.getTextInputValue('key_prefix').toUpperCase().trim() || 'BUYER';
             const newKey = createBuyerCode(prefix);
@@ -492,14 +517,12 @@ client.on('interactionCreate', async (interaction) => {
             return interaction.reply({ embeds: [createdEmbed], ephemeral: true });
         }
 
-        // Handle User Key Redemption
         if (interaction.customId === 'redeem_modal') {
             const inputCode = interaction.fields.getTextInputValue('key_input').trim().toUpperCase();
 
             if (validBuyerKeys.has(inputCode)) {
                 validBuyerKeys.delete(inputCode);
 
-                // Assign Buyer Role by ID
                 const buyerRole = interaction.guild.roles.cache.get(BUYER_ROLE_ID);
                 if (buyerRole) {
                     await interaction.member.roles.add(buyerRole);
@@ -530,9 +553,13 @@ client.on('messageCreate', async (message) => {
     if (message.channel.name.startsWith('ticket-')) {
         try {
             await message.channel.sendTyping();
-            const result = await aiModel.generateContent(message.content);
-            const responseText = result.response.text();
+            
+            const response = await ai.models.generateContent({
+                model: 'gemini-2.0-flash',
+                contents: message.content,
+            });
 
+            const responseText = response.text;
             const reply = responseText.length > 2000 ? responseText.slice(0, 1997) + '...' : responseText;
             await message.reply(reply);
         } catch (err) {
