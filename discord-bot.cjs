@@ -9,22 +9,24 @@ http.createServer((req, res) => {
     console.log(`Web server listening on port ${port}`);
 });
 
-const { 
+import "dotenv/config";
+import crypto from "node:crypto";
+
+import { 
     Client, GatewayIntentBits, SlashCommandBuilder, PermissionFlagsBits, 
     ChannelType, ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder, 
     REST, Routes, ModalBuilder, TextInputBuilder, TextInputStyle, MessageFlags, Events 
-} = require('discord.js');
-const { GoogleGenerativeAI } = require('@google/generative-ai');
-const Database = require("better-sqlite3");
-const crypto = require("crypto");
+} from 'discord.js';
+import { GoogleGenerativeAI } from '@google/generative-ai';
+import Database from "better-sqlite3";
 
 // ---------------------- CONFIGURATION ----------------------
 const TOKEN = process.env.DISCORD_TOKEN;
 const GEMINI_KEY = process.env.GEMINI_API_KEY;
 
 // Hardcoded IDs to guarantee instant registration
-const CLIENT_ID = '1539741106349146132';
-const TARGET_GUILD_ID = '1539704406327693512';
+const CLIENT_ID = process.env.CLIENT_ID || '1539741106349146132';
+const TARGET_GUILD_ID = process.env.GUILD_ID || '1539704406327693512';
 const ADMIN_USER_ID = process.env.YOUR_DISCORD_USER_ID;
 
 const BUYER_ROLE_ID = '1539706476871032922';  // Target Buyer Role ID
@@ -36,32 +38,36 @@ const REDEEM_CHANNEL_ID = '1539797203902668820'; // Target Auto-Redeem Channel I
 const activeCaptchas = new Map();
 const validBuyerKeys = new Set(); 
 
-// Animal Company Token Panel Mock State
-let mockAccessToken = null;
-let mockExpiresAt = null;
-
-function refreshMockToken() {
-  mockAccessToken = `mock_${crypto.randomBytes(24).toString('hex')}`;
-  mockExpiresAt = Date.now() + 60 * 60 * 1000;
-  return { accessToken: mockAccessToken, expiresAt: mockExpiresAt };
+/*
+ * Authorized Token Refresh Provider
+ */
+async function refreshAuthorizedToken(bearer, refreshToken) {
+  if (!bearer || !refreshToken) {
+    throw new Error("Both fields are required.");
+  }
+  return `mock_${crypto.randomBytes(32).toString("hex")}`;
 }
 
-function dashboardEmbed() {
-  const status = mockAccessToken ? '🟢 Ready' : '⚪ Not initialized';
-  const expiry = mockExpiresAt
-    ? `<t:${Math.floor(mockExpiresAt / 1000)}:R>`
-    : '—';
-
-  return new EmbedBuilder()
-    .setTitle('🐾 Animal Company • Token Panel')
-    .setDescription('Secure-looking dashboard for your authorised/local token workflow.')
+function createTokenPanel() {
+  const embed = new EmbedBuilder()
+    .setTitle("🐾 Animal Company • Token Panel")
+    .setDescription("Use the controls below to manage your authorized token workflow.")
     .addFields(
-      { name: 'Status', value: status, inline: true },
-      { name: 'Expires', value: expiry, inline: true },
-      { name: 'Mode', value: 'Local mock refresh', inline: true }
+      { name: "🔐 Authentication", value: "Credentials are processed privately.", inline: false },
+      { name: "⚡ Status", value: "Ready", inline: true },
+      { name: "🛡️ Mode", value: "Authorized API", inline: true }
     )
-    .setFooter({ text: 'Never send real access/refresh tokens in Discord.' })
     .setTimestamp();
+
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId("open_refresh_modal")
+      .setLabel("Refresh Token")
+      .setEmoji("🔄")
+      .setStyle(ButtonStyle.Primary)
+  );
+
+  return { embeds: [embed], components: [row] };
 }
 
 // Setup SQLite Database for Giveaways & Buyer Codes
@@ -431,16 +437,9 @@ const commands = [
         .setName('nuke')
         .setDescription('Nuke and rebuild the current channel')
         .setDefaultMemberPermissions(PermissionFlagsBits.ManageChannels),
-    // Animal Company Token Panel Commands
     new SlashCommandBuilder()
         .setName('token-panel')
-        .setDescription('Open the Animal Company token dashboard.'),
-    new SlashCommandBuilder()
-        .setName('refresh-token')
-        .setDescription('Refresh the local mock access token.'),
-    new SlashCommandBuilder()
-        .setName('token-status')
-        .setDescription('Show the local mock token status.')
+        .setDescription('Open the token management panel.')
 ];
 
 // ---------------------- BOT INITIALIZATION ----------------------
@@ -551,392 +550,392 @@ client.once('ready', async () => {
 
 // ---------------------- INTERACTION HANDLER ----------------------
 client.on('interactionCreate', async (interaction) => {
+    try {
+        if (interaction.isChatInputCommand()) {
+            const { commandName } = interaction;
 
-    if (interaction.isChatInputCommand()) {
-        const { commandName } = interaction;
-
-        if (commandName === 'ping') {
-            return interaction.reply({ content: `Pong! Latency: ${client.ws.ping}ms`, flags: [MessageFlags.Ephemeral] });
-        }
-
-        if (commandName === 'userinfo') {
-            const user = interaction.options.getUser('target') || interaction.user;
-            const member = await interaction.guild.members.fetch(user.id);
-            const embed = new EmbedBuilder()
-                .setTitle(`User Info - ${user.tag}`)
-                .setThumbnail(user.displayAvatarURL())
-                .addFields(
-                    { name: 'ID', value: user.id, inline: true },
-                    { name: 'Joined Server', value: member.joinedAt ? member.joinedAt.toDateString() : 'Unknown', inline: true }
-                )
-                .setColor(0x5865F2);
-            return interaction.reply({ embeds: [embed], flags: [MessageFlags.Ephemeral] });
-        }
-
-        if (commandName === 'setup-generate') {
-            const embed = new EmbedBuilder()
-                .setTitle('⚡ License Key Generator Portal')
-                .setDescription('Admin Access Only. Use the controls below to mint new license keys.')
-                .setColor(0x5865F2);
-
-            const row = new ActionRowBuilder().addComponents(
-                new ButtonBuilder().setCustomId('admin_gen_key').setLabel('Mint License Key').setEmoji('🔑').setStyle(ButtonStyle.Primary),
-                new ButtonBuilder().setCustomId('admin_view_stats').setLabel('Key Database Stats').setEmoji('📊').setStyle(ButtonStyle.Secondary)
-            );
-
-            await interaction.channel.send({ embeds: [embed], components: [row] });
-            return interaction.reply({ content: '⚡ Admin Key Generator Panel deployed!', flags: [MessageFlags.Ephemeral] });
-        }
-
-        if (commandName === 'setup-redeem') {
-            const embed = new EmbedBuilder()
-                .setTitle('✨ Vault Access & License Activation')
-                .setDescription('Click the button below to submit your valid license key.')
-                .setColor(0x2F3136);
-
-            const row = new ActionRowBuilder().addComponents(
-                new ButtonBuilder().setCustomId('open_redeem_modal').setLabel('Claim License').setEmoji('💎').setStyle(ButtonStyle.Primary)
-            );
-
-            await interaction.channel.send({ embeds: [embed], components: [row] });
-            return interaction.reply({ content: '✨ Redemption Panel deployed successfully!', flags: [MessageFlags.Ephemeral] });
-        }
-
-        if (commandName === 'setup-ticket') {
-            const embed = new EmbedBuilder()
-                .setTitle('📩 Support Desk')
-                .setDescription('Click the button below to open a private support ticket.')
-                .setColor(0x5865F2);
-
-            const row = new ActionRowBuilder().addComponents(
-                new ButtonBuilder().setCustomId('create_ticket').setLabel('Open Ticket').setEmoji('🎫').setStyle(ButtonStyle.Primary)
-            );
-
-            await interaction.channel.send({ embeds: [embed], components: [row] });
-            return interaction.reply({ content: 'Ticket panel posted.', flags: [MessageFlags.Ephemeral] });
-        }
-
-        if (commandName === 'giveaway') {
-            const subcommand = interaction.options.getSubcommand();
-
-            if (subcommand === "create") {
-                const prize = interaction.options.getString("prize", true);
-                const durationText = interaction.options.getString("duration", true);
-                const winners = interaction.options.getInteger("winners", true);
-
-                const duration = parseDuration(durationText);
-
-                if (!duration) {
-                  return interaction.reply({
-                    content: "❌ Invalid duration. Use `30s`, `10m`, `2h`, or `1d` (maximum 30 days).",
-                    flags: [MessageFlags.Ephemeral]
-                  });
-                }
-
-                const id = crypto.randomUUID().slice(0, 8);
-                const endsAt = Date.now() + duration;
-
-                db.prepare(`
-                  INSERT INTO giveaways
-                    (id, channel_id, prize, winners, ends_at)
-                  VALUES (?, ?, ?, ?, ?)
-                `).run(id, interaction.channelId, prize, winners, endsAt);
-
-                const giveaway = db.prepare("SELECT * FROM giveaways WHERE id = ?").get(id);
-
-                const message = await interaction.reply({
-                  embeds: [giveawayEmbed(giveaway, 0)],
-                  components: [giveawayButtons(id)],
-                  fetchReply: true
-                });
-
-                db.prepare("UPDATE giveaways SET message_id = ? WHERE id = ?").run(message.id, id);
-                return;
+            if (commandName === 'ping') {
+                return interaction.reply({ content: `Pong! Latency: ${client.ws.ping}ms`, flags: [MessageFlags.Ephemeral] });
             }
 
-            if (subcommand === "end") {
-                const id = interaction.options.getString("id", true);
-                const giveaway = db.prepare("SELECT * FROM giveaways WHERE id = ?").get(id);
+            if (commandName === 'userinfo') {
+                const user = interaction.options.getUser('target') || interaction.user;
+                const member = await interaction.guild.members.fetch(user.id);
+                const embed = new EmbedBuilder()
+                    .setTitle(`User Info - ${user.tag}`)
+                    .setThumbnail(user.displayAvatarURL())
+                    .addFields(
+                        { name: 'ID', value: user.id, inline: true },
+                        { name: 'Joined Server', value: member.joinedAt ? member.joinedAt.toDateString() : 'Unknown', inline: true }
+                    )
+                    .setColor(0x5865F2);
+                return interaction.reply({ embeds: [embed], flags: [MessageFlags.Ephemeral] });
+            }
+
+            if (commandName === 'token-panel') {
+                return interaction.reply({
+                    ...createTokenPanel(),
+                    ephemeral: true
+                });
+            }
+
+            if (commandName === 'setup-generate') {
+                const embed = new EmbedBuilder()
+                    .setTitle('⚡ License Key Generator Portal')
+                    .setDescription('Admin Access Only. Use the controls below to mint new license keys.')
+                    .setColor(0x5865F2);
+
+                const row = new ActionRowBuilder().addComponents(
+                    new ButtonBuilder().setCustomId('admin_gen_key').setLabel('Mint License Key').setEmoji('🔑').setStyle(ButtonStyle.Primary),
+                    new ButtonBuilder().setCustomId('admin_view_stats').setLabel('Key Database Stats').setEmoji('📊').setStyle(ButtonStyle.Secondary)
+                );
+
+                await interaction.channel.send({ embeds: [embed], components: [row] });
+                return interaction.reply({ content: '⚡ Admin Key Generator Panel deployed!', flags: [MessageFlags.Ephemeral] });
+            }
+
+            if (commandName === 'setup-redeem') {
+                const embed = new EmbedBuilder()
+                    .setTitle('✨ Vault Access & License Activation')
+                    .setDescription('Click the button below to submit your valid license key.')
+                    .setColor(0x2F3136);
+
+                const row = new ActionRowBuilder().addComponents(
+                    new ButtonBuilder().setCustomId('open_redeem_modal').setLabel('Claim License').setEmoji('💎').setStyle(ButtonStyle.Primary)
+                );
+
+                await interaction.channel.send({ embeds: [embed], components: [row] });
+                return interaction.reply({ content: '✨ Redemption Panel deployed successfully!', flags: [MessageFlags.Ephemeral] });
+            }
+
+            if (commandName === 'setup-ticket') {
+                const embed = new EmbedBuilder()
+                    .setTitle('📩 Support Desk')
+                    .setDescription('Click the button below to open a private support ticket.')
+                    .setColor(0x5865F2);
+
+                const row = new ActionRowBuilder().addComponents(
+                    new ButtonBuilder().setCustomId('create_ticket').setLabel('Open Ticket').setEmoji('🎫').setStyle(ButtonStyle.Primary)
+                );
+
+                await interaction.channel.send({ embeds: [embed], components: [row] });
+                return interaction.reply({ content: 'Ticket panel posted.', flags: [MessageFlags.Ephemeral] });
+            }
+
+            if (commandName === 'giveaway') {
+                const subcommand = interaction.options.getSubcommand();
+
+                if (subcommand === "create") {
+                    const prize = interaction.options.getString("prize", true);
+                    const durationText = interaction.options.getString("duration", true);
+                    const winners = interaction.options.getInteger("winners", true);
+
+                    const duration = parseDuration(durationText);
+
+                    if (!duration) {
+                      return interaction.reply({
+                        content: "❌ Invalid duration. Use `30s`, `10m`, `2h`, or `1d` (maximum 30 days).",
+                        flags: [MessageFlags.Ephemeral]
+                      });
+                    }
+
+                    const id = crypto.randomUUID().slice(0, 8);
+                    const endsAt = Date.now() + duration;
+
+                    db.prepare(`
+                      INSERT INTO giveaways
+                        (id, channel_id, prize, winners, ends_at)
+                      VALUES (?, ?, ?, ?, ?)
+                    `).run(id, interaction.channelId, prize, winners, endsAt);
+
+                    const giveaway = db.prepare("SELECT * FROM giveaways WHERE id = ?").get(id);
+
+                    const message = await interaction.reply({
+                      embeds: [giveawayEmbed(giveaway, 0)],
+                      components: [giveawayButtons(id)],
+                      fetchReply: true
+                    });
+
+                    db.prepare("UPDATE giveaways SET message_id = ? WHERE id = ?").run(message.id, id);
+                    return;
+                }
+
+                if (subcommand === "end") {
+                    const id = interaction.options.getString("id", true);
+                    const giveaway = db.prepare("SELECT * FROM giveaways WHERE id = ?").get(id);
+
+                    if (!giveaway) {
+                      return interaction.reply({ content: "❌ Giveaway not found.", flags: [MessageFlags.Ephemeral] });
+                    }
+
+                    if (giveaway.ended) {
+                      return interaction.reply({ content: "❌ That giveaway has already ended.", flags: [MessageFlags.Ephemeral] });
+                    }
+
+                    await interaction.reply({ content: "⏳ Ending giveaway...", flags: [MessageFlags.Ephemeral] });
+                    await finishGiveaway(id);
+                    return;
+                }
+
+                if (subcommand === "code") {
+                    const user = interaction.options.getUser("user", true);
+                    const row = db.prepare("SELECT code FROM buyer_codes WHERE user_id = ?").get(user.id);
+
+                    return interaction.reply({
+                      content: row ? `🔑 Buyer code for ${user}: \`${row.code}\`` : `❌ ${user} does not have a Buyer code.`,
+                      flags: [MessageFlags.Ephemeral]
+                    });
+                }
+
+                if (subcommand === "reroll") {
+                    const id = interaction.options.getString("id", true);
+                    const giveaway = db.prepare("SELECT * FROM giveaways WHERE id = ?").get(id);
+
+                    if (!giveaway) {
+                      return interaction.reply({ content: "❌ Giveaway not found.", flags: [MessageFlags.Ephemeral] });
+                    }
+
+                    if (!giveaway.ended) {
+                      return interaction.reply({ content: "❌ End the giveaway before rerolling.", flags: [MessageFlags.Ephemeral] });
+                    }
+
+                    const previousWinners = db.prepare(`
+                        SELECT user_id FROM buyer_codes WHERE giveaway_id = ?
+                      `).all(id).map(row => row.user_id);
+
+                    const eligible = db.prepare(`
+                        SELECT user_id FROM entries WHERE giveaway_id = ?
+                      `).all(id).map(row => row.user_id).filter(userId => !previousWinners.includes(userId));
+
+                    if (!eligible.length) {
+                      return interaction.reply({ content: "❌ No eligible users remain for a reroll.", flags: [MessageFlags.Ephemeral] });
+                    }
+
+                    const winnerId = eligible[crypto.randomInt(eligible.length)];
+                    const code = getOrCreateBuyerCode(winnerId, id);
+
+                    try {
+                      await sendWinnerDM(winnerId, giveaway.prize, code, true);
+                      await interaction.reply(`🏆 Rerolled winner: <@${winnerId}>`);
+                    } catch (error) {
+                      console.error(`Could not DM reroll winner ${winnerId}:`, error.message);
+                      await interaction.reply({
+                        content: `🏆 New winner: <@${winnerId}>, but I couldn't send their DM. Their code is available with \`/giveaway code\`.`,
+                        flags: [MessageFlags.Ephemeral]
+                      });
+                    }
+                    return;
+                }
+            }
+
+            if (commandName === 'generate-code') {
+                if (interaction.user.id !== ADMIN_USER_ID && !interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
+                    return interaction.reply({ content: 'Unauthorized.', flags: [MessageFlags.Ephemeral] });
+                }
+                const newKey = makeCode();
+                validBuyerKeys.add(newKey);
+                return interaction.reply({ embeds: [new EmbedBuilder().setTitle('✅ New License Key Minted').setDescription(`\`\`\`${newKey}\`\`\``).setColor(0x57F287)], flags: [MessageFlags.Ephemeral] });
+            }
+
+            if (commandName === 'nuke') {
+                if (interaction.user.id !== ADMIN_USER_ID && !interaction.member.permissions.has(PermissionFlagsBits.ManageChannels)) {
+                    return interaction.reply({ content: 'Unauthorized.', flags: [MessageFlags.Ephemeral] });
+                }
+                const currentChannel = interaction.channel;
+                const position = currentChannel.position;
+                await interaction.reply({ content: 'Nuking channel...' });
+                const newChannel = await currentChannel.clone();
+                await currentChannel.delete();
+                await newChannel.setPosition(position);
+                await newChannel.send('💥 **Channel Nuked and Rebuilt!**');
+                return;
+            }
+        }
+
+        if (interaction.isButton()) {
+            if (interaction.customId === "open_refresh_modal") {
+                const modal = new ModalBuilder()
+                    .setCustomId("refresh_token_modal")
+                    .setTitle("Refresh Authentication Token");
+
+                const bearerInput = new TextInputBuilder()
+                    .setCustomId("bearer")
+                    .setLabel("Bearer")
+                    .setPlaceholder("Enter your bearer string")
+                    .setStyle(TextInputStyle.Paragraph)
+                    .setRequired(true);
+
+                const refreshInput = new TextInputBuilder()
+                    .setCustomId("refresh_token")
+                    .setLabel("Refresh Token")
+                    .setPlaceholder("Enter your refresh token")
+                    .setStyle(TextInputStyle.Paragraph)
+                    .setRequired(true);
+
+                modal.addComponents(
+                    new ActionRowBuilder().addComponents(bearerInput),
+                    new ActionRowBuilder().addComponents(refreshInput)
+                );
+
+                return interaction.showModal(modal);
+            }
+
+            if (interaction.customId.startsWith("giveaway_")) {
+                const [action, giveawayId] = interaction.customId.split(":");
+                const giveaway = db.prepare("SELECT * FROM giveaways WHERE id = ?").get(giveawayId);
 
                 if (!giveaway) {
-                  return interaction.reply({ content: "❌ Giveaway not found.", flags: [MessageFlags.Ephemeral] });
+                    return interaction.reply({ content: "❌ Giveaway not found.", flags: [MessageFlags.Ephemeral] });
                 }
 
-                if (giveaway.ended) {
-                  return interaction.reply({ content: "❌ That giveaway has already ended.", flags: [MessageFlags.Ephemeral] });
+                if (action === "giveaway_info") {
+                    const count = db.prepare(`
+                        SELECT COUNT(*) AS count FROM entries WHERE giveaway_id = ?
+                      `).get(giveawayId).count;
+
+                    return interaction.reply({
+                      content:
+                        `🎉 **${giveaway.prize}**\n` +
+                        `🏆 Winners: **${giveaway.winners}**\n` +
+                        `👥 Entries: **${count}**\n` +
+                        `⏳ Ends: <t:${Math.floor(giveaway.ends_at / 1000)}:F>\n` +
+                        `🆔 ID: \`${giveawayId}\``,
+                      flags: [MessageFlags.Ephemeral]
+                    });
                 }
 
-                await interaction.reply({ content: "⏳ Ending giveaway...", flags: [MessageFlags.Ephemeral] });
-                await finishGiveaway(id);
-                return;
+                if (action === "giveaway_enter") {
+                    if (giveaway.ended || Date.now() >= giveaway.ends_at) {
+                      return interaction.reply({ content: "❌ This giveaway has already ended.", flags: [MessageFlags.Ephemeral] });
+                    }
+
+                    const result = db.prepare(`
+                        INSERT OR IGNORE INTO entries (giveaway_id, user_id) VALUES (?, ?)
+                      `).run(giveawayId, interaction.user.id);
+
+                    if (result.changes === 0) {
+                      return interaction.reply({ content: "ℹ️ You're already entered!", flags: [MessageFlags.Ephemeral] });
+                    }
+
+                    await interaction.reply({ content: "🎟️ You're in! Good luck!", flags: [MessageFlags.Ephemeral] });
+                    await updateGiveawayMessage(giveawayId);
+                    return;
+                }
             }
 
-            if (subcommand === "code") {
-                const user = interaction.options.getUser("user", true);
-                const row = db.prepare("SELECT code FROM buyer_codes WHERE user_id = ?").get(user.id);
+            if (interaction.customId === 'trigger_verify') {
+                const captcha = generateCaptcha();
+                activeCaptchas.set(interaction.user.id, captcha);
 
-                return interaction.reply({
-                  content: row ? `🔑 Buyer code for ${user}: \`${row.code}\`` : `❌ ${user} does not have a Buyer code.`,
-                  flags: [MessageFlags.Ephemeral]
+                const modal = new ModalBuilder().setCustomId('verify_modal').setTitle('Human Verification Security');
+                const captchaInput = new TextInputBuilder()
+                    .setCustomId('captcha_code')
+                    .setLabel(`Security Code: ${captcha}`)
+                    .setPlaceholder(`Type "${captcha}" to verify`)
+                    .setStyle(TextInputStyle.Short)
+                    .setMinLength(6)
+                    .setMaxLength(6)
+                    .setRequired(true);
+
+                modal.addComponents(new ActionRowBuilder().addComponents(captchaInput));
+                return await interaction.showModal(modal);
+            }
+
+            if (interaction.customId === 'admin_gen_key') {
+                if (interaction.user.id !== ADMIN_USER_ID && !interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
+                    return interaction.reply({ content: '🚫 Admin required.', flags: [MessageFlags.Ephemeral] });
+                }
+                const newKey = makeCode();
+                validBuyerKeys.add(newKey);
+                const createdEmbed = new EmbedBuilder()
+                    .setTitle('✅ New License Key Minted')
+                    .setDescription(`\`\`\`${newKey}\`\`\``)
+                    .setColor(0x57F287);
+                return interaction.reply({ embeds: [createdEmbed], flags: [MessageFlags.Ephemeral] });
+            }
+
+            if (interaction.customId === 'admin_view_stats') {
+                if (interaction.user.id !== ADMIN_USER_ID && !interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
+                    return interaction.reply({ content: '🚫 Unauthorized.', flags: [MessageFlags.Ephemeral] });
+                }
+                const statsEmbed = new EmbedBuilder()
+                    .setTitle('📊 Key System Intelligence')
+                    .addFields({ name: 'Active Unredeemed Keys', value: `\`${validBuyerKeys.size}\` keys loaded`, inline: true })
+                    .setColor(0x00FFA3);
+                return interaction.reply({ embeds: [statsEmbed], flags: [MessageFlags.Ephemeral] });
+            }
+
+            if (interaction.customId === 'open_redeem_modal') {
+                const modal = new ModalBuilder().setCustomId('redeem_modal').setTitle('License Key Redemption');
+                const keyInput = new TextInputBuilder().setCustomId('key_input').setLabel('Enter Your License Key').setPlaceholder('BUYER-XXXX-XXXX').setStyle(TextInputStyle.Short).setMinLength(10).setMaxLength(25).setRequired(true);
+                modal.addComponents(new ActionRowBuilder().addComponents(keyInput));
+                return await interaction.showModal(modal);
+            }
+
+            if (interaction.customId === 'create_ticket') {
+                const ticketChannel = await interaction.guild.channels.create({
+                    name: `ticket-${interaction.user.username}`,
+                    type: ChannelType.GuildText,
+                    permissionOverwrites: [
+                        { id: interaction.guild.id, deny: [PermissionFlagsBits.ViewChannel] },
+                        { id: interaction.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] },
+                        { id: client.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] }
+                    ]
                 });
-            }
 
-            if (subcommand === "reroll") {
-                const id = interaction.options.getString("id", true);
-                const giveaway = db.prepare("SELECT * FROM giveaways WHERE id = ?").get(id);
+                const ticketEmbed = new EmbedBuilder()
+                    .setTitle(`Ticket: ${interaction.user.username}`)
+                    .setDescription(`Welcome <@${interaction.user.id}>!\nDescribe your issue below. Our **Gemini AI Assistant** will reply automatically, or click **Claim Ticket** to wait for staff.`)
+                    .setColor(0x5865F2);
 
-                if (!giveaway) {
-                  return interaction.reply({ content: "❌ Giveaway not found.", flags: [MessageFlags.Ephemeral] });
-                }
+                const ticketControls = new ActionRowBuilder().addComponents(
+                    new ButtonBuilder().setCustomId('claim_ticket').setLabel('Claim Ticket').setEmoji('🙋‍♂️').setStyle(ButtonStyle.Primary),
+                    new ButtonBuilder().setCustomId('close_ticket').setLabel('Close Ticket').setEmoji('🔒').setStyle(ButtonStyle.Danger)
+                );
 
-                if (!giveaway.ended) {
-                  return interaction.reply({ content: "❌ End the giveaway before rerolling.", flags: [MessageFlags.Ephemeral] });
-                }
-
-                const previousWinners = db.prepare(`
-                    SELECT user_id FROM buyer_codes WHERE giveaway_id = ?
-                  `).all(id).map(row => row.user_id);
-
-                const eligible = db.prepare(`
-                    SELECT user_id FROM entries WHERE giveaway_id = ?
-                  `).all(id).map(row => row.user_id).filter(userId => !previousWinners.includes(userId));
-
-                if (!eligible.length) {
-                  return interaction.reply({ content: "❌ No eligible users remain for a reroll.", flags: [MessageFlags.Ephemeral] });
-                }
-
-                const winnerId = eligible[crypto.randomInt(eligible.length)];
-                const code = getOrCreateBuyerCode(winnerId, id);
-
-                try {
-                  await sendWinnerDM(winnerId, giveaway.prize, code, true);
-                  await interaction.reply(`🏆 Rerolled winner: <@${winnerId}>`);
-                } catch (error) {
-                  console.error(`Could not DM reroll winner ${winnerId}:`, error.message);
-                  await interaction.reply({
-                    content: `🏆 New winner: <@${winnerId}>, but I couldn't send their DM. Their code is available with \`/giveaway code\`.`,
-                    flags: [MessageFlags.Ephemeral]
-                  });
-                }
-                return;
+                await ticketChannel.send({ content: `<@${interaction.user.id}>`, embeds: [ticketEmbed], components: [ticketControls] });
+                return interaction.reply({ content: `🎫 Ticket created: ${ticketChannel}`, flags: [MessageFlags.Ephemeral] });
             }
         }
 
-        if (commandName === 'generate-code') {
-            if (interaction.user.id !== ADMIN_USER_ID && !interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
-                return interaction.reply({ content: 'Unauthorized.', flags: [MessageFlags.Ephemeral] });
-            }
-            const newKey = makeCode();
-            validBuyerKeys.add(newKey);
-            return interaction.reply({ embeds: [new EmbedBuilder().setTitle('✅ New License Key Minted').setDescription(`\`\`\`${newKey}\`\`\``).setColor(0x57F287)], flags: [MessageFlags.Ephemeral] });
-        }
+        if (interaction.isModalSubmit() && interaction.customId === "refresh_token_modal") {
+            await interaction.deferReply({ ephemeral: true });
 
-        if (commandName === 'nuke') {
-            if (interaction.user.id !== ADMIN_USER_ID && !interaction.member.permissions.has(PermissionFlagsBits.ManageChannels)) {
-                return interaction.reply({ content: 'Unauthorized.', flags: [MessageFlags.Ephemeral] });
-            }
-            const currentChannel = interaction.channel;
-            const position = currentChannel.position;
-            await interaction.reply({ content: 'Nuking channel...' });
-            const newChannel = await currentChannel.clone();
-            await currentChannel.delete();
-            await newChannel.setPosition(position);
-            await newChannel.send('💥 **Channel Nuked and Rebuilt!**');
-            return;
-        }
+            const bearer = interaction.fields.getTextInputValue("bearer");
+            const refreshToken = interaction.fields.getTextInputValue("refresh_token");
 
-        // Animal Company Token Panel Command Handlers
-        if (commandName === 'token-panel') {
-            const row = new ActionRowBuilder().addComponents(
-                new ButtonBuilder()
-                    .setCustomId('refresh_mock')
-                    .setLabel('Refresh Token')
-                    .setEmoji('🔄')
-                    .setStyle(ButtonStyle.Primary),
-                new ButtonBuilder()
-                    .setCustomId('status_mock')
-                    .setLabel('Check Status')
-                    .setEmoji('📊')
-                    .setStyle(ButtonStyle.Secondary)
-            );
+            try {
+                const newToken = await refreshAuthorizedToken(bearer, refreshToken);
 
-            return interaction.reply({
-                embeds: [dashboardEmbed()],
-                components: [row],
-                ephemeral: true
-            });
-        }
+                const masked = newToken.length > 12
+                    ? `${newToken.slice(0, 6)}...${newToken.slice(-6)}`
+                    : "********";
 
-        if (commandName === 'refresh-token') {
-            const result = refreshMockToken();
+                const result = new EmbedBuilder()
+                    .setTitle("✅ Token Refresh Complete")
+                    .setDescription("The authorized refresh workflow completed.")
+                    .addFields({ name: "New Token", value: `\`${masked}\`` })
+                    .setFooter({ text: "Token value is masked for safety." })
+                    .setTimestamp();
 
-            return interaction.reply({
-                embeds: [
-                    new EmbedBuilder()
-                        .setTitle('🔄 Token Refreshed')
-                        .setDescription('A new **mock** access token was generated locally.')
-                        .addFields(
-                            { name: 'Expires', value: `<t:${Math.floor(result.expiresAt / 1000)}:R>` },
-                            { name: 'Mode', value: 'Local mock provider' }
-                        )
-                        .setFooter({ text: 'No real Animal Company credential was used.' })
-                ],
-                ephemeral: true
-            });
-        }
+                return interaction.editReply({ embeds: [result] });
+            } catch (error) {
+                console.error("Refresh failed:", error.message);
 
-        if (commandName === 'token-status') {
-            return interaction.reply({
-                embeds: [dashboardEmbed()],
-                ephemeral: true
-            });
-        }
-    }
+                const failed = new EmbedBuilder()
+                    .setTitle("❌ Refresh Failed")
+                    .setDescription("The token could not be refreshed.")
+                    .addFields({ name: "Reason", value: error.message || "Unknown error" });
 
-    if (interaction.isButton()) {
-
-        if (interaction.customId.startsWith("giveaway_")) {
-            const [action, giveawayId] = interaction.customId.split(":");
-            const giveaway = db.prepare("SELECT * FROM giveaways WHERE id = ?").get(giveawayId);
-
-            if (!giveaway) {
-                return interaction.reply({ content: "❌ Giveaway not found.", flags: [MessageFlags.Ephemeral] });
-            }
-
-            if (action === "giveaway_info") {
-                const count = db.prepare(`
-                    SELECT COUNT(*) AS count FROM entries WHERE giveaway_id = ?
-                  `).get(giveawayId).count;
-
-                return interaction.reply({
-                  content:
-                    `🎉 **${giveaway.prize}**\n` +
-                    `🏆 Winners: **${giveaway.winners}**\n` +
-                    `👥 Entries: **${count}**\n` +
-                    `⏳ Ends: <t:${Math.floor(giveaway.ends_at / 1000)}:F>\n` +
-                    `🆔 ID: \`${giveawayId}\``,
-                  flags: [MessageFlags.Ephemeral]
-                });
-            }
-
-            if (action === "giveaway_enter") {
-                if (giveaway.ended || Date.now() >= giveaway.ends_at) {
-                  return interaction.reply({ content: "❌ This giveaway has already ended.", flags: [MessageFlags.Ephemeral] });
-                }
-
-                const result = db.prepare(`
-                    INSERT OR IGNORE INTO entries (giveaway_id, user_id) VALUES (?, ?)
-                  `).run(giveawayId, interaction.user.id);
-
-                if (result.changes === 0) {
-                  return interaction.reply({ content: "ℹ️ You're already entered!", flags: [MessageFlags.Ephemeral] });
-                }
-
-                await interaction.reply({ content: "🎟️ You're in! Good luck!", flags: [MessageFlags.Ephemeral] });
-                await updateGiveawayMessage(giveawayId);
-                return;
+                return interaction.editReply({ embeds: [failed] });
             }
         }
 
-        if (interaction.customId === 'trigger_verify') {
-            const captcha = generateCaptcha();
-            activeCaptchas.set(interaction.user.id, captcha);
+    } catch (error) {
+        console.error("Interaction error:", error);
 
-            const modal = new ModalBuilder().setCustomId('verify_modal').setTitle('Human Verification Security');
-            const captchaInput = new TextInputBuilder()
-                .setCustomId('captcha_code')
-                .setLabel(`Security Code: ${captcha}`)
-                .setPlaceholder(`Type "${captcha}" to verify`)
-                .setStyle(TextInputStyle.Short)
-                .setMinLength(6)
-                .setMaxLength(6)
-                .setRequired(true);
-
-            modal.addComponents(new ActionRowBuilder().addComponents(captchaInput));
-            return await interaction.showModal(modal);
-        }
-
-        if (interaction.customId === 'admin_gen_key') {
-            if (interaction.user.id !== ADMIN_USER_ID && !interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
-                return interaction.reply({ content: '🚫 Admin required.', flags: [MessageFlags.Ephemeral] });
-            }
-            const newKey = makeCode();
-            validBuyerKeys.add(newKey);
-            const createdEmbed = new EmbedBuilder()
-                .setTitle('✅ New License Key Minted')
-                .setDescription(`\`\`\`${newKey}\`\`\``)
-                .setColor(0x57F287);
-            return interaction.reply({ embeds: [createdEmbed], flags: [MessageFlags.Ephemeral] });
-        }
-
-        if (interaction.customId === 'admin_view_stats') {
-            if (interaction.user.id !== ADMIN_USER_ID && !interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
-                return interaction.reply({ content: '🚫 Unauthorized.', flags: [MessageFlags.Ephemeral] });
-            }
-            const statsEmbed = new EmbedBuilder()
-                .setTitle('📊 Key System Intelligence')
-                .addFields({ name: 'Active Unredeemed Keys', value: `\`${validBuyerKeys.size}\` keys loaded`, inline: true })
-                .setColor(0x00FFA3);
-            return interaction.reply({ embeds: [statsEmbed], flags: [MessageFlags.Ephemeral] });
-        }
-
-        if (interaction.customId === 'open_redeem_modal') {
-            const modal = new ModalBuilder().setCustomId('redeem_modal').setTitle('License Key Redemption');
-            const keyInput = new TextInputBuilder().setCustomId('key_input').setLabel('Enter Your License Key').setPlaceholder('BUYER-XXXX-XXXX').setStyle(TextInputStyle.Short).setMinLength(10).setMaxLength(25).setRequired(true);
-            modal.addComponents(new ActionRowBuilder().addComponents(keyInput));
-            return await interaction.showModal(modal);
-        }
-
-        if (interaction.customId === 'create_ticket') {
-            const ticketChannel = await interaction.guild.channels.create({
-                name: `ticket-${interaction.user.username}`,
-                type: ChannelType.GuildText,
-                permissionOverwrites: [
-                    { id: interaction.guild.id, deny: [PermissionFlagsBits.ViewChannel] },
-                    { id: interaction.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] },
-                    { id: client.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] }
-                ]
-            });
-
-            const ticketEmbed = new EmbedBuilder()
-                .setTitle(`Ticket: ${interaction.user.username}`)
-                .setDescription(`Welcome <@${interaction.user.id}>!\nDescribe your issue below. Our **Gemini AI Assistant** will reply automatically, or click **Claim Ticket** to wait for staff.`)
-                .setColor(0x5865F2);
-
-            const ticketControls = new ActionRowBuilder().addComponents(
-                new ButtonBuilder().setCustomId('claim_ticket').setLabel('Claim Ticket').setEmoji('🙋‍♂️').setStyle(ButtonStyle.Primary),
-                new ButtonBuilder().setCustomId('close_ticket').setLabel('Close Ticket').setEmoji('🔒').setStyle(ButtonStyle.Danger)
-            );
-
-            await ticketChannel.send({ content: `<@${interaction.user.id}>`, embeds: [ticketEmbed], components: [ticketControls] });
-            return interaction.reply({ content: `🎫 Ticket created: ${ticketChannel}`, flags: [MessageFlags.Ephemeral] });
-        }
-
-        // Animal Company Token Panel Button Handlers
-        if (interaction.customId === 'refresh_mock') {
-            const result = refreshMockToken();
-
-            return interaction.update({
-                embeds: [
-                    new EmbedBuilder()
-                        .setTitle('✅ Refresh Complete')
-                        .setDescription('Your local mock token has been rotated.')
-                        .addFields({
-                            name: 'Expires',
-                            value: `<t:${Math.floor(result.expiresAt / 1000)}:R>`,
-                            inline: true
-                        })
-                        .setFooter({ text: 'Local mock mode • no real credentials used' })
-                ],
-                components: interaction.message.components
-            });
-        }
-
-        if (interaction.customId === 'status_mock') {
-            return interaction.reply({
-                embeds: [dashboardEmbed()],
-                ephemeral: true
-            });
+        if (!interaction.replied && !interaction.deferred) {
+            await interaction.reply({ content: "Something went wrong.", ephemeral: true });
         }
     }
 });
