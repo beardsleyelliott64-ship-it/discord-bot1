@@ -14,7 +14,7 @@ const {
     ChannelType, ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder, 
     REST, Routes, ModalBuilder, TextInputBuilder, TextInputStyle 
 } = require('discord.js');
-const { GoogleGenAI } = require('@google/genai');
+const { GoogleGenerativeAI } = require('@google/generative-ai');
 
 // ---------------------- CONFIGURATION ----------------------
 const TOKEN = process.env.DISCORD_TOKEN;
