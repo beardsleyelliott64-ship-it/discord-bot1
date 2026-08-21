@@ -9,7 +9,7 @@ http.createServer((req, res) => {
     console.log(`Web server listening on port ${port}`);
 });
 
-require("dotenv").config();
+
 const crypto = require("node:crypto");
 
 const { 
