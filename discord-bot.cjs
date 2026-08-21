@@ -30,9 +30,9 @@ const VERIFY_CHANNEL_ID = '1540382318856765490'; // Target Verification Channel 
 const activeCaptchas = new Map();
 const validBuyerKeys = new Set(); 
 
-// Setup Gemini API using the stable package
+// Setup Gemini API using the stable package and current model
 const genAI = new GoogleGenerativeAI(GEMINI_KEY);
-const aiModel = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
+const aiModel = genAI.getGenerativeModel({ model: 'gemini-3.7-flash' });
 // Setup Discord Client
 const client = new Client({
     intents: [
