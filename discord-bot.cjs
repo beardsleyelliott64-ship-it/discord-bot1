@@ -32,7 +32,7 @@ const validBuyerKeys = new Set();
 
 // Setup Gemini API using the stable package
 const genAI = new GoogleGenerativeAI(GEMINI_KEY);
-const aiModel = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
+const aiModel = genAI.getGenerativeModel({ model: 'gemini-3.5-flash' });
 
 // Setup Discord Client
 const client = new Client({
