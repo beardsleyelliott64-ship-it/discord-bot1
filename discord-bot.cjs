@@ -24,7 +24,7 @@ http.createServer((req, res) => {
   console.log(`Web server listening on port ${port}`);
 });
 
-// 2. Client Initialization with Intents
+// 2. Client Initialization
 const client = new Client({ 
   intents: [
     GatewayIntentBits.Guilds,
@@ -44,9 +44,8 @@ function generateBuyerCode() {
   return `BUYER-${seg1}-${seg2}`;
 }
 
-// 3. Command Definitions
+// 3. Command Definitions (ONLY requested commands retained)
 const commands = [
-  // --- EXISTING CORE COMMANDS ---
   new SlashCommandBuilder()
     .setName('setup-verify')
     .setDescription('Posts server verification gate panel')
@@ -64,21 +63,15 @@ const commands = [
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageRoles)
     .addRoleOption(opt => opt.setName('role').setDescription('Role to grant').setRequired(true)),
 
-  // --- HELPFUL UTILITY COMMANDS ---
   new SlashCommandBuilder()
     .setName('ping')
     .setDescription('Check bot response speed'),
-
-  new SlashCommandBuilder()
-    .setName('serverinfo')
-    .setDescription('Display information about this server'),
 
   new SlashCommandBuilder()
     .setName('userinfo')
     .setDescription('Get information about a user')
     .addUserOption(opt => opt.setName('target').setDescription('User to check').setRequired(false)),
 
-  // --- SAFE MODERATION COMMANDS ---
   new SlashCommandBuilder()
     .setName('kick')
     .setDescription('Kick a member from the server')
@@ -100,13 +93,14 @@ const commands = [
     .addIntegerOption(opt => opt.setName('amount').setDescription('Number of messages (1-100)').setMinValue(1).setMaxValue(100).setRequired(true))
 ].map(cmd => cmd.toJSON());
 
-// 4. Register Commands on Ready
+// 4. Overwrite Slash Commands on Startup
 client.once('clientReady', async () => {
   console.log(`Bot logged in as ${client.user.tag}`);
   const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
   try {
+    // Sending this array overwrites all global commands, wiping out any unlisted ones
     await rest.put(Routes.applicationCommands(client.user.id), { body: commands });
-    console.log('All commands registered successfully!');
+    console.log('Commands successfully updated!');
   } catch (err) {
     console.error('Registration failed:', err);
   }
@@ -127,13 +121,12 @@ client.on('guildMemberAdd', async member => {
   }
 });
 
-// 6. Unified Interaction Listener
+// 6. Command & Button Handlers
 client.on('interactionCreate', async interaction => {
   
   if (interaction.isChatInputCommand()) {
     const { commandName } = interaction;
 
-    // --- /setup-verify ---
     if (commandName === 'setup-verify') {
       const verifyRole = interaction.options.getRole('role');
       verificationRoles.set(interaction.guildId, verifyRole.id);
@@ -162,7 +155,6 @@ client.on('interactionCreate', async interaction => {
       await interaction.channel.send({ embeds: [embed], components: [row] });
     }
 
-    // --- /setup-redeem ---
     if (commandName === 'setup-redeem') {
       const embed = new EmbedBuilder()
         .setTitle('🎁 Buyer Role Verification')
@@ -187,7 +179,6 @@ client.on('interactionCreate', async interaction => {
       await interaction.channel.send({ embeds: [embed], components: [row] });
     }
 
-    // --- /generate-code ---
     if (commandName === 'generate-code') {
       const targetRole = interaction.options.getRole('role');
       const newCode = generateBuyerCode();
@@ -204,28 +195,10 @@ client.on('interactionCreate', async interaction => {
       await interaction.reply({ embeds: [genEmbed], ephemeral: true });
     }
 
-    // --- /ping ---
     if (commandName === 'ping') {
       await interaction.reply({ content: `🏓 Pong! Latency: \`${client.ws.ping}ms\``, ephemeral: true });
     }
 
-    // --- /serverinfo ---
-    if (commandName === 'serverinfo') {
-      const { guild } = interaction;
-      const embed = new EmbedBuilder()
-        .setTitle(`📊 Server Info - ${guild.name}`)
-        .setThumbnail(guild.iconURL({ dynamic: true }))
-        .addFields(
-          { name: 'Server ID', value: guild.id, inline: true },
-          { name: 'Total Members', value: `${guild.memberCount}`, inline: true },
-          { name: 'Created On', value: `<t:${Math.floor(guild.createdTimestamp / 1000)}:D>`, inline: true }
-        )
-        .setColor(0x5865F2);
-
-      await interaction.reply({ embeds: [embed] });
-    }
-
-    // --- /userinfo ---
     if (commandName === 'userinfo') {
       const targetUser = interaction.options.getUser('target') || interaction.user;
       const member = interaction.guild.members.cache.get(targetUser.id);
@@ -242,31 +215,28 @@ client.on('interactionCreate', async interaction => {
       await interaction.reply({ embeds: [embed] });
     }
 
-    // --- /kick ---
     if (commandName === 'kick') {
       const target = interaction.options.getMember('target');
       const reason = interaction.options.getString('reason') || 'No reason provided';
 
       if (!target) return interaction.reply({ content: '❌ User not found in this server.', ephemeral: true });
-      if (!target.kickable) return interaction.reply({ content: '❌ I cannot kick this user (check role hierarchy).', ephemeral: true });
+      if (!target.kickable) return interaction.reply({ content: '❌ I cannot kick this user.', ephemeral: true });
 
       await target.kick(reason);
       await interaction.reply({ content: `✅ Kicked **${target.user.tag}** | Reason: ${reason}` });
     }
 
-    // --- /ban ---
     if (commandName === 'ban') {
       const target = interaction.options.getMember('target');
       const reason = interaction.options.getString('reason') || 'No reason provided';
 
       if (!target) return interaction.reply({ content: '❌ User not found in this server.', ephemeral: true });
-      if (!target.bannable) return interaction.reply({ content: '❌ I cannot ban this user (check role hierarchy).', ephemeral: true });
+      if (!target.bannable) return interaction.reply({ content: '❌ I cannot ban this user.', ephemeral: true });
 
       await target.ban({ reason });
       await interaction.reply({ content: `🔨 Banned **${target.user.tag}** | Reason: ${reason}` });
     }
 
-    // --- /purge ---
     if (commandName === 'purge') {
       const amount = interaction.options.getInteger('amount');
       await interaction.channel.bulkDelete(amount, true);
@@ -318,7 +288,7 @@ client.on('interactionCreate', async interaction => {
     activeCaptchas.delete(interaction.user.id);
 
     if (!expectedCaptcha || enteredCaptcha !== expectedCaptcha) {
-      return interaction.reply({ content: '❌ Incorrect verification code. Click the button and try again.', ephemeral: true });
+      return interaction.reply({ content: '❌ Incorrect verification code.', ephemeral: true });
     }
 
     const roleId = verificationRoles.get(interaction.guildId);
@@ -328,12 +298,12 @@ client.on('interactionCreate', async interaction => {
 
     try {
       const role = interaction.guild.roles.cache.get(roleId);
-      if (!role) return interaction.reply({ content: '⚠️ The verification role no longer exists.', ephemeral: true });
+      if (!role) return interaction.reply({ content: '⚠️ Verification role no longer exists.', ephemeral: true });
 
       await interaction.member.roles.add(role);
-      await interaction.reply({ content: '✅ You have successfully verified and unlocked server access!', ephemeral: true });
+      await interaction.reply({ content: '✅ You have successfully verified and unlocked access!', ephemeral: true });
     } catch (err) {
-      await interaction.reply({ content: '⚠️ Bot failed to grant role. Check role hierarchy permissions.', ephemeral: true });
+      await interaction.reply({ content: '⚠️ Bot failed to grant role.', ephemeral: true });
     }
   }
 
@@ -357,7 +327,7 @@ client.on('interactionCreate', async interaction => {
 
       await interaction.reply({ content: `🎉 Verified! Received the ${role} role.`, ephemeral: true });
     } catch (err) {
-      await interaction.reply({ content: '⚠️ Failed to add role. Check bot role hierarchy.', ephemeral: true });
+      await interaction.reply({ content: '⚠️ Failed to add role.', ephemeral: true });
     }
   }
 });
