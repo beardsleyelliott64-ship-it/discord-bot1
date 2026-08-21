@@ -26,8 +26,11 @@ const client = new Client({
   ]
 });
 
-// Initialize Gemini API
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+// Initialize Gemini API Client safely
+let ai = null;
+if (process.env.GEMINI_API_KEY) {
+  ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+}
 
 // Authorized User ID Constant
 const AUTHORIZED_USER_ID = '1363240484818128926';
@@ -138,168 +141,178 @@ client.once(Events.ClientReady, async (c) => {
     );
     console.log('Successfully reloaded application (/) commands.');
   } catch (error) {
-    console.error(error);
+    console.error('Failed to register slash commands:', error);
   }
 });
 
 // Interaction Handling
 client.on(Events.InteractionCreate, async (interaction) => {
-  // 1. Slash Commands
-  if (interaction.isChatInputCommand()) {
-    if (interaction.user.id !== AUTHORIZED_USER_ID) {
-      return interaction.reply({
-        content: '❌ You do not have permission to run this command.',
-        ephemeral: true
-      });
-    }
+  try {
+    // 1. Slash Commands
+    if (interaction.isChatInputCommand()) {
+      if (interaction.user.id !== AUTHORIZED_USER_ID) {
+        return interaction.reply({
+          content: '❌ You do not have permission to run this command.',
+          ephemeral: true
+        });
+      }
 
-    const { commandName } = interaction;
+      const { commandName } = interaction;
 
-    if (commandName === 'setup-verify') {
-      await interaction.reply({ content: 'Creating verification panel...', ephemeral: true });
-      await interaction.channel.send({ embeds: [createVerifyEmbed()], components: [createVerifyRow()] });
-    }
+      if (commandName === 'setup-verify') {
+        await interaction.reply({ content: 'Creating verification panel...', ephemeral: true });
+        await interaction.channel.send({ embeds: [createVerifyEmbed()], components: [createVerifyRow()] });
+      }
 
-    if (commandName === 'setup-redeem') {
-      await interaction.reply({ content: 'Creating buyer panel...', ephemeral: true });
-      await interaction.channel.send({ embeds: [createRedeemEmbed()], components: [createRedeemRow()] });
-    }
+      if (commandName === 'setup-redeem') {
+        await interaction.reply({ content: 'Creating buyer panel...', ephemeral: true });
+        await interaction.channel.send({ embeds: [createRedeemEmbed()], components: [createRedeemRow()] });
+      }
 
-    if (commandName === 'setup-ticket') {
-      await interaction.reply({ content: 'Creating ticket panel...', ephemeral: true });
-      await interaction.channel.send({ embeds: [createTicketEmbed()], components: [createTicketRow()] });
-    }
+      if (commandName === 'setup-ticket') {
+        await interaction.reply({ content: 'Creating ticket panel...', ephemeral: true });
+        await interaction.channel.send({ embeds: [createTicketEmbed()], components: [createTicketRow()] });
+      }
 
-    if (commandName === 'nuke-and-rebuild') {
-      const keepChannelIds = [
-        '1540060774800564294',
-        '1539797201876689006',
-        '1539797202908749964',
-        '1539797203902668820'
-      ];
+      if (commandName === 'nuke-and-rebuild') {
+        const keepChannelIds = [
+          '1540060774800564294',
+          '1539797201876689006',
+          '1539797202908749964',
+          '1539797203902668820'
+        ];
 
-      await interaction.reply({ content: '⚙️ Starting server cleanup and channel setup...', ephemeral: true });
+        await interaction.reply({ content: '⚙️ Starting server cleanup and channel setup...', ephemeral: true });
 
-      const guild = interaction.guild;
-      const allChannels = await guild.channels.fetch();
+        const guild = interaction.guild;
+        const allChannels = await guild.channels.fetch();
 
-      // Delete unprotected channels
-      for (const [id, channel] of allChannels) {
-        if (channel && !keepChannelIds.includes(id)) {
-          try {
-            await channel.delete('Nuke and Rebuild Command');
-          } catch (err) {
-            console.error(`Failed to delete channel ${id}:`, err);
+        // Delete unprotected channels
+        for (const [id, channel] of allChannels) {
+          if (channel && !keepChannelIds.includes(id)) {
+            try {
+              await channel.delete('Nuke and Rebuild Command');
+            } catch (err) {
+              console.error(`Failed to delete channel ${id}:`, err);
+            }
           }
         }
+
+        // Rebuild structure
+        const infoCat = await guild.channels.create({ name: '📌 Information', type: ChannelType.GuildCategory });
+        await guild.channels.create({ name: 'rules', type: ChannelType.GuildText, parent: infoCat.id });
+        await guild.channels.create({ name: 'announcements', type: ChannelType.GuildText, parent: infoCat.id });
+
+        const textCat = await guild.channels.create({ name: '💬 Text Channels', type: ChannelType.GuildCategory });
+        await guild.channels.create({ name: 'general', type: ChannelType.GuildText, parent: textCat.id });
+        await guild.channels.create({ name: 'bot-commands', type: ChannelType.GuildText, parent: textCat.id });
+        await guild.channels.create({ name: 'memes', type: ChannelType.GuildText, parent: textCat.id });
+
+        const gamingCat = await guild.channels.create({ name: '🎮 Gaming', type: ChannelType.GuildCategory });
+        await guild.channels.create({ name: 'gaming-chat', type: ChannelType.GuildText, parent: gamingCat.id });
+        await guild.channels.create({ name: 'clips-and-highlights', type: ChannelType.GuildText, parent: gamingCat.id });
+        await guild.channels.create({ name: 'looking-for-group', type: ChannelType.GuildText, parent: gamingCat.id });
+
+        const voiceCat = await guild.channels.create({ name: '🔊 Voice Channels', type: ChannelType.GuildCategory });
+        await guild.channels.create({ name: 'General VC', type: ChannelType.GuildVoice, parent: voiceCat.id });
+        await guild.channels.create({ name: 'Gaming Lounge 1', type: ChannelType.GuildVoice, parent: voiceCat.id });
+        await guild.channels.create({ name: 'Gaming Lounge 2', type: ChannelType.GuildVoice, parent: voiceCat.id });
+
+        await interaction.followUp({ content: '✅ Server setup complete! Protected channels were kept.', ephemeral: true });
+      }
+    }
+
+    // 2. Button Handlers
+    if (interaction.isButton()) {
+      if (interaction.customId === 'open_verify_modal') {
+        const captchaText = Math.random().toString(36).substring(2, 8).toUpperCase();
+        activeCaptchas.set(interaction.user.id, captchaText);
+
+        const modal = new ModalBuilder().setCustomId('verify_modal').setTitle(`Verification Code: ${captchaText}`);
+        const input = new TextInputBuilder().setCustomId('captcha_input').setLabel(`Type exact code: ${captchaText}`).setStyle(TextInputStyle.Short).setRequired(true);
+        modal.addComponents(new ActionRowBuilder().addComponents(input));
+        await interaction.showModal(modal);
       }
 
-      // Rebuild structure
-      const infoCat = await guild.channels.create({ name: '📌 Information', type: ChannelType.GuildCategory });
-      await guild.channels.create({ name: 'rules', type: ChannelType.GuildText, parent: infoCat.id });
-      await guild.channels.create({ name: 'announcements', type: ChannelType.GuildText, parent: infoCat.id });
-
-      const textCat = await guild.channels.create({ name: '💬 Text Channels', type: ChannelType.GuildCategory });
-      await guild.channels.create({ name: 'general', type: ChannelType.GuildText, parent: textCat.id });
-      await guild.channels.create({ name: 'bot-commands', type: ChannelType.GuildText, parent: textCat.id });
-      await guild.channels.create({ name: 'memes', type: ChannelType.GuildText, parent: textCat.id });
-
-      const gamingCat = await guild.channels.create({ name: '🎮 Gaming', type: ChannelType.GuildCategory });
-      await guild.channels.create({ name: 'gaming-chat', type: ChannelType.GuildText, parent: gamingCat.id });
-      await guild.channels.create({ name: 'clips-and-highlights', type: ChannelType.GuildText, parent: gamingCat.id });
-      await guild.channels.create({ name: 'looking-for-group', type: ChannelType.GuildText, parent: gamingCat.id });
-
-      const voiceCat = await guild.channels.create({ name: '🔊 Voice Channels', type: ChannelType.GuildCategory });
-      await guild.channels.create({ name: 'General VC', type: ChannelType.GuildVoice, parent: voiceCat.id });
-      await guild.channels.create({ name: 'Gaming Lounge 1', type: ChannelType.GuildVoice, parent: voiceCat.id });
-      await guild.channels.create({ name: 'Gaming Lounge 2', type: ChannelType.GuildVoice, parent: voiceCat.id });
-
-      await interaction.followUp({ content: '✅ Server setup complete! Protected channels were kept.', ephemeral: true });
-    }
-  }
-
-  // 2. Button Handlers
-  if (interaction.isButton()) {
-    if (interaction.customId === 'open_verify_modal') {
-      const captchaText = Math.random().toString(36).substring(2, 8).toUpperCase();
-      activeCaptchas.set(interaction.user.id, captchaText);
-
-      const modal = new ModalBuilder().setCustomId('verify_modal').setTitle(`Verification Code: ${captchaText}`);
-      const input = new TextInputBuilder().setCustomId('captcha_input').setLabel(`Type exact code: ${captchaText}`).setStyle(TextInputStyle.Short).setRequired(true);
-      modal.addComponents(new ActionRowBuilder().addComponents(input));
-      await interaction.showModal(modal);
-    }
-
-    if (interaction.customId === 'open_redeem_modal') {
-      const modal = new ModalBuilder().setCustomId('redeem_code_modal').setTitle('Redeem Buyer Code');
-      const input = new TextInputBuilder().setCustomId('buyer_code_input').setLabel('Enter key (BUYER-XXXX-XXXX)').setStyle(TextInputStyle.Short).setRequired(true);
-      modal.addComponents(new ActionRowBuilder().addComponents(input));
-      await interaction.showModal(modal);
-    }
-
-    if (interaction.customId === 'open_ticket') {
-      const ticketChannel = await interaction.guild.channels.create({
-        name: `ticket-${interaction.user.username}`,
-        type: ChannelType.GuildText,
-        permissionOverwrites: [
-          { id: interaction.guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel] },
-          { id: interaction.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] },
-        ],
-      });
-
-      // Track active ticket with a reply count starting at 0
-      activeTickets.set(ticketChannel.id, { userId: interaction.user.id, replyCount: 0 });
-
-      await ticketChannel.send({
-        content: `Welcome <@${interaction.user.id}>! I am your AI Support Assistant. Ask me anything below.\n*(AI responses remaining: 35/35)*`,
-        components: [createCloseTicketRow()]
-      });
-
-      await interaction.reply({ content: `✅ Created ticket channel: ${ticketChannel}`, ephemeral: true });
-    }
-
-    if (interaction.customId === 'close_ticket') {
-      await interaction.reply({ content: '🔒 Closing ticket channel in 5 seconds...' });
-      activeTickets.delete(interaction.channelId);
-      setTimeout(() => {
-        interaction.channel.delete().catch(() => {});
-      }, 5000);
-    }
-  }
-
-  // 3. Modal Submissions
-  if (interaction.isModalSubmit()) {
-    if (interaction.customId === 'verify_modal') {
-      const enteredCaptcha = interaction.fields.getTextInputValue('captcha_input').trim().toUpperCase();
-      const expectedCaptcha = activeCaptchas.get(interaction.user.id);
-      activeCaptchas.delete(interaction.user.id);
-
-      if (!expectedCaptcha || enteredCaptcha !== expectedCaptcha) {
-        return interaction.reply({ content: '❌ Incorrect verification code.', ephemeral: true });
+      if (interaction.customId === 'open_redeem_modal') {
+        const modal = new ModalBuilder().setCustomId('redeem_code_modal').setTitle('Redeem Buyer Code');
+        const input = new TextInputBuilder().setCustomId('buyer_code_input').setLabel('Enter key (BUYER-XXXX-XXXX)').setStyle(TextInputStyle.Short).setRequired(true);
+        modal.addComponents(new ActionRowBuilder().addComponents(input));
+        await interaction.showModal(modal);
       }
 
-      const roleId = verificationRoles.get(interaction.guildId);
-      if (roleId) {
-        const role = interaction.guild.roles.cache.get(roleId);
-        if (role) await interaction.member.roles.add(role);
+      if (interaction.customId === 'open_ticket') {
+        await interaction.deferReply({ ephemeral: true });
+
+        const ticketChannel = await interaction.guild.channels.create({
+          name: `ticket-${interaction.user.username}`,
+          type: ChannelType.GuildText,
+          permissionOverwrites: [
+            { id: interaction.guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel] },
+            { id: interaction.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] },
+          ],
+        });
+
+        activeTickets.set(ticketChannel.id, { userId: interaction.user.id, replyCount: 0 });
+
+        await ticketChannel.send({
+          content: `Welcome <@${interaction.user.id}>! I am your AI Support Assistant. Ask me anything below.\n*(AI replies remaining: 35/35)*`,
+          components: [createCloseTicketRow()]
+        });
+
+        await interaction.editReply({ content: `✅ Created ticket channel: ${ticketChannel}` });
       }
-      await interaction.reply({ content: '✅ Verified!', ephemeral: true });
+
+      if (interaction.customId === 'close_ticket') {
+        await interaction.reply({ content: '🔒 Closing ticket channel in 5 seconds...' });
+        activeTickets.delete(interaction.channelId);
+        setTimeout(() => {
+          interaction.channel.delete().catch(() => {});
+        }, 5000);
+      }
     }
 
-    if (interaction.customId === 'redeem_code_modal') {
-      const enteredCode = interaction.fields.getTextInputValue('buyer_code_input').trim();
-      const codeData = validCodes.get(enteredCode);
+    // 3. Modal Submissions
+    if (interaction.isModalSubmit()) {
+      if (interaction.customId === 'verify_modal') {
+        const enteredCaptcha = interaction.fields.getTextInputValue('captcha_input').trim().toUpperCase();
+        const expectedCaptcha = activeCaptchas.get(interaction.user.id);
+        activeCaptchas.delete(interaction.user.id);
 
-      if (!codeData) return interaction.reply({ content: '❌ Invalid code.', ephemeral: true });
-      if (codeData.claimedBy) return interaction.reply({ content: '❌ Code already claimed.', ephemeral: true });
+        if (!expectedCaptcha || enteredCaptcha !== expectedCaptcha) {
+          return interaction.reply({ content: '❌ Incorrect verification code.', ephemeral: true });
+        }
 
-      codeData.claimedBy = interaction.user.id;
-      await interaction.reply({ content: '✅ Code redeemed successfully!', ephemeral: true });
+        const roleId = verificationRoles.get(interaction.guildId);
+        if (roleId) {
+          const role = interaction.guild.roles.cache.get(roleId);
+          if (role) await interaction.member.roles.add(role);
+        }
+        await interaction.reply({ content: '✅ Verified!', ephemeral: true });
+      }
+
+      if (interaction.customId === 'redeem_code_modal') {
+        const enteredCode = interaction.fields.getTextInputValue('buyer_code_input').trim();
+        const codeData = validCodes.get(enteredCode);
+
+        if (!codeData) return interaction.reply({ content: '❌ Invalid code.', ephemeral: true });
+        if (codeData.claimedBy) return interaction.reply({ content: '❌ Code already claimed.', ephemeral: true });
+
+        codeData.claimedBy = interaction.user.id;
+        await interaction.reply({ content: '✅ Code redeemed successfully!', ephemeral: true });
+      }
+    }
+  } catch (err) {
+    console.error('Interaction Error:', err);
+    if (interaction.deferred || interaction.replied) {
+      await interaction.followUp({ content: '⚠️ An error occurred executing this action.', ephemeral: true }).catch(() => {});
+    } else {
+      await interaction.reply({ content: '⚠️ An error occurred executing this action.', ephemeral: true }).catch(() => {});
     }
   }
 });
 
-// 4. AI Message Listener
+// 4. AI Support Ticket Listener
 client.on(Events.MessageCreate, async (message) => {
   if (message.author.bot) return;
 
@@ -308,6 +321,10 @@ client.on(Events.MessageCreate, async (message) => {
 
   if (ticketData.replyCount >= 35) {
     return message.reply('⚠️ Limit of 35 AI replies reached for this ticket. A human staff member will assist shortly.');
+  }
+
+  if (!ai) {
+    return message.reply('⚠️ AI service is missing GEMINI_API_KEY environment variable.');
   }
 
   try {
@@ -327,7 +344,7 @@ client.on(Events.MessageCreate, async (message) => {
     await message.reply(`${response.text}\n\n*🤖 AI replies remaining: ${remaining}/35*`);
   } catch (err) {
     console.error('Gemini AI Error:', err);
-    await message.reply('⚠️ Error generating AI response.');
+    await message.reply('⚠️ Error generating AI response. Check bot console or GEMINI_API_KEY.');
   }
 });
 
