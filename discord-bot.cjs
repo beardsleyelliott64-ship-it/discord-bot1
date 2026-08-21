@@ -22,8 +22,10 @@ const GEMINI_KEY = process.env.GEMINI_API_KEY;
 const CLIENT_ID = process.env.CLIENT_ID;
 const ADMIN_USER_ID = process.env.YOUR_DISCORD_USER_ID;
 const BUYER_ROLE_ID = '1539706476871032922'; // Target Buyer Role ID
+const VERIFY_CHANNEL_ID = '1540382318856765490'; // Target Verification Channel ID
 
-// In-memory key database
+// Temporary storage for active verification captchas and valid buyer keys
+const activeCaptchas = new Map();
 const validBuyerKeys = new Set(); 
 
 // Setup Gemini API
@@ -47,6 +49,11 @@ function createBuyerCode(prefix = 'BUYER') {
         randStr += chars.charAt(Math.floor(Math.random() * chars.length));
     }
     return `${prefix}-${randStr.slice(0, 4)}-${randStr.slice(4)}`;
+}
+
+// Helper: Captcha Code Generator
+function generateCaptcha() {
+    return Math.random().toString(36).substring(2, 8).toUpperCase();
 }
 
 // ---------------------- ALL COMMAND DEFINITIONS ----------------------
@@ -116,6 +123,48 @@ client.once('ready', async () => {
         console.log('Successfully registered all slash commands.');
     } catch (error) {
         console.error('Error registering commands:', error);
+    }
+
+    // Auto-Deploy Verification Panel to channel ID 1540382318856765490
+    try {
+        const verifyChannel = await client.channels.fetch(VERIFY_CHANNEL_ID);
+        if (verifyChannel && verifyChannel.isTextBased()) {
+            // Clean up previous bot messages in channel
+            const messages = await verifyChannel.messages.fetch({ limit: 10 });
+            const botMessages = messages.filter(m => m.author.id === client.user.id);
+            if (botMessages.size > 0) {
+                await verifyChannel.bulkDelete(botMessages);
+            }
+
+            const verifyEmbed = new EmbedBuilder()
+                .setTitle('🛡️ Security Portal & Access Verification')
+                .setDescription(
+                    'Welcome! To prevent automated bot raids and access server channels, you must complete standard identity verification.\n\n' +
+                    '**Instructions:**\n' +
+                    '1. Click the **Verify Access** button below.\n' +
+                    '2. Type the generated security code into the pop-up box.\n' +
+                    '3. Gain immediate access to the community!'
+                )
+                .addFields(
+                    { name: '🔒 Encryption Status', value: '`AES-256 Verified`', inline: true },
+                    { name: '🤖 Protection System', value: '`Anti-Raid Active`', inline: true }
+                )
+                .setColor(0x5865F2)
+                .setFooter({ text: 'Automated Gatekeeper System • Secure Connection' });
+
+            const verifyRow = new ActionRowBuilder().addComponents(
+                new ButtonBuilder()
+                    .setCustomId('trigger_verify')
+                    .setLabel('Verify Access')
+                    .setEmoji('🛡️')
+                    .setStyle(ButtonStyle.Success)
+            );
+
+            await verifyChannel.send({ embeds: [verifyEmbed], components: [verifyRow] });
+            console.log('Verification panel automatically posted in channel ID 1540382318856765490.');
+        }
+    } catch (err) {
+        console.error('Error deploying automatic verification panel:', err);
     }
 });
 
@@ -235,7 +284,6 @@ client.on('interactionCreate', async (interaction) => {
             if (validBuyerKeys.has(inputCode)) {
                 validBuyerKeys.delete(inputCode);
                 
-                // Assign Buyer Role by ID
                 const buyerRole = interaction.guild.roles.cache.get(BUYER_ROLE_ID);
                 if (buyerRole) await interaction.member.roles.add(buyerRole);
 
@@ -295,6 +343,29 @@ client.on('interactionCreate', async (interaction) => {
 
     // 2. Button Interactions
     if (interaction.isButton()) {
+
+        // Verification Button Clicked
+        if (interaction.customId === 'trigger_verify') {
+            const captcha = generateCaptcha();
+            activeCaptchas.set(interaction.user.id, captcha);
+
+            const modal = new ModalBuilder()
+                .setCustomId('verify_modal')
+                .setTitle('Human Verification Security');
+
+            const captchaInput = new TextInputBuilder()
+                .setCustomId('captcha_code')
+                .setLabel(`Security Code: ${captcha}`)
+                .setPlaceholder(`Type "${captcha}" to verify`)
+                .setStyle(TextInputStyle.Short)
+                .setMinLength(6)
+                .setMaxLength(6)
+                .setRequired(true);
+
+            modal.addComponents(new ActionRowBuilder().addComponents(captchaInput));
+            return await interaction.showModal(modal);
+        }
+
         // Admin: Mint Key Modal Trigger
         if (interaction.customId === 'admin_gen_key') {
             if (interaction.user.id !== ADMIN_USER_ID && !interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
@@ -368,6 +439,34 @@ client.on('interactionCreate', async (interaction) => {
 
     // 3. Modal Form Submissions
     if (interaction.isModalSubmit()) {
+
+        // Handle Verification Modal Submission
+        if (interaction.customId === 'verify_modal') {
+            const inputCaptcha = interaction.fields.getTextInputValue('captcha_code').toUpperCase().trim();
+            const expectedCaptcha = activeCaptchas.get(interaction.user.id);
+
+            if (expectedCaptcha && inputCaptcha === expectedCaptcha) {
+                activeCaptchas.delete(interaction.user.id);
+
+                // Add verified status/role if present, or grant access
+                const verifiedEmbed = new EmbedBuilder()
+                    .setTitle('✅ Verification Successful')
+                    .setDescription('Your identity has been confirmed! You now have full access to the server.')
+                    .setColor(0x57F287);
+
+                return interaction.reply({ embeds: [verifiedEmbed], ephemeral: true });
+            } else {
+                activeCaptchas.delete(interaction.user.id);
+
+                const failEmbed = new EmbedBuilder()
+                    .setTitle('❌ Verification Failed')
+                    .setDescription('The security code entered was incorrect. Please click the verify button to try again.')
+                    .setColor(0xED4245);
+
+                return interaction.reply({ embeds: [failEmbed], ephemeral: true });
+            }
+        }
+
         // Handle Admin Key Creation
         if (interaction.customId === 'gen_key_modal') {
             const prefix = interaction.fields.getTextInputValue('key_prefix').toUpperCase().trim() || 'BUYER';
