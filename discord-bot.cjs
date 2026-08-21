@@ -8,17 +8,17 @@ http.createServer((req, res) => {
 }).listen(port, () => {
     console.log(`Web server listening on port ${port}`);
 });
+
 const { Client, GatewayIntentBits, SlashCommandBuilder, PermissionFlagsBits, ChannelType, ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder, REST, Routes } = require('discord.js');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
-const crypto = require('crypto');
 
 // ---------------------- CONFIGURATION ----------------------
 const TOKEN = process.env.DISCORD_TOKEN;
 const GEMINI_KEY = process.env.GEMINI_API_KEY;
-const CLIENT_ID = process.env.CLIENT_ID; // Your Discord Bot Client ID
-const ADMIN_USER_ID = 'YOUR_DISCORD_USER_ID'; // Replace with your exact User ID for override
+const CLIENT_ID = process.env.CLIENT_ID;
+const ADMIN_USER_ID = process.env.YOUR_DISCORD_USER_ID; // Updated to match your Render variable name
 
-// In-memory key database (Use a persistent database like MongoDB/SQLite for production)
+// In-memory key database
 const validBuyerKeys = new Set(); 
 
 // Setup Gemini API
@@ -55,8 +55,8 @@ const commands = [
 
 // Helper: Generate Key
 function createBuyerCode() {
-    const p1 = Math.floor(1000 + Math.random() * 9000); // 4 digits
-    const p2 = Math.floor(1000 + Math.random() * 9000); // 4 digits
+    const p1 = Math.floor(1000 + Math.random() * 9000);
+    const p2 = Math.floor(1000 + Math.random() * 9000);
     return `buyer-${p1}-${p2}`;
 }
 
@@ -64,7 +64,6 @@ function createBuyerCode() {
 client.once('ready', async () => {
     console.log(`Logged in as ${client.user.tag}!`);
 
-    // Register Slash Commands
     const rest = new REST({ version: '10' }).setToken(TOKEN);
     try {
         await rest.put(Routes.applicationCommands(CLIENT_ID), { body: commands });
@@ -76,7 +75,6 @@ client.once('ready', async () => {
 
 // ---------------------- INTERACTION HANDLER ----------------------
 client.on('interactionCreate', async (interaction) => {
-    // 1. Slash Command Handling
     if (interaction.isChatInputCommand()) {
         const { commandName } = interaction;
 
@@ -94,12 +92,7 @@ client.on('interactionCreate', async (interaction) => {
         if (commandName === 'redeem') {
             const inputCode = interaction.options.getString('code').trim();
             if (validBuyerKeys.has(inputCode)) {
-                validBuyerKeys.delete(inputCode); // Consume the key
-                
-                // Add your Buyer Role logic here:
-                // const buyerRole = interaction.guild.roles.cache.find(r => r.name === 'Buyer');
-                // if (buyerRole) await interaction.member.roles.add(buyerRole);
-
+                validBuyerKeys.delete(inputCode);
                 return interaction.reply({ content: `Success! \`${inputCode}\` redeemed. Welcome, Buyer!`, ephemeral: true });
             } else {
                 return interaction.reply({ content: 'Invalid or already redeemed key.', ephemeral: true });
@@ -135,7 +128,6 @@ client.on('interactionCreate', async (interaction) => {
 
             await interaction.reply({ content: 'Nuking channel...' });
             
-            // Clone channel and place it in the same spot
             const newChannel = await currentChannel.clone();
             await currentChannel.delete();
             await newChannel.setPosition(position);
@@ -144,7 +136,6 @@ client.on('interactionCreate', async (interaction) => {
         }
     }
 
-    // 2. Button Click Handling (Ticket Creation)
     if (interaction.isButton()) {
         if (interaction.customId === 'create_ticket') {
             const ticketChannel = await interaction.guild.channels.create({
@@ -167,14 +158,12 @@ client.on('interactionCreate', async (interaction) => {
 client.on('messageCreate', async (message) => {
     if (message.author.bot) return;
 
-    // Process messages inside active ticket channels
     if (message.channel.name.startsWith('ticket-')) {
         try {
             await message.channel.sendTyping();
             const result = await aiModel.generateContent(message.content);
             const responseText = result.response.text();
 
-            // Truncate response if it exceeds Discord's max limit
             const reply = responseText.length > 2000 ? responseText.slice(0, 1997) + '...' : responseText;
             await message.reply(reply);
         } catch (err) {
