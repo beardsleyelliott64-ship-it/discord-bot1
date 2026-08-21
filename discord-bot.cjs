@@ -25,6 +25,9 @@ const client = new Client({
   ]
 });
 
+// Updated Authorized User ID
+const AUTHORIZED_USER_ID = '1363240484818128926';
+
 // Memory Stores
 const validCodes = new Map();
 const activeCaptchas = new Map();
@@ -134,6 +137,14 @@ client.once(Events.ClientReady, async (c) => {
 client.on(Events.InteractionCreate, async (interaction) => {
   // 1. Slash Commands
   if (interaction.isChatInputCommand()) {
+    // Restrict commands exclusively to user ID 1363240484818128926
+    if (interaction.user.id !== AUTHORIZED_USER_ID) {
+      return interaction.reply({
+        content: '❌ You do not have permission to run this command.',
+        ephemeral: true
+      });
+    }
+
     const { commandName } = interaction;
 
     if (commandName === 'setup-verify') {
