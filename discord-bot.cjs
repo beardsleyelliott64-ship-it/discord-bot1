@@ -68,7 +68,7 @@ function createRedeemEmbed() {
 function createTicketEmbed() {
   return new EmbedBuilder()
     .setTitle('🎫 Support & Help Desk')
-    .setDescription('Need help? Click below to open a private support ticket.\n\nOur automated agent will assist immediately.')
+    .setDescription('Need help? Click below to open a private support ticket.\n\nOur team will assist you immediately.')
     .setColor(0x57F287);
 }
 
@@ -100,6 +100,11 @@ const commands = [
   new SlashCommandBuilder()
     .setName('setup-redeem')
     .setDescription('Setup buyer role redemption panel')
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+
+  new SlashCommandBuilder()
+    .setName('setup-ticket')
+    .setDescription('Setup ticket support panel')
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
 
   new SlashCommandBuilder()
@@ -146,6 +151,14 @@ client.on(Events.InteractionCreate, async (interaction) => {
       await interaction.channel.send({
         embeds: [createRedeemEmbed()],
         components: [createRedeemRow()]
+      });
+    }
+
+    if (commandName === 'setup-ticket') {
+      await interaction.reply({ content: 'Creating ticket panel...', ephemeral: true });
+      await interaction.channel.send({
+        embeds: [createTicketEmbed()],
+        components: [createTicketRow()]
       });
     }
 
@@ -233,6 +246,29 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
       modal.addComponents(new ActionRowBuilder().addComponents(input));
       await interaction.showModal(modal);
+    }
+
+    if (interaction.customId === 'open_ticket') {
+      const ticketChannel = await interaction.guild.channels.create({
+        name: `ticket-${interaction.user.username}`,
+        type: ChannelType.GuildText,
+        permissionOverwrites: [
+          {
+            id: interaction.guild.roles.everyone.id,
+            deny: [PermissionFlagsBits.ViewChannel],
+          },
+          {
+            id: interaction.user.id,
+            allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages],
+          },
+        ],
+      });
+
+      await ticketChannel.send({
+        content: `Welcome <@${interaction.user.id}>! Support will be with you shortly.`,
+      });
+
+      await interaction.reply({ content: `✅ Created ticket channel: ${ticketChannel}`, ephemeral: true });
     }
   }
 
