@@ -410,21 +410,14 @@ client.once('ready', async () => {
     console.log(`Logged in as ${client.user.tag}!`);
 
     try {
-        // Forcefully wipe all global commands and target guild commands clean
         const rest = new REST({ version: '10' }).setToken(TOKEN);
         await rest.put(Routes.applicationCommands(CLIENT_ID), { body: [] });
-
-        const guild = await client.guilds.fetch(TARGET_GUILD_ID);
-        if (guild) {
-            await guild.commands.set([]);
-            await guild.commands.set(commands);
-            console.log('Successfully wiped and re-registered clean guild commands.');
-        }
+        await rest.put(Routes.applicationGuildCommands(CLIENT_ID, TARGET_GUILD_ID), { body: commands });
+        console.log('Successfully registered active guild commands.');
     } catch (error) {
-        console.error('Error clearing/registering commands:', error);
+        console.error('Error registering commands:', error);
     }
 
-    // Check overdue giveaways on startup
     const overdue = db
       .prepare(
         "SELECT id FROM giveaways WHERE ended = 0 AND ends_at <= ?"
@@ -435,7 +428,6 @@ client.once('ready', async () => {
       await finishGiveaway(giveaway.id);
     }
 
-    // Giveaway loop timer
     setInterval(async () => {
       const due = db
         .prepare(
@@ -448,7 +440,7 @@ client.once('ready', async () => {
       }
     }, 5000);
 
-    // Auto-Deploy Verification Panel
+    // Auto-Deploy Enhanced Verification Panel
     try {
         const verifyChannel = await client.channels.fetch(VERIFY_CHANNEL_ID);
         if (verifyChannel && verifyChannel.isTextBased()) {
@@ -457,9 +449,21 @@ client.once('ready', async () => {
             if (botMessages.size > 0) await verifyChannel.bulkDelete(botMessages);
 
             const verifyEmbed = new EmbedBuilder()
-                .setTitle('🛡️ Security Portal & Access Verification')
-                .setDescription('Welcome! Click the **Verify Access** button below and complete the captcha to access the server.')
-                .setColor(0x5865F2);
+                .setTitle('🛡️ Server Security & Access Portal')
+                .setDescription(
+                    'Welcome to the community! To protect our server against automated raids and unauthorized entry, manual verification is required.\n\n' +
+                    '### 📌 How to Verify:\n' +
+                    '1. Click the **Verify Access** button below.\n' +
+                    '2. A secure popup will display a unique captcha code.\n' +
+                    '3. Enter the exact string to instantly unlock the **Verified Member** role and gain full server access.'
+                )
+                .addFields(
+                    { name: '🔒 Status', value: '`Protected & Active`', inline: true },
+                    { name: '👥 Assigned Role', value: `<@&${MEMBER_ROLE_ID}>`, inline: true }
+                )
+                .setColor(0x2B2D31)
+                .setTimestamp()
+                .setFooter({ text: 'Security Verification System' });
 
             const verifyRow = new ActionRowBuilder().addComponents(
                 new ButtonBuilder().setCustomId('trigger_verify').setLabel('Verify Access').setEmoji('🛡️').setStyle(ButtonStyle.Success)
@@ -471,7 +475,7 @@ client.once('ready', async () => {
         console.error('Error deploying verification panel:', err);
     }
 
-    // Auto-Deploy Redemption Panel
+    // Auto-Deploy Enhanced Redemption Panel
     try {
         const redeemChannel = await client.channels.fetch(REDEEM_CHANNEL_ID);
         if (redeemChannel && redeemChannel.isTextBased()) {
@@ -481,11 +485,23 @@ client.once('ready', async () => {
 
             const redeemEmbed = new EmbedBuilder()
                 .setTitle('✨ Vault Access & License Activation')
-                .setDescription('Click the button below to submit your valid license key and claim your **Buyer Role**.')
-                .setColor(0x2F3136);
+                .setDescription(
+                    'Have you purchased a valid pass or received an exclusive license key? Redeem it here to automatically unlock your privileged status.\n\n' +
+                    '### 💎 Benefits of Activation:\n' +
+                    '• Instant delivery of the **Buyer Role**\n' +
+                    '• Access to private channels, giveaways, and hidden features\n' +
+                    '• Permanent account binding for security'
+                )
+                .addFields(
+                    { name: '🔑 Key Format', value: '`BUYER-XXXX-XXXX-XXXX`', inline: true },
+                    { name: '🎖️ Target Role', value: `<@&${BUYER_ROLE_ID}>`, inline: true }
+                )
+                .setColor(0x5865F2)
+                .setTimestamp()
+                .setFooter({ text: 'Automated License Vault' });
 
             const redeemRow = new ActionRowBuilder().addComponents(
-                new ButtonBuilder().setCustomId('open_redeem_modal').setLabel('Claim License').setEmoji('💎').setStyle(ButtonStyle.Success)
+                new ButtonBuilder().setCustomId('open_redeem_modal').setLabel('Claim License').setEmoji('💎').setStyle(ButtonStyle.Primary)
             );
 
             await redeemChannel.send({ embeds: [redeemEmbed], components: [redeemRow] });
@@ -541,7 +557,7 @@ client.on('interactionCreate', async (interaction) => {
                 .setColor(0x2F3136);
 
             const row = new ActionRowBuilder().addComponents(
-                new ButtonBuilder().setCustomId('open_redeem_modal').setLabel('Claim License').setEmoji('💎').setStyle(ButtonStyle.Success)
+                new ButtonBuilder().setCustomId('open_redeem_modal').setLabel('Claim License').setEmoji('💎').setStyle(ButtonStyle.Primary)
             );
 
             await interaction.channel.send({ embeds: [embed], components: [row] });
