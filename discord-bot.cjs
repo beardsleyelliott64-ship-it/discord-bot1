@@ -1,3 +1,13 @@
+const http = require('http');
+
+// Simple web server to satisfy Render's port check
+const port = process.env.PORT || 3000;
+http.createServer((req, res) => {
+    res.writeHead(200, { 'Content-Type': 'text/plain' });
+    res.end('Discord bot is alive!');
+}).listen(port, () => {
+    console.log(`Web server listening on port ${port}`);
+});
 const { Client, GatewayIntentBits, SlashCommandBuilder, PermissionFlagsBits, ChannelType, ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder, REST, Routes } = require('discord.js');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const crypto = require('crypto');
