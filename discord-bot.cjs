@@ -58,14 +58,14 @@ const commands = [
 client.once('clientReady', async () => {
   console.log(`Bot logged in as ${client.user.tag}`);
   const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
-  
+
   try {
-    // 1. Force wipe all server-specific commands registered previously
+    // 1. Wipe old guild-specific commands for every joined server
     for (const guild of client.guilds.cache.values()) {
       await rest.put(Routes.applicationGuildCommands(client.user.id, guild.id), { body: [] });
     }
 
-    // 2. Overwrite global commands with your clean list
+    // 2. Set active global commands
     await rest.put(Routes.applicationCommands(client.user.id), { body: commands });
     console.log('Successfully wiped old commands and updated global commands!');
   } catch (err) {
