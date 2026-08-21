@@ -26,8 +26,9 @@ http.createServer((req, res) => {
 
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 
-// Store active codes: { "BUYER-1234-5678": { roleId: "...", claimedBy: null } }
+// In-Memory Databases
 const validCodes = new Map();
+const activeCaptchas = new Map();
 
 function generateBuyerCode() {
   const seg1 = Math.floor(1000 + Math.random() * 9000);
@@ -38,8 +39,13 @@ function generateBuyerCode() {
 const commands = [
   new SlashCommandBuilder()
     .setName('setup-redeem')
-    .setDescription('Posts redemption panel')
+    .setDescription('Posts buyer redemption panel')
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+  new SlashCommandBuilder()
+    .setName('setup-verify')
+    .setDescription('Posts server verification gate panel')
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+    .addRoleOption(opt => opt.setName('role').setDescription('Role to give verified members').setRequired(true)),
   new SlashCommandBuilder()
     .setName('generate-code')
     .setDescription('Generates a new buyer code')
@@ -58,8 +64,42 @@ client.once('clientReady', async () => {
   }
 });
 
+// Guild-level verification role cache: { guildId: roleId }
+const verificationRoles = new Map();
+
 client.on('interactionCreate', async interaction => {
   if (interaction.isChatInputCommand()) {
+    
+    // Setup Verification Panel
+    if (interaction.commandName === 'setup-verify') {
+      const verifyRole = interaction.options.getRole('role');
+      verificationRoles.set(interaction.guildId, verifyRole.id);
+
+      const embed = new EmbedBuilder()
+        .setTitle('🛡️ Server Verification Gate')
+        .setDescription(
+          'To access channels and participate in this server, you must complete verification.\n\n' +
+          '**Steps to verify:**\n' +
+          '1️⃣ Click the **Verify Now** button below.\n' +
+          '2️⃣ Solve the security text code.\n' +
+          '3️⃣ Gain full access instantly.'
+        )
+        .setColor(0x2B2D31)
+        .setFooter({ text: 'Security Verification System' });
+
+      const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId('open_verify_modal')
+          .setLabel('Verify Now')
+          .setEmoji('✅')
+          .setStyle(ButtonStyle.Primary)
+      );
+
+      await interaction.reply({ content: 'Verification panel created below:', ephemeral: true });
+      await interaction.channel.send({ embeds: [embed], components: [row] });
+    }
+
+    // Setup Buyer Redeem Panel
     if (interaction.commandName === 'setup-redeem') {
       const embed = new EmbedBuilder()
         .setTitle('🎁 Buyer Role Verification')
@@ -84,6 +124,7 @@ client.on('interactionCreate', async interaction => {
       await interaction.channel.send({ embeds: [embed], components: [row] });
     }
 
+    // Generate Buyer Code
     if (interaction.commandName === 'generate-code') {
       const targetRole = interaction.options.getRole('role');
       const newCode = generateBuyerCode();
@@ -101,6 +142,30 @@ client.on('interactionCreate', async interaction => {
     }
   }
 
+  // --- BUTTON HANDLERS ---
+  
+  // Open CAPTCHA Verification Modal
+  if (interaction.isButton() && interaction.customId === 'open_verify_modal') {
+    const captchaText = Math.random().toString(36).substring(2, 7).toUpperCase();
+    activeCaptchas.set(interaction.user.id, captchaText);
+
+    const modal = new ModalBuilder()
+      .setCustomId('verify_modal')
+      .setTitle('Security Gate');
+
+    const input = new TextInputBuilder()
+      .setCustomId('captcha_input')
+      .setLabel(`Type this code to verify: ${captchaText}`)
+      .setPlaceholder(captchaText)
+      .setStyle(TextInputStyle.Short)
+      .setMaxLength(5)
+      .setRequired(true);
+
+    modal.addComponents(new ActionRowBuilder().addComponents(input));
+    await interaction.showModal(modal);
+  }
+
+  // Open Redeem Modal
   if (interaction.isButton() && interaction.customId === 'open_redeem_modal') {
     const modal = new ModalBuilder()
       .setCustomId('redeem_code_modal')
@@ -117,6 +182,35 @@ client.on('interactionCreate', async interaction => {
     await interaction.showModal(modal);
   }
 
+  // --- MODAL SUBMISSIONS ---
+
+  // Handle Verification Modal
+  if (interaction.isModalSubmit() && interaction.customId === 'verify_modal') {
+    const enteredCaptcha = interaction.fields.getTextInputValue('captcha_input').trim().toUpperCase();
+    const expectedCaptcha = activeCaptchas.get(interaction.user.id);
+    activeCaptchas.delete(interaction.user.id);
+
+    if (!expectedCaptcha || enteredCaptcha !== expectedCaptcha) {
+      return interaction.reply({ content: '❌ Incorrect verification code. Click the button and try again.', ephemeral: true });
+    }
+
+    const roleId = verificationRoles.get(interaction.guildId);
+    if (!roleId) {
+      return interaction.reply({ content: '⚠️ Server verification role is not configured. Ask an admin to run `/setup-verify`.', ephemeral: true });
+    }
+
+    try {
+      const role = interaction.guild.roles.cache.get(roleId);
+      if (!role) return interaction.reply({ content: '⚠️ The verification role no longer exists.', ephemeral: true });
+
+      await interaction.member.roles.add(role);
+      await interaction.reply({ content: '✅ You have successfully verified and unlocked server access!', ephemeral: true });
+    } catch (err) {
+      await interaction.reply({ content: '⚠️ Bot failed to grant role. Ensure bot permissions and role hierarchy are correct.', ephemeral: true });
+    }
+  }
+
+  // Handle Redeem Modal
   if (interaction.isModalSubmit() && interaction.customId === 'redeem_code_modal') {
     const enteredCode = interaction.fields.getTextInputValue('buyer_code_input').trim();
     const codeData = validCodes.get(enteredCode);
