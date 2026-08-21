@@ -36,7 +36,7 @@ const REDEEM_CHANNEL_ID = '1539797203902668820'; // Target Auto-Redeem Channel I
 const activeCaptchas = new Map();
 const validBuyerKeys = new Set(); 
 
-// Animal Company Token Panel Mock State[cite: 3]
+// Animal Company Token Panel Mock State
 let mockAccessToken = null;
 let mockExpiresAt = null;
 
@@ -431,16 +431,16 @@ const commands = [
         .setName('nuke')
         .setDescription('Nuke and rebuild the current channel')
         .setDefaultMemberPermissions(PermissionFlagsBits.ManageChannels),
-    // Animal Company Token Panel Commands[cite: 3]
+    // Animal Company Token Panel Commands
     new SlashCommandBuilder()
         .setName('token-panel')
-        .setDescription('Open the Animal Company token dashboard.')[cite: 3],
+        .setDescription('Open the Animal Company token dashboard.'),
     new SlashCommandBuilder()
         .setName('refresh-token')
-        .setDescription('Refresh the local mock access token.')[cite: 3],
+        .setDescription('Refresh the local mock access token.'),
     new SlashCommandBuilder()
         .setName('token-status')
-        .setDescription('Show the local mock token status.')[cite: 3]
+        .setDescription('Show the local mock token status.')
 ];
 
 // ---------------------- BOT INITIALIZATION ----------------------
@@ -745,7 +745,7 @@ client.on('interactionCreate', async (interaction) => {
             return;
         }
 
-        // Animal Company Token Panel Command Handlers[cite: 3]
+        // Animal Company Token Panel Command Handlers
         if (commandName === 'token-panel') {
             const row = new ActionRowBuilder().addComponents(
                 new ButtonBuilder()
@@ -912,7 +912,7 @@ client.on('interactionCreate', async (interaction) => {
             return interaction.reply({ content: `🎫 Ticket created: ${ticketChannel}`, flags: [MessageFlags.Ephemeral] });
         }
 
-        // Animal Company Token Panel Button Handlers[cite: 3]
+        // Animal Company Token Panel Button Handlers
         if (interaction.customId === 'refresh_mock') {
             const result = refreshMockToken();
 
