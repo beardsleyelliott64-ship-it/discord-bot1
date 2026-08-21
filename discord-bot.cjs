@@ -9,16 +9,16 @@ http.createServer((req, res) => {
     console.log(`Web server listening on port ${port}`);
 });
 
-import "dotenv/config";
-import crypto from "node:crypto";
+require("dotenv").config();
+const crypto = require("node:crypto");
 
-import { 
+const { 
     Client, GatewayIntentBits, SlashCommandBuilder, PermissionFlagsBits, 
     ChannelType, ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder, 
     REST, Routes, ModalBuilder, TextInputBuilder, TextInputStyle, MessageFlags, Events 
-} from 'discord.js';
-import { GoogleGenerativeAI } from '@google/generative-ai';
-import Database from "better-sqlite3";
+} = require('discord.js');
+const { GoogleGenerativeAI } = require('@google/generative-ai');
+const Database = require("better-sqlite3");
 
 // ---------------------- CONFIGURATION ----------------------
 const TOKEN = process.env.DISCORD_TOKEN;
