@@ -13,3 +13,12 @@ client.once('ready', () => {
 });
 
 client.login(process.env.DISCORD_TOKEN);
+const http = require('http');
+
+const port = process.env.PORT || 10000;
+http.createServer((req, res) => {
+  res.writeHead(200, { 'Content-Type': 'text/plain' });
+  res.end('Bot is active!\n');
+}).listen(port, () => {
+  console.log(`Web server listening on port ${port}`);
+});
