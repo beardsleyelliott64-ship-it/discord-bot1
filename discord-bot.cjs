@@ -21,6 +21,7 @@ const TOKEN = process.env.DISCORD_TOKEN;
 const GEMINI_KEY = process.env.GEMINI_API_KEY;
 const CLIENT_ID = process.env.CLIENT_ID;
 const ADMIN_USER_ID = process.env.YOUR_DISCORD_USER_ID;
+const BUYER_ROLE_ID = '1539706476871032922'; // Target Buyer Role ID
 
 // In-memory key database
 const validBuyerKeys = new Set(); 
@@ -233,8 +234,11 @@ client.on('interactionCreate', async (interaction) => {
             const inputCode = interaction.options.getString('code').trim().toUpperCase();
             if (validBuyerKeys.has(inputCode)) {
                 validBuyerKeys.delete(inputCode);
-                const buyerRole = interaction.guild.roles.cache.find(r => r.name === 'Buyer');
+                
+                // Assign Buyer Role by ID
+                const buyerRole = interaction.guild.roles.cache.get(BUYER_ROLE_ID);
                 if (buyerRole) await interaction.member.roles.add(buyerRole);
+
                 return interaction.reply({ content: `✅ **Success!** License \`${inputCode}\` redeemed. Welcome, Buyer!`, ephemeral: true });
             } else {
                 return interaction.reply({ content: '❌ **Invalid Code:** That key is incorrect or has already been redeemed.', ephemeral: true });
@@ -389,7 +393,8 @@ client.on('interactionCreate', async (interaction) => {
             if (validBuyerKeys.has(inputCode)) {
                 validBuyerKeys.delete(inputCode);
 
-                const buyerRole = interaction.guild.roles.cache.find(r => r.name === 'Buyer');
+                // Assign Buyer Role by ID
+                const buyerRole = interaction.guild.roles.cache.get(BUYER_ROLE_ID);
                 if (buyerRole) {
                     await interaction.member.roles.add(buyerRole);
                 }
