@@ -37,9 +37,12 @@ const validCodes = new Map();
 const activeCaptchas = new Map();
 const verificationRoles = new Map();
 
-// Active Panels Store (For refreshing and tracking duplicates)
+// Active Panels & Channels Store
 let verifyPanelMsg = null;
+let verifyChannelId = null;
+
 let redeemPanelMsg = null;
+let redeemChannelId = null;
 
 // Helper to generate buyer codes
 function generateBuyerCode() {
@@ -78,6 +81,19 @@ function createRedeemEmbed() {
     .setColor(0x5865F2);
 }
 
+// Helper: Components Builders
+function createVerifyRow() {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId('open_verify_modal').setLabel('Verify Now').setEmoji('✅').setStyle(ButtonStyle.Primary)
+  );
+}
+
+function createRedeemRow() {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId('open_redeem_modal').setLabel('Redeem Code').setEmoji('🔑').setStyle(ButtonStyle.Success)
+  );
+}
+
 // 3. Command Definitions
 const commands = [
   new SlashCommandBuilder()
@@ -104,7 +120,7 @@ const commands = [
   new SlashCommandBuilder().setName('purge').setDescription('Bulk delete messages').setDefaultMemberPermissions(PermissionFlagsBits.ManageMessages).addIntegerOption(opt => opt.setName('amount').setDescription('Number (1-100)').setMinValue(1).setMaxValue(100).setRequired(true))
 ].map(cmd => cmd.toJSON());
 
-// 4. Startup & 5-Minute Auto-Refresh Loop
+// 4. Startup & 5-Minute Refresh/Re-creation Loop
 client.once('clientReady', async () => {
   console.log(`Bot logged in as ${client.user.tag}`);
   const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
@@ -119,17 +135,48 @@ client.once('clientReady', async () => {
     console.error('Registration failed:', err);
   }
 
-  // 🔄 Refresh panels every 5 minutes (300,000 ms)
+  // 🔄 Refresh or Respawn Panels every 5 minutes (300,000 ms)
   setInterval(async () => {
-    try {
-      if (verifyPanelMsg) {
-        await verifyPanelMsg.edit({ embeds: [createVerifyEmbed()] });
+    // Check & Respawn Verification Panel
+    if (verifyChannelId) {
+      try {
+        const channel = await client.channels.fetch(verifyChannelId);
+        if (channel) {
+          if (verifyPanelMsg) {
+            try {
+              await verifyPanelMsg.edit({ embeds: [createVerifyEmbed()] });
+            } catch (err) {
+              // Message was deleted — send a new one
+              verifyPanelMsg = await channel.send({ embeds: [createVerifyEmbed()], components: [createVerifyRow()] });
+            }
+          } else {
+            verifyPanelMsg = await channel.send({ embeds: [createVerifyEmbed()], components: [createVerifyRow()] });
+          }
+        }
+      } catch (e) {
+        console.error('Verify channel check failed:', e);
       }
-      if (redeemPanelMsg) {
-        await redeemPanelMsg.edit({ embeds: [createRedeemEmbed()] });
+    }
+
+    // Check & Respawn Redeem Panel
+    if (redeemChannelId) {
+      try {
+        const channel = await client.channels.fetch(redeemChannelId);
+        if (channel) {
+          if (redeemPanelMsg) {
+            try {
+              await redeemPanelMsg.edit({ embeds: [createRedeemEmbed()] });
+            } catch (err) {
+              // Message was deleted — send a new one
+              redeemPanelMsg = await channel.send({ embeds: [createRedeemEmbed()], components: [createRedeemRow()] });
+            }
+          } else {
+            redeemPanelMsg = await channel.send({ embeds: [createRedeemEmbed()], components: [createRedeemRow()] });
+          }
+        }
+      } catch (e) {
+        console.error('Redeem channel check failed:', e);
       }
-    } catch (err) {
-      console.log('Auto-refresh skipped or message missing.');
     }
   }, 5 * 60 * 1000);
 });
@@ -156,31 +203,29 @@ client.on('interactionCreate', async interaction => {
       const verifyRole = interaction.options.getRole('role');
       verificationRoles.set(interaction.guildId, verifyRole.id);
 
+      // Save channel ID for respawning
+      verifyChannelId = interaction.channelId;
+
       // Delete existing panel if present
       if (verifyPanelMsg) {
         try { await verifyPanelMsg.delete(); } catch (e) {}
       }
 
-      const row = new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId('open_verify_modal').setLabel('Verify Now').setEmoji('✅').setStyle(ButtonStyle.Primary)
-      );
-
       await interaction.reply({ content: 'Creating verification panel...', ephemeral: true });
-      verifyPanelMsg = await interaction.channel.send({ embeds: [createVerifyEmbed()], components: [row] });
+      verifyPanelMsg = await interaction.channel.send({ embeds: [createVerifyEmbed()], components: [createVerifyRow()] });
     }
 
     if (commandName === 'setup-redeem') {
+      // Save channel ID for respawning
+      redeemChannelId = interaction.channelId;
+
       // Delete existing panel if present
       if (redeemPanelMsg) {
         try { await redeemPanelMsg.delete(); } catch (e) {}
       }
 
-      const row = new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId('open_redeem_modal').setLabel('Redeem Code').setEmoji('🔑').setStyle(ButtonStyle.Success)
-      );
-
       await interaction.reply({ content: 'Creating buyer panel...', ephemeral: true });
-      redeemPanelMsg = await interaction.channel.send({ embeds: [createRedeemEmbed()], components: [row] });
+      redeemPanelMsg = await interaction.channel.send({ embeds: [createRedeemEmbed()], components: [createRedeemRow()] });
     }
 
     if (commandName === 'generate-code') {
