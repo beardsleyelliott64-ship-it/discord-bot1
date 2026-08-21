@@ -38,6 +38,16 @@ const client = new Client({
     ]
 });
 
+// Helper: Enhanced Key Generator
+function createBuyerCode(prefix = 'BUYER') {
+    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+    let randStr = '';
+    for (let i = 0; i < 8; i++) {
+        randStr += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+    return `${prefix}-${randStr.slice(0, 4)}-${randStr.slice(4)}`;
+}
+
 // ---------------------- ALL COMMAND DEFINITIONS ----------------------
 const commands = [
     // General & Setup Panels
@@ -49,8 +59,12 @@ const commands = [
         .setDescription('Get information about a user')
         .addUserOption(opt => opt.setName('target').setDescription('The user').setRequired(false)),
     new SlashCommandBuilder()
+        .setName('setup-generate')
+        .setDescription('Post the Admin Key Generator Panel')
+        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    new SlashCommandBuilder()
         .setName('setup-redeem')
-        .setDescription('Post the key redemption panel in this channel')
+        .setDescription('Post the Key Redemption Panel')
         .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     new SlashCommandBuilder()
         .setName('setup-ticket')
@@ -60,7 +74,8 @@ const commands = [
     // Code & Key Management
     new SlashCommandBuilder()
         .setName('generate-code')
-        .setDescription('Generate a new buyer key (Format: buyer-XXXX-XXXX)'),
+        .setDescription('Generate a custom buyer key via command')
+        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     new SlashCommandBuilder()
         .setName('redeem')
         .setDescription('Redeem your buyer license key via slash command')
@@ -89,13 +104,6 @@ const commands = [
         .setDescription('Nuke and rebuild the current channel')
         .setDefaultMemberPermissions(PermissionFlagsBits.ManageChannels),
 ];
-
-// Helper: Generate Key
-function createBuyerCode() {
-    const p1 = Math.floor(1000 + Math.random() * 9000);
-    const p2 = Math.floor(1000 + Math.random() * 9000);
-    return `buyer-${p1}-${p2}`;
-}
 
 // ---------------------- BOT INITIALIZATION ----------------------
 client.once('ready', async () => {
@@ -137,22 +145,53 @@ client.on('interactionCreate', async (interaction) => {
             return interaction.reply({ embeds: [embed], ephemeral: true });
         }
 
-        // Command: /setup-redeem
+        // Command: /setup-generate (Admin Panel)
+        if (commandName === 'setup-generate') {
+            const embed = new EmbedBuilder()
+                .setTitle('⚡ License Key Generator Portal')
+                .setDescription('Admin Access Only. Use the controls below to mint new license keys directly into the system database.')
+                .setColor(0x5865F2)
+                .setFooter({ text: 'Buyer Redeem System • Security Dashboard' });
+
+            const row = new ActionRowBuilder().addComponents(
+                new ButtonBuilder()
+                    .setCustomId('admin_gen_key')
+                    .setLabel('Mint License Key')
+                    .setEmoji('🔑')
+                    .setStyle(ButtonStyle.Primary),
+                new ButtonBuilder()
+                    .setCustomId('admin_view_stats')
+                    .setLabel('Key Database Stats')
+                    .setEmoji('📊')
+                    .setStyle(ButtonStyle.Secondary)
+            );
+
+            await interaction.channel.send({ embeds: [embed], components: [row] });
+            return interaction.reply({ content: '⚡ Admin Key Generator Panel deployed!', ephemeral: true });
+        }
+
+        // Command: /setup-redeem (Public Panel)
         if (commandName === 'setup-redeem') {
             const embed = new EmbedBuilder()
-                .setTitle('🔑 License Key Redemption')
-                .setDescription('Click the button below to redeem your buyer license key.')
-                .setColor(0x2F3136);
+                .setTitle('✨ Vault Access & License Activation')
+                .setDescription('Welcome! To claim your **Buyer Role** and unlock full server access, click the button below and submit your valid license key.')
+                .addFields(
+                    { name: '📜 Format', value: '`BUYER-XXXX-XXXX`', inline: true },
+                    { name: '🛡️ Security', value: 'Single-use Encryption', inline: true }
+                )
+                .setColor(0x2F3136)
+                .setFooter({ text: 'Automated Instant Delivery System' });
 
             const row = new ActionRowBuilder().addComponents(
                 new ButtonBuilder()
                     .setCustomId('open_redeem_modal')
-                    .setLabel('Redeem Key')
+                    .setLabel('Claim License')
+                    .setEmoji('💎')
                     .setStyle(ButtonStyle.Success)
             );
 
             await interaction.channel.send({ embeds: [embed], components: [row] });
-            return interaction.reply({ content: 'Redemption panel created!', ephemeral: true });
+            return interaction.reply({ content: '✨ Redemption Panel deployed successfully!', ephemeral: true });
         }
 
         // Command: /setup-ticket
@@ -173,26 +212,32 @@ client.on('interactionCreate', async (interaction) => {
             return interaction.reply({ content: 'Ticket panel posted.', ephemeral: true });
         }
 
-        // Command: /generate-code
+        // Command: /generate-code (Direct Slash Command)
         if (commandName === 'generate-code') {
             if (interaction.user.id !== ADMIN_USER_ID && !interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
                 return interaction.reply({ content: 'Unauthorized.', ephemeral: true });
             }
             const newKey = createBuyerCode();
             validBuyerKeys.add(newKey);
-            return interaction.reply({ content: `**New Buyer Key Generated:** \`${newKey}\``, ephemeral: true });
+
+            const createdEmbed = new EmbedBuilder()
+                .setTitle('✅ New License Key Minted')
+                .setDescription(`\`\`\`${newKey}\`\`\``)
+                .setColor(0x57F287);
+
+            return interaction.reply({ embeds: [createdEmbed], ephemeral: true });
         }
 
-        // Command: /redeem (Slash command alternative)
+        // Command: /redeem (Direct Slash Command)
         if (commandName === 'redeem') {
-            const inputCode = interaction.options.getString('code').trim();
+            const inputCode = interaction.options.getString('code').trim().toUpperCase();
             if (validBuyerKeys.has(inputCode)) {
                 validBuyerKeys.delete(inputCode);
                 const buyerRole = interaction.guild.roles.cache.find(r => r.name === 'Buyer');
                 if (buyerRole) await interaction.member.roles.add(buyerRole);
-                return interaction.reply({ content: `Success! \`${inputCode}\` redeemed. Welcome, Buyer!`, ephemeral: true });
+                return interaction.reply({ content: `✅ **Success!** License \`${inputCode}\` redeemed. Welcome, Buyer!`, ephemeral: true });
             } else {
-                return interaction.reply({ content: 'Invalid or already redeemed key.', ephemeral: true });
+                return interaction.reply({ content: '❌ **Invalid Code:** That key is incorrect or has already been redeemed.', ephemeral: true });
             }
         }
 
@@ -246,6 +291,60 @@ client.on('interactionCreate', async (interaction) => {
 
     // 2. Button Interactions
     if (interaction.isButton()) {
+        // Admin: Mint Key Modal Trigger
+        if (interaction.customId === 'admin_gen_key') {
+            if (interaction.user.id !== ADMIN_USER_ID && !interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
+                return interaction.reply({ content: '🚫 **Access Denied:** Administrator authorization required.', ephemeral: true });
+            }
+
+            const modal = new ModalBuilder()
+                .setCustomId('gen_key_modal')
+                .setTitle('Mint New License Key');
+
+            const prefixInput = new TextInputBuilder()
+                .setCustomId('key_prefix')
+                .setLabel('Key Prefix')
+                .setValue('BUYER')
+                .setStyle(TextInputStyle.Short)
+                .setRequired(true);
+
+            modal.addComponents(new ActionRowBuilder().addComponents(prefixInput));
+            return await interaction.showModal(modal);
+        }
+
+        // Admin: View Key Stats Trigger
+        if (interaction.customId === 'admin_view_stats') {
+            if (interaction.user.id !== ADMIN_USER_ID && !interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
+                return interaction.reply({ content: '🚫 Unauthorized.', ephemeral: true });
+            }
+
+            const statsEmbed = new EmbedBuilder()
+                .setTitle('📊 Key System Intelligence')
+                .addFields({ name: 'Active Unredeemed Keys', value: `\`${validBuyerKeys.size}\` keys loaded in memory`, inline: true })
+                .setColor(0x00FFA3);
+
+            return interaction.reply({ embeds: [statsEmbed], ephemeral: true });
+        }
+
+        // Public: Redeem Modal Trigger
+        if (interaction.customId === 'open_redeem_modal') {
+            const modal = new ModalBuilder()
+                .setCustomId('redeem_modal')
+                .setTitle('License Key Redemption');
+
+            const keyInput = new TextInputBuilder()
+                .setCustomId('key_input')
+                .setLabel('Enter Your License Key')
+                .setPlaceholder('BUYER-XXXX-XXXX')
+                .setStyle(TextInputStyle.Short)
+                .setMinLength(10)
+                .setMaxLength(25)
+                .setRequired(true);
+
+            modal.addComponents(new ActionRowBuilder().addComponents(keyInput));
+            return await interaction.showModal(modal);
+        }
+
         // Ticket Creation
         if (interaction.customId === 'create_ticket') {
             const ticketChannel = await interaction.guild.channels.create({
@@ -261,31 +360,31 @@ client.on('interactionCreate', async (interaction) => {
             await ticketChannel.send(`Welcome <@${interaction.user.id}>! Describe your issue below, and our **Gemini AI Assistant** will reply automatically.`);
             return interaction.reply({ content: `Ticket created: ${ticketChannel}`, ephemeral: true });
         }
-
-        // Redeem Modal Button Trigger
-        if (interaction.customId === 'open_redeem_modal') {
-            const modal = new ModalBuilder()
-                .setCustomId('redeem_modal')
-                .setTitle('Redeem License Key');
-
-            const keyInput = new TextInputBuilder()
-                .setCustomId('key_input')
-                .setLabel('Enter your buyer code')
-                .setPlaceholder('buyer-XXXX-XXXX')
-                .setStyle(TextInputStyle.Short)
-                .setRequired(true);
-
-            const row = new ActionRowBuilder().addComponents(keyInput);
-            modal.addComponents(row);
-
-            return await interaction.showModal(modal);
-        }
     }
 
     // 3. Modal Form Submissions
     if (interaction.isModalSubmit()) {
+        // Handle Admin Key Creation
+        if (interaction.customId === 'gen_key_modal') {
+            const prefix = interaction.fields.getTextInputValue('key_prefix').toUpperCase().trim() || 'BUYER';
+            const newKey = createBuyerCode(prefix);
+            validBuyerKeys.add(newKey);
+
+            const createdEmbed = new EmbedBuilder()
+                .setTitle('✅ New License Key Minted')
+                .setDescription(`\`\`\`${newKey}\`\`\``)
+                .addFields(
+                    { name: 'Status', value: '🟢 Active & Ready', inline: true },
+                    { name: 'Created By', value: `<@${interaction.user.id}>`, inline: true }
+                )
+                .setColor(0x57F287);
+
+            return interaction.reply({ embeds: [createdEmbed], ephemeral: true });
+        }
+
+        // Handle User Key Redemption
         if (interaction.customId === 'redeem_modal') {
-            const inputCode = interaction.fields.getTextInputValue('key_input').trim();
+            const inputCode = interaction.fields.getTextInputValue('key_input').trim().toUpperCase();
 
             if (validBuyerKeys.has(inputCode)) {
                 validBuyerKeys.delete(inputCode);
@@ -295,15 +394,19 @@ client.on('interactionCreate', async (interaction) => {
                     await interaction.member.roles.add(buyerRole);
                 }
 
-                return interaction.reply({ 
-                    content: `✅ **Success!** License \`${inputCode}\` redeemed. Your buyer role has been granted!`, 
-                    ephemeral: true 
-                });
+                const successEmbed = new EmbedBuilder()
+                    .setTitle('🎉 Activation Successful!')
+                    .setDescription(`Welcome aboard! Your key \`${inputCode}\` has been validated and your **Buyer Role** is granted.`)
+                    .setColor(0x57F287);
+
+                return interaction.reply({ embeds: [successEmbed], ephemeral: true });
             } else {
-                return interaction.reply({ 
-                    content: '❌ **Invalid Code:** That key is incorrect or has already been redeemed.', 
-                    ephemeral: true 
-                });
+                const failEmbed = new EmbedBuilder()
+                    .setTitle('❌ Activation Failed')
+                    .setDescription(`The key \`${inputCode}\` is invalid, expired, or already redeemed.`)
+                    .setColor(0xED4245);
+
+                return interaction.reply({ embeds: [failEmbed], ephemeral: true });
             }
         }
     }
