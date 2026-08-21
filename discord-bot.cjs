@@ -30,10 +30,10 @@ const VERIFY_CHANNEL_ID = '1540382318856765490'; // Target Verification Channel 
 const activeCaptchas = new Map();
 const validBuyerKeys = new Set(); 
 
-const result = await aiModel.generateContent(message.content);
-const responseText = result.response.text();
+// Setup Gemini API using the stable package
 const genAI = new GoogleGenerativeAI(GEMINI_KEY);
 const aiModel = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
+
 // Setup Discord Client
 const client = new Client({
     intents: [
@@ -60,10 +60,7 @@ function generateCaptcha() {
 
 // ---------------------- ALL COMMAND DEFINITIONS ----------------------
 const commands = [
-    // General & Setup Panels
-    new SlashCommandBuilder()
-        .setName('ping')
-        .setDescription('Check bot latency'),
+    new SlashCommandBuilder().setName('ping').setDescription('Check bot latency'),
     new SlashCommandBuilder()
         .setName('userinfo')
         .setDescription('Get information about a user')
@@ -80,8 +77,6 @@ const commands = [
         .setName('setup-ticket')
         .setDescription('Post the AI Ticket Creation embed in this channel')
         .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-
-    // Code & Key Management
     new SlashCommandBuilder()
         .setName('generate-code')
         .setDescription('Generate a custom buyer key via command')
@@ -90,8 +85,6 @@ const commands = [
         .setName('redeem')
         .setDescription('Redeem your buyer license key via slash command')
         .addStringOption(opt => opt.setName('code').setDescription('Your buyer code').setRequired(true)),
-
-    // Moderation & Admin
     new SlashCommandBuilder()
         .setName('purge')
         .setDescription('Delete bulk messages')
@@ -172,7 +165,6 @@ client.once('ready', async () => {
 // ---------------------- INTERACTION HANDLER ----------------------
 client.on('interactionCreate', async (interaction) => {
 
-    // 1. Slash Command Processing
     if (interaction.isChatInputCommand()) {
         const { commandName } = interaction;
 
@@ -198,20 +190,11 @@ client.on('interactionCreate', async (interaction) => {
             const embed = new EmbedBuilder()
                 .setTitle('⚡ License Key Generator Portal')
                 .setDescription('Admin Access Only. Use the controls below to mint new license keys directly into the system database.')
-                .setColor(0x5865F2)
-                .setFooter({ text: 'Buyer Redeem System • Security Dashboard' });
+                .setColor(0x5865F2);
 
             const row = new ActionRowBuilder().addComponents(
-                new ButtonBuilder()
-                    .setCustomId('admin_gen_key')
-                    .setLabel('Mint License Key')
-                    .setEmoji('🔑')
-                    .setStyle(ButtonStyle.Primary),
-                new ButtonBuilder()
-                    .setCustomId('admin_view_stats')
-                    .setLabel('Key Database Stats')
-                    .setEmoji('📊')
-                    .setStyle(ButtonStyle.Secondary)
+                new ButtonBuilder().setCustomId('admin_gen_key').setLabel('Mint License Key').setEmoji('🔑').setStyle(ButtonStyle.Primary),
+                new ButtonBuilder().setCustomId('admin_view_stats').setLabel('Key Database Stats').setEmoji('📊').setStyle(ButtonStyle.Secondary)
             );
 
             await interaction.channel.send({ embeds: [embed], components: [row] });
@@ -222,19 +205,10 @@ client.on('interactionCreate', async (interaction) => {
             const embed = new EmbedBuilder()
                 .setTitle('✨ Vault Access & License Activation')
                 .setDescription('Welcome! To claim your **Buyer Role** and unlock full server access, click the button below and submit your valid license key.')
-                .addFields(
-                    { name: '📜 Format', value: '`BUYER-XXXX-XXXX`', inline: true },
-                    { name: '🛡️ Security', value: 'Single-use Encryption', inline: true }
-                )
-                .setColor(0x2F3136)
-                .setFooter({ text: 'Automated Instant Delivery System' });
+                .setColor(0x2F3136);
 
             const row = new ActionRowBuilder().addComponents(
-                new ButtonBuilder()
-                    .setCustomId('open_redeem_modal')
-                    .setLabel('Claim License')
-                    .setEmoji('💎')
-                    .setStyle(ButtonStyle.Success)
+                new ButtonBuilder().setCustomId('open_redeem_modal').setLabel('Claim License').setEmoji('💎').setStyle(ButtonStyle.Success)
             );
 
             await interaction.channel.send({ embeds: [embed], components: [row] });
@@ -248,11 +222,7 @@ client.on('interactionCreate', async (interaction) => {
                 .setColor(0x5865F2);
 
             const row = new ActionRowBuilder().addComponents(
-                new ButtonBuilder()
-                    .setCustomId('create_ticket')
-                    .setLabel('Open Ticket')
-                    .setEmoji('🎫')
-                    .setStyle(ButtonStyle.Primary)
+                new ButtonBuilder().setCustomId('create_ticket').setLabel('Open Ticket').setEmoji('🎫').setStyle(ButtonStyle.Primary)
             );
 
             await interaction.channel.send({ embeds: [embed], components: [row] });
@@ -265,23 +235,15 @@ client.on('interactionCreate', async (interaction) => {
             }
             const newKey = createBuyerCode();
             validBuyerKeys.add(newKey);
-
-            const createdEmbed = new EmbedBuilder()
-                .setTitle('✅ New License Key Minted')
-                .setDescription(`\`\`\`${newKey}\`\`\``)
-                .setColor(0x57F287);
-
-            return interaction.reply({ embeds: [createdEmbed], ephemeral: true });
+            return interaction.reply({ embeds: [new EmbedBuilder().setTitle('✅ New License Key Minted').setDescription(`\`\`\`${newKey}\`\`\``).setColor(0x57F287)], ephemeral: true });
         }
 
         if (commandName === 'redeem') {
             const inputCode = interaction.options.getString('code').trim().toUpperCase();
             if (validBuyerKeys.has(inputCode)) {
                 validBuyerKeys.delete(inputCode);
-                
                 const buyerRole = interaction.guild.roles.cache.get(BUYER_ROLE_ID);
                 if (buyerRole) await interaction.member.roles.add(buyerRole);
-
                 return interaction.reply({ content: `✅ **Success!** License \`${inputCode}\` redeemed. Welcome, Buyer!`, ephemeral: true });
             } else {
                 return interaction.reply({ content: '❌ **Invalid Code:** That key is incorrect or has already been redeemed.', ephemeral: true });
@@ -291,7 +253,6 @@ client.on('interactionCreate', async (interaction) => {
         if (commandName === 'purge') {
             const amount = interaction.options.getInteger('amount');
             if (amount < 1 || amount > 100) return interaction.reply({ content: 'Amount must be between 1 and 100.', ephemeral: true });
-            
             await interaction.channel.bulkDelete(amount, true);
             return interaction.reply({ content: `Deleted ${amount} messages.`, ephemeral: true });
         }
@@ -300,7 +261,6 @@ client.on('interactionCreate', async (interaction) => {
             const target = interaction.options.getUser('target');
             const reason = interaction.options.getString('reason') || 'No reason provided';
             const member = await interaction.guild.members.fetch(target.id);
-
             await member.kick(reason);
             return interaction.reply({ content: `Kicked ${target.tag}. Reason: ${reason}` });
         }
@@ -309,7 +269,6 @@ client.on('interactionCreate', async (interaction) => {
             const target = interaction.options.getUser('target');
             const reason = interaction.options.getString('reason') || 'No reason provided';
             const member = await interaction.guild.members.fetch(target.id);
-
             await member.ban({ reason });
             return interaction.reply({ content: `Banned ${target.tag}. Reason: ${reason}` });
         }
@@ -318,12 +277,9 @@ client.on('interactionCreate', async (interaction) => {
             if (interaction.user.id !== ADMIN_USER_ID && !interaction.member.permissions.has(PermissionFlagsBits.ManageChannels)) {
                 return interaction.reply({ content: 'Unauthorized.', ephemeral: true });
             }
-
             const currentChannel = interaction.channel;
             const position = currentChannel.position;
-
             await interaction.reply({ content: 'Nuking channel...' });
-            
             const newChannel = await currentChannel.clone();
             await currentChannel.delete();
             await newChannel.setPosition(position);
@@ -332,17 +288,13 @@ client.on('interactionCreate', async (interaction) => {
         }
     }
 
-    // 2. Button Interactions
     if (interaction.isButton()) {
 
         if (interaction.customId === 'trigger_verify') {
             const captcha = generateCaptcha();
             activeCaptchas.set(interaction.user.id, captcha);
 
-            const modal = new ModalBuilder()
-                .setCustomId('verify_modal')
-                .setTitle('Human Verification Security');
-
+            const modal = new ModalBuilder().setCustomId('verify_modal').setTitle('Human Verification Security');
             const captchaInput = new TextInputBuilder()
                 .setCustomId('captcha_code')
                 .setLabel(`Security Code: ${captcha}`)
@@ -358,20 +310,10 @@ client.on('interactionCreate', async (interaction) => {
 
         if (interaction.customId === 'admin_gen_key') {
             if (interaction.user.id !== ADMIN_USER_ID && !interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
-                return interaction.reply({ content: '🚫 **Access Denied:** Administrator authorization required.', ephemeral: true });
+                return interaction.reply({ content: '🚫 Admin required.', ephemeral: true });
             }
-
-            const modal = new ModalBuilder()
-                .setCustomId('gen_key_modal')
-                .setTitle('Mint New License Key');
-
-            const prefixInput = new TextInputBuilder()
-                .setCustomId('key_prefix')
-                .setLabel('Key Prefix')
-                .setValue('BUYER')
-                .setStyle(TextInputStyle.Short)
-                .setRequired(true);
-
+            const modal = new ModalBuilder().setCustomId('gen_key_modal').setTitle('Mint New License Key');
+            const prefixInput = new TextInputBuilder().setCustomId('key_prefix').setLabel('Key Prefix').setValue('BUYER').setStyle(TextInputStyle.Short).setRequired(true);
             modal.addComponents(new ActionRowBuilder().addComponents(prefixInput));
             return await interaction.showModal(modal);
         }
@@ -380,29 +322,16 @@ client.on('interactionCreate', async (interaction) => {
             if (interaction.user.id !== ADMIN_USER_ID && !interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
                 return interaction.reply({ content: '🚫 Unauthorized.', ephemeral: true });
             }
-
             const statsEmbed = new EmbedBuilder()
                 .setTitle('📊 Key System Intelligence')
-                .addFields({ name: 'Active Unredeemed Keys', value: `\`${validBuyerKeys.size}\` keys loaded in memory`, inline: true })
+                .addFields({ name: 'Active Unredeemed Keys', value: `\`${validBuyerKeys.size}\` keys loaded`, inline: true })
                 .setColor(0x00FFA3);
-
             return interaction.reply({ embeds: [statsEmbed], ephemeral: true });
         }
 
         if (interaction.customId === 'open_redeem_modal') {
-            const modal = new ModalBuilder()
-                .setCustomId('redeem_modal')
-                .setTitle('License Key Redemption');
-
-            const keyInput = new TextInputBuilder()
-                .setCustomId('key_input')
-                .setLabel('Enter Your License Key')
-                .setPlaceholder('BUYER-XXXX-XXXX')
-                .setStyle(TextInputStyle.Short)
-                .setMinLength(10)
-                .setMaxLength(25)
-                .setRequired(true);
-
+            const modal = new ModalBuilder().setCustomId('redeem_modal').setTitle('License Key Redemption');
+            const keyInput = new TextInputBuilder().setCustomId('key_input').setLabel('Enter Your License Key').setPlaceholder('BUYER-XXXX-XXXX').setStyle(TextInputStyle.Short).setMinLength(10).setMaxLength(25).setRequired(true);
             modal.addComponents(new ActionRowBuilder().addComponents(keyInput));
             return await interaction.showModal(modal);
         }
@@ -425,16 +354,8 @@ client.on('interactionCreate', async (interaction) => {
                 .setColor(0x5865F2);
 
             const ticketControls = new ActionRowBuilder().addComponents(
-                new ButtonBuilder()
-                    .setCustomId('claim_ticket')
-                    .setLabel('Claim Ticket')
-                    .setEmoji('🙋‍♂️')
-                    .setStyle(ButtonStyle.Primary),
-                new ButtonBuilder()
-                    .setCustomId('close_ticket')
-                    .setLabel('Close Ticket')
-                    .setEmoji('🔒')
-                    .setStyle(ButtonStyle.Danger)
+                new ButtonBuilder().setCustomId('claim_ticket').setLabel('Claim Ticket').setEmoji('🙋‍♂️').setStyle(ButtonStyle.Primary),
+                new ButtonBuilder().setCustomId('close_ticket').setLabel('Close Ticket').setEmoji('🔒').setStyle(ButtonStyle.Danger)
             );
 
             await ticketChannel.send({ embeds: [ticketEmbed], components: [ticketControls] });
@@ -446,11 +367,9 @@ client.on('interactionCreate', async (interaction) => {
             if (!interaction.member.permissions.has(PermissionFlagsBits.ManageMessages)) {
                 return interaction.reply({ content: '🚫 Staff permission required to claim tickets.', ephemeral: true });
             }
-
             const claimedEmbed = new EmbedBuilder()
                 .setDescription(`🙋‍♂️ **Ticket Claimed:** <@${interaction.user.id}> is now handling this ticket.`)
                 .setColor(0x00FFA3);
-
             return interaction.reply({ embeds: [claimedEmbed] });
         }
 
@@ -468,7 +387,6 @@ client.on('interactionCreate', async (interaction) => {
         }
     }
 
-    // 3. Modal Form Submissions
     if (interaction.isModalSubmit()) {
 
         if (interaction.customId === 'verify_modal') {
@@ -478,6 +396,7 @@ client.on('interactionCreate', async (interaction) => {
             if (expectedCaptcha && inputCaptcha === expectedCaptcha) {
                 activeCaptchas.delete(interaction.user.id);
 
+                // Assign Verified Member Role
                 const memberRole = interaction.guild.roles.cache.get(MEMBER_ROLE_ID);
                 if (memberRole) {
                     await interaction.member.roles.add(memberRole);
@@ -485,18 +404,16 @@ client.on('interactionCreate', async (interaction) => {
 
                 const verifiedEmbed = new EmbedBuilder()
                     .setTitle('✅ Verification Successful')
-                    .setDescription('Your identity has been confirmed! Your **Verified Member** role has been assigned and you now have full access to the server.')
+                    .setDescription('Your identity has been confirmed! Your **Verified Member** role has been assigned.')
                     .setColor(0x57F287);
 
                 return interaction.reply({ embeds: [verifiedEmbed], ephemeral: true });
             } else {
                 activeCaptchas.delete(interaction.user.id);
-
                 const failEmbed = new EmbedBuilder()
                     .setTitle('❌ Verification Failed')
                     .setDescription('The security code entered was incorrect. Please click the verify button to try again.')
                     .setColor(0xED4245);
-
                 return interaction.reply({ embeds: [failEmbed], ephemeral: true });
             }
         }
@@ -505,42 +422,30 @@ client.on('interactionCreate', async (interaction) => {
             const prefix = interaction.fields.getTextInputValue('key_prefix').toUpperCase().trim() || 'BUYER';
             const newKey = createBuyerCode(prefix);
             validBuyerKeys.add(newKey);
-
             const createdEmbed = new EmbedBuilder()
                 .setTitle('✅ New License Key Minted')
                 .setDescription(`\`\`\`${newKey}\`\`\``)
-                .addFields(
-                    { name: 'Status', value: '🟢 Active & Ready', inline: true },
-                    { name: 'Created By', value: `<@${interaction.user.id}>`, inline: true }
-                )
                 .setColor(0x57F287);
-
             return interaction.reply({ embeds: [createdEmbed], ephemeral: true });
         }
 
         if (interaction.customId === 'redeem_modal') {
             const inputCode = interaction.fields.getTextInputValue('key_input').trim().toUpperCase();
-
             if (validBuyerKeys.has(inputCode)) {
                 validBuyerKeys.delete(inputCode);
-
                 const buyerRole = interaction.guild.roles.cache.get(BUYER_ROLE_ID);
-                if (buyerRole) {
-                    await interaction.member.roles.add(buyerRole);
-                }
+                if (buyerRole) await interaction.member.roles.add(buyerRole);
 
                 const successEmbed = new EmbedBuilder()
                     .setTitle('🎉 Activation Successful!')
                     .setDescription(`Welcome aboard! Your key \`${inputCode}\` has been validated and your **Buyer Role** is granted.`)
                     .setColor(0x57F287);
-
                 return interaction.reply({ embeds: [successEmbed], ephemeral: true });
             } else {
                 const failEmbed = new EmbedBuilder()
                     .setTitle('❌ Activation Failed')
                     .setDescription(`The key \`${inputCode}\` is invalid, expired, or already redeemed.`)
                     .setColor(0xED4245);
-
                 return interaction.reply({ embeds: [failEmbed], ephemeral: true });
             }
         }
@@ -555,12 +460,9 @@ client.on('messageCreate', async (message) => {
         try {
             await message.channel.sendTyping();
             
-            const response = await ai.models.generateContent({
-                model: 'gemini-2.0-flash',
-                contents: message.content,
-            });
+            const result = await aiModel.generateContent(message.content);
+            const responseText = result.response.text();
 
-            const responseText = response.text;
             const reply = responseText.length > 2000 ? responseText.slice(0, 1997) + '...' : responseText;
             await message.reply(reply);
         } catch (err) {
