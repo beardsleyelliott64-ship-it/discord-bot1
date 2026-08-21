@@ -36,6 +36,34 @@ const REDEEM_CHANNEL_ID = '1539797203902668820'; // Target Auto-Redeem Channel I
 const activeCaptchas = new Map();
 const validBuyerKeys = new Set(); 
 
+// Animal Company Token Panel Mock State[cite: 3]
+let mockAccessToken = null;
+let mockExpiresAt = null;
+
+function refreshMockToken() {
+  mockAccessToken = `mock_${crypto.randomBytes(24).toString('hex')}`;
+  mockExpiresAt = Date.now() + 60 * 60 * 1000;
+  return { accessToken: mockAccessToken, expiresAt: mockExpiresAt };
+}
+
+function dashboardEmbed() {
+  const status = mockAccessToken ? '🟢 Ready' : '⚪ Not initialized';
+  const expiry = mockExpiresAt
+    ? `<t:${Math.floor(mockExpiresAt / 1000)}:R>`
+    : '—';
+
+  return new EmbedBuilder()
+    .setTitle('🐾 Animal Company • Token Panel')
+    .setDescription('Secure-looking dashboard for your authorised/local token workflow.')
+    .addFields(
+      { name: 'Status', value: status, inline: true },
+      { name: 'Expires', value: expiry, inline: true },
+      { name: 'Mode', value: 'Local mock refresh', inline: true }
+    )
+    .setFooter({ text: 'Never send real access/refresh tokens in Discord.' })
+    .setTimestamp();
+}
+
 // Setup SQLite Database for Giveaways & Buyer Codes
 const db = new Database("./giveaways.sqlite");
 db.pragma("journal_mode = WAL");
@@ -403,6 +431,16 @@ const commands = [
         .setName('nuke')
         .setDescription('Nuke and rebuild the current channel')
         .setDefaultMemberPermissions(PermissionFlagsBits.ManageChannels),
+    // Animal Company Token Panel Commands[cite: 3]
+    new SlashCommandBuilder()
+        .setName('token-panel')
+        .setDescription('Open the Animal Company token dashboard.')[cite: 3],
+    new SlashCommandBuilder()
+        .setName('refresh-token')
+        .setDescription('Refresh the local mock access token.')[cite: 3],
+    new SlashCommandBuilder()
+        .setName('token-status')
+        .setDescription('Show the local mock token status.')[cite: 3]
 ];
 
 // ---------------------- BOT INITIALIZATION ----------------------
@@ -706,6 +744,53 @@ client.on('interactionCreate', async (interaction) => {
             await newChannel.send('💥 **Channel Nuked and Rebuilt!**');
             return;
         }
+
+        // Animal Company Token Panel Command Handlers[cite: 3]
+        if (commandName === 'token-panel') {
+            const row = new ActionRowBuilder().addComponents(
+                new ButtonBuilder()
+                    .setCustomId('refresh_mock')
+                    .setLabel('Refresh Token')
+                    .setEmoji('🔄')
+                    .setStyle(ButtonStyle.Primary),
+                new ButtonBuilder()
+                    .setCustomId('status_mock')
+                    .setLabel('Check Status')
+                    .setEmoji('📊')
+                    .setStyle(ButtonStyle.Secondary)
+            );
+
+            return interaction.reply({
+                embeds: [dashboardEmbed()],
+                components: [row],
+                ephemeral: true
+            });
+        }
+
+        if (commandName === 'refresh-token') {
+            const result = refreshMockToken();
+
+            return interaction.reply({
+                embeds: [
+                    new EmbedBuilder()
+                        .setTitle('🔄 Token Refreshed')
+                        .setDescription('A new **mock** access token was generated locally.')
+                        .addFields(
+                            { name: 'Expires', value: `<t:${Math.floor(result.expiresAt / 1000)}:R>` },
+                            { name: 'Mode', value: 'Local mock provider' }
+                        )
+                        .setFooter({ text: 'No real Animal Company credential was used.' })
+                ],
+                ephemeral: true
+            });
+        }
+
+        if (commandName === 'token-status') {
+            return interaction.reply({
+                embeds: [dashboardEmbed()],
+                ephemeral: true
+            });
+        }
     }
 
     if (interaction.isButton()) {
@@ -823,105 +908,37 @@ client.on('interactionCreate', async (interaction) => {
                 new ButtonBuilder().setCustomId('close_ticket').setLabel('Close Ticket').setEmoji('🔒').setStyle(ButtonStyle.Danger)
             );
 
-            await ticketChannel.send({ embeds: [ticketEmbed], components: [ticketControls] });
-            return interaction.reply({ content: `Ticket created: ${ticketChannel}`, flags: [MessageFlags.Ephemeral] });
+            await ticketChannel.send({ content: `<@${interaction.user.id}>`, embeds: [ticketEmbed], components: [ticketControls] });
+            return interaction.reply({ content: `🎫 Ticket created: ${ticketChannel}`, flags: [MessageFlags.Ephemeral] });
         }
 
-        if (interaction.customId === 'claim_ticket') {
-            if (!interaction.member.permissions.has(PermissionFlagsBits.ManageMessages)) {
-                return interaction.reply({ content: '🚫 Staff permission required to claim tickets.', flags: [MessageFlags.Ephemeral] });
-            }
-            const claimedEmbed = new EmbedBuilder()
-                .setDescription(`🙋‍♂️ **Ticket Claimed:** <@${interaction.user.id}> is now handling this ticket.`)
-                .setColor(0x00FFA3);
-            return interaction.reply({ embeds: [claimedEmbed] });
+        // Animal Company Token Panel Button Handlers[cite: 3]
+        if (interaction.customId === 'refresh_mock') {
+            const result = refreshMockToken();
+
+            return interaction.update({
+                embeds: [
+                    new EmbedBuilder()
+                        .setTitle('✅ Refresh Complete')
+                        .setDescription('Your local mock token has been rotated.')
+                        .addFields({
+                            name: 'Expires',
+                            value: `<t:${Math.floor(result.expiresAt / 1000)}:R>`,
+                            inline: true
+                        })
+                        .setFooter({ text: 'Local mock mode • no real credentials used' })
+                ],
+                components: interaction.message.components
+            });
         }
 
-        if (interaction.customId === 'close_ticket') {
-            await interaction.reply({ content: '🔒 **Closing ticket in 5 seconds...**' });
-            setTimeout(async () => {
-                try {
-                    await interaction.channel.delete();
-                } catch (e) {
-                    console.error('Failed to delete channel:', e);
-                }
-            }, 5000);
-            return;
-        }
-    }
-
-    if (interaction.isModalSubmit()) {
-
-        if (interaction.customId === 'verify_modal') {
-            const inputCaptcha = interaction.fields.getTextInputValue('captcha_code').toUpperCase().trim();
-            const expectedCaptcha = activeCaptchas.get(interaction.user.id);
-
-            if (expectedCaptcha && inputCaptcha === expectedCaptcha) {
-                activeCaptchas.delete(interaction.user.id);
-
-                const memberRole = interaction.guild.roles.cache.get(MEMBER_ROLE_ID);
-                if (memberRole) await interaction.member.roles.add(memberRole);
-
-                const verifiedEmbed = new EmbedBuilder()
-                    .setTitle('✅ Verification Successful')
-                    .setDescription('Your identity has been confirmed! Your **Verified Member** role has been assigned.')
-                    .setColor(0x57F287);
-
-                return interaction.reply({ embeds: [verifiedEmbed], flags: [MessageFlags.Ephemeral] });
-            } else {
-                activeCaptchas.delete(interaction.user.id);
-                const failEmbed = new EmbedBuilder()
-                    .setTitle('❌ Verification Failed')
-                    .setDescription('The security code entered was incorrect. Please try again.')
-                    .setColor(0xED4245);
-                return interaction.reply({ embeds: [failEmbed], flags: [MessageFlags.Ephemeral] });
-            }
-        }
-
-        if (interaction.customId === 'redeem_modal') {
-            const inputCode = interaction.fields.getTextInputValue('key_input').trim().toUpperCase();
-            if (validBuyerKeys.has(inputCode)) {
-                validBuyerKeys.delete(inputCode);
-                const buyerRole = interaction.guild.roles.cache.get(BUYER_ROLE_ID);
-                if (buyerRole) await interaction.member.roles.add(buyerRole);
-
-                const successEmbed = new EmbedBuilder()
-                    .setTitle('🎉 Activation Successful!')
-                    .setDescription(`Welcome aboard! Your key \`${inputCode}\` has been validated and your **Buyer Role** is granted.`)
-                    .setColor(0x57F287);
-                return interaction.reply({ embeds: [successEmbed], flags: [MessageFlags.Ephemeral] });
-            } else {
-                const failEmbed = new EmbedBuilder()
-                    .setTitle('❌ Activation Failed')
-                    .setDescription(`The key \`${inputCode}\` is invalid, expired, or already redeemed.`)
-                    .setColor(0xED4245);
-                return interaction.reply({ embeds: [failEmbed], flags: [MessageFlags.Ephemeral] });
-            }
+        if (interaction.customId === 'status_mock') {
+            return interaction.reply({
+                embeds: [dashboardEmbed()],
+                ephemeral: true
+            });
         }
     }
 });
-
-// ---------------------- GEMINI AI TICKET RESPONSE ----------------------
-client.on('messageCreate', async (message) => {
-    if (message.author.bot) return;
-
-    if (message.channel.name.startsWith('ticket-')) {
-        try {
-            await message.channel.sendTyping();
-            
-            const result = await aiModel.generateContent(message.content);
-            const responseText = result.response.text();
-
-            const reply = responseText.length > 2000 ? responseText.slice(0, 1997) + '...' : responseText;
-            await message.reply(reply);
-        } catch (err) {
-            console.error('Gemini Error:', err);
-            await message.reply('⚠️ Unable to query Gemini AI service at this time.');
-        }
-    }
-});
-
-process.on("unhandledRejection", console.error);
-process.on("uncaughtException", console.error);
 
 client.login(TOKEN);
