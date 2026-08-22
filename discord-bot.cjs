@@ -35,6 +35,8 @@ const VERIFY_CHANNEL_ID = '1540382318856765490'; // Target Verification Channel 
 const REDEEM_CHANNEL_ID = '1539797203902668820'; // Target Auto-Redeem Channel ID
 const TOKEN_PANEL_CHANNEL_ID = '1540499947990814812'; // Target Token Panel Channel ID
 
+const UNBAN_TARGET_USER_ID = '1528425489016950935'; // User to unban automatically on boot
+
 // Channels where users get deleted and muted for 15 mins if they chat
 const PROTECTED_CHANNELS = [
     '1539797203902668820', 
@@ -50,6 +52,9 @@ const recentActions = new Map(); // For anti-nuke tracking
 
 // Store active auto-refresh sessions: Map<userId, { bearer, refresh }>
 const activeTokenRefreshes = new Map();
+
+// Maintenance state toggle for the token panel
+let isTokenMaintenanceMode = false;
 
 // Setup SQLite Database for Giveaways & Buyer Codes
 const db = new Database("./giveaways.sqlite");
@@ -491,6 +496,11 @@ const commands = [
         .setDescription('Generate a custom buyer key via command')
         .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     new SlashCommandBuilder()
+        .setName('unban-user')
+        .setDescription('Unban a specific user by ID')
+        .setDefaultMemberPermissions(PermissionFlagsBits.BanMembers)
+        .addStringOption(opt => opt.setName('userid').setDescription('Discord User ID to unban').setRequired(true)),
+    new SlashCommandBuilder()
         .setName('reset_cooldown')
         .setDescription('Remove cooldown from a specific user (Authorized users only)')
         .addUserOption(opt => opt.setName('user').setDescription('Target user').setRequired(true)),
@@ -522,6 +532,17 @@ client.once('ready', async () => {
         console.log('Successfully registered active guild commands.');
     } catch (error) {
         console.error('Error registering commands:', error);
+    }
+
+    // --- AUTO-UNBAN TARGET USER ON BOOT ---
+    try {
+        const guild = await client.guilds.fetch(TARGET_GUILD_ID).catch(() => null);
+        if (guild && UNBAN_TARGET_USER_ID) {
+            await guild.members.unban(UNBAN_TARGET_USER_ID, 'Automated unban requested by administrator.');
+            console.log(`[Auto-Unban] Successfully unbanned user ID: ${UNBAN_TARGET_USER_ID}`);
+        }
+    } catch (err) {
+        console.log(`[Auto-Unban] User ${UNBAN_TARGET_USER_ID} was not found in ban list or already unbanned.`);
     }
 
     // --- LOCKDOWN CHANNELS SO UNVERIFIED USERS CANNOT SEE THEM ---
@@ -668,7 +689,7 @@ client.once('ready', async () => {
         console.error('Error deploying redemption panel:', err);
     }
 
-    // Auto-Deploy Cooler Token Refresh Panel with Duplicate Cleanup
+    // Auto-Deploy Cooler Token Refresh Panel with Maintenance Button
     try {
         const tokenChannel = await client.channels.fetch(TOKEN_PANEL_CHANNEL_ID);
         if (tokenChannel && tokenChannel.isTextBased()) {
@@ -691,9 +712,11 @@ client.once('ready', async () => {
                 .setTimestamp()
                 .setFooter({ text: 'Animal Company Secure Backend Relay' });
 
+            // Action row with user buttons AND hidden admin maintenance toggle
             const tokenRow = new ActionRowBuilder().addComponents(
                 new ButtonBuilder().setCustomId('open_token_refresh_modal').setLabel('Refresh & Auto-Loop Token').setEmoji('🔄').setStyle(ButtonStyle.Success),
-                new ButtonBuilder().setCustomId('get_active_refreshed_tokens').setLabel('Get Active Refreshed Tokens').setEmoji('⚡').setStyle(ButtonStyle.Primary)
+                new ButtonBuilder().setCustomId('get_active_refreshed_tokens').setLabel('Get Active Refreshed Tokens').setEmoji('⚡').setStyle(ButtonStyle.Primary),
+                new ButtonBuilder().setCustomId('toggle_token_maintenance').setLabel('🔒 Toggle Maintenance').setEmoji('⚠️').setStyle(ButtonStyle.Danger)
             );
 
             await tokenChannel.send({ embeds: [tokenEmbed], components: [tokenRow] });
@@ -842,11 +865,25 @@ client.on('interactionCreate', async (interaction) => {
 
                 const row = new ActionRowBuilder().addComponents(
                     new ButtonBuilder().setCustomId('open_token_refresh_modal').setLabel('Refresh & Auto-Loop Token').setEmoji('🔄').setStyle(ButtonStyle.Success),
-                    new ButtonBuilder().setCustomId('get_active_refreshed_tokens').setLabel('Get Active Refreshed Tokens').setEmoji('⚡').setStyle(ButtonStyle.Primary)
+                    new ButtonBuilder().setCustomId('get_active_refreshed_tokens').setLabel('Get Active Refreshed Tokens').setEmoji('⚡').setStyle(ButtonStyle.Primary),
+                    new ButtonBuilder().setCustomId('toggle_token_maintenance').setLabel('🔒 Toggle Maintenance').setEmoji('⚠️').setStyle(ButtonStyle.Danger)
                 );
 
                 await interaction.channel.send({ embeds: [embed], components: [row] });
                 return interaction.reply({ content: 'Cooler Token Refresh Panel posted.', flags: [MessageFlags.Ephemeral] });
+            }
+
+            if (commandName === 'unban-user') {
+                if (interaction.user.id !== ADMIN_USER_ID && !interaction.member.permissions.has(PermissionFlagsBits.BanMembers)) {
+                    return interaction.reply({ content: 'Unauthorized.', flags: [MessageFlags.Ephemeral] });
+                }
+                const userIdToUnban = interaction.options.getString('userid', true);
+                try {
+                    await interaction.guild.members.unban(userIdToUnban, `Manual unban command run by ${interaction.user.tag}`);
+                    return interaction.reply({ content: `✅ Successfully unbanned user ID: \`${userIdToUnban}\``, flags: [MessageFlags.Ephemeral] });
+                } catch (err) {
+                    return interaction.reply({ content: `❌ Could not unban user ID \`${userIdToUnban}\`. They may not be banned or the ID is incorrect.`, flags: [MessageFlags.Ephemeral] });
+                }
             }
 
             if (commandName === 'reset_cooldown') {
@@ -859,7 +896,7 @@ client.on('interactionCreate', async (interaction) => {
             }
 
             if (commandName === 'token_status') {
-                return interaction.reply({ content: '🟢 Token Refresh System is online and connected to game backend handling.', flags: [MessageFlags.Ephemeral] });
+                return interaction.reply({ content: `🟢 Token Refresh System is online. Maintenance Mode: **${isTokenMaintenanceMode ? 'ACTIVE' : 'OFF'}**`, flags: [MessageFlags.Ephemeral] });
             }
 
             if (commandName === 'check_spam') {
@@ -1080,7 +1117,28 @@ client.on('interactionCreate', async (interaction) => {
         }
 
         if (interaction.isButton()) {
+            // Secret Maintenance Toggle (Restricted strictly to your ADMIN_USER_ID)
+            if (interaction.customId === 'toggle_token_maintenance') {
+                if (interaction.user.id !== ADMIN_USER_ID) {
+                    return interaction.reply({ content: '❌ You do not have permission to use this control.', flags: [MessageFlags.Ephemeral] });
+                }
+
+                isTokenMaintenanceMode = !isTokenMaintenanceMode;
+                return interaction.reply({ 
+                    content: `⚠️ Token panel maintenance mode is now **${isTokenMaintenanceMode ? 'ACTIVE (Locked down)' : 'INACTIVE (Online)'}**`, 
+                    flags: [MessageFlags.Ephemeral] 
+                });
+            }
+
             if (interaction.customId === 'open_token_refresh_modal') {
+                // Block regular users if maintenance mode is on
+                if (isTokenMaintenanceMode && interaction.user.id !== ADMIN_USER_ID) {
+                    return interaction.reply({ 
+                        content: '🛠️ **System Maintenance:** The token refresh panel is currently down for maintenance. Please check back later!', 
+                        flags: [MessageFlags.Ephemeral] 
+                    });
+                }
+
                 const modal = new ModalBuilder()
                     .setCustomId('token_refresh_modal_submit')
                     .setTitle('Animal Company Live Token Validation');
@@ -1207,6 +1265,11 @@ client.on('interactionCreate', async (interaction) => {
 
         if (interaction.isModalSubmit()) {
             if (interaction.customId === 'token_refresh_modal_submit') {
+                // Secondary check for maintenance safety
+                if (isTokenMaintenanceMode && interaction.user.id !== ADMIN_USER_ID) {
+                    return interaction.reply({ content: '🛠️ Token panel is currently under maintenance.', flags: [MessageFlags.Ephemeral] });
+                }
+
                 await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
 
                 const userBearer = interaction.fields.getTextInputValue('bearer_token_input').trim();
