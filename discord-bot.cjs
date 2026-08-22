@@ -33,47 +33,12 @@ const BUYER_ROLE_ID = '1539706476871032922';  // Target Buyer Role ID
 const MEMBER_ROLE_ID = '1539945420501950535'; // Target Verified Member Role ID
 const VERIFY_CHANNEL_ID = '1540382318856765490'; // Target Verification Channel ID
 const REDEEM_CHANNEL_ID = '1539797203902668820'; // Target Auto-Redeem Channel ID
+const TOKEN_CHANNEL_ID = '1540382318856765491';  // Target Token Channel ID
 
 // Temporary storage for other features
 const activeCaptchas = new Map();
 const validBuyerKeys = new Set(); 
-
-/*
- * Authorized Token Refresh Provider
- */
-async function refreshAuthorizedToken(bearer, refreshToken) {
-  if (!bearer?.trim() || !refreshToken?.trim()) {
-    throw new Error("Bearer and refresh token are required.");
-  }
-
-  return {
-    bearer: `mock_${crypto.randomBytes(32).toString("hex")}`,
-    refresh_token: `mock_${crypto.randomBytes(32).toString("hex")}`
-  };
-}
-
-function createTokenPanel() {
-  const embed = new EmbedBuilder()
-    .setTitle("🐾 Animal Company • Token Panel")
-    .setDescription("Manage your authorized token workflow privately.")
-    .addFields(
-      { name: "🔐 Authentication", value: "Credentials are entered through a private Discord modal.", inline: false },
-      { name: "📦 Output", value: "`token.json`", inline: true },
-      { name: "🟢 Status", value: "Ready", inline: true }
-    )
-    .setTimestamp()
-    .setFooter({ text: "Token Panel" });
-
-  const row = new ActionRowBuilder().addComponents(
-    new ButtonBuilder()
-      .setCustomId("refresh_token")
-      .setLabel("Refresh Token")
-      .setEmoji("🔄")
-      .setStyle(ButtonStyle.Primary)
-  );
-
-  return { embeds: [embed], components: [row], ephemeral: true };
-}
+const tokenCooldowns = new Map();
 
 // Setup SQLite Database for Giveaways & Buyer Codes
 const db = new Database("./giveaways.sqlite");
@@ -353,6 +318,19 @@ function generateCaptcha() {
     return Math.random().toString(36).substring(2, 8).toUpperCase();
 }
 
+// Helper: Dummy Token Generator Logic for Demo
+function generateMockTokens() {
+    const header = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9";
+    const part1 = "eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ";
+    const signature = crypto.randomBytes(32).toString('base64url');
+    
+    return {
+        id: `token_${crypto.randomInt(1, 100)}`,
+        bearer: `${header}.${part1}.${signature}`,
+        refresh: `${header}.ref_${part1}.${signature}`
+    };
+}
+
 // ---------------------- ALL COMMAND DEFINITIONS ----------------------
 const commands = [
     new SlashCommandBuilder().setName('ping').setDescription('Check bot latency'),
@@ -371,6 +349,10 @@ const commands = [
     new SlashCommandBuilder()
         .setName('setup-ticket')
         .setDescription('Post the AI Ticket Creation embed in this channel')
+        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    new SlashCommandBuilder()
+        .setName('setup-token-panel')
+        .setDescription('Post the Token Generator Panel')
         .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     new SlashCommandBuilder()
         .setName("giveaway")
@@ -439,12 +421,19 @@ const commands = [
         .setDescription('Generate a custom buyer key via command')
         .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     new SlashCommandBuilder()
+        .setName('token')
+        .setDescription('Retrieve current session token (Only in authorized servers)'),
+    new SlashCommandBuilder()
+        .setName('reset_cooldown')
+        .setDescription('Remove cooldown from a specific user (Authorized users only)')
+        .addUserOption(opt => opt.setName('user').setDescription('Target user').setRequired(true)),
+    new SlashCommandBuilder()
+        .setName('token_status')
+        .setDescription('Check status of token generator system'),
+    new SlashCommandBuilder()
         .setName('nuke')
         .setDescription('Nuke and rebuild the current channel')
-        .setDefaultMemberPermissions(PermissionFlagsBits.ManageChannels),
-    new SlashCommandBuilder()
-        .setName('token-panel')
-        .setDescription('Open the token management panel.')
+        .setDefaultMemberPermissions(PermissionFlagsBits.ManageChannels)
 ];
 
 // ---------------------- BOT INITIALIZATION ----------------------
@@ -577,10 +566,6 @@ client.on('interactionCreate', async (interaction) => {
                 return interaction.reply({ embeds: [embed], flags: [MessageFlags.Ephemeral] });
             }
 
-            if (commandName === 'token-panel') {
-                return interaction.reply(createTokenPanel());
-            }
-
             if (commandName === 'setup-generate') {
                 const embed = new EmbedBuilder()
                     .setTitle('⚡ License Key Generator Portal')
@@ -622,6 +607,62 @@ client.on('interactionCreate', async (interaction) => {
 
                 await interaction.channel.send({ embeds: [embed], components: [row] });
                 return interaction.reply({ content: 'Ticket panel posted.', flags: [MessageFlags.Ephemeral] });
+            }
+
+            if (commandName === 'setup-token-panel') {
+                const embed = new EmbedBuilder()
+                    .setTitle('🛠️ TOKEN GENERATOR PANEL')
+                    .setDescription('Click the button below to generate and retrieve your current session token details securely.')
+                    .setColor(0x5865F2);
+
+                const row = new ActionRowBuilder().addComponents(
+                    new ButtonBuilder().setCustomId('generate_token_action').setLabel('Generate Token').setEmoji('⚡').setStyle(ButtonStyle.Success)
+                );
+
+                await interaction.channel.send({ embeds: [embed], components: [row] });
+                return interaction.reply({ content: 'Token Generator Panel posted.', flags: [MessageFlags.Ephemeral] });
+            }
+
+            if (commandName === 'token') {
+                const userId = interaction.user.id;
+                const now = Date.now();
+                const cooldownTime = 20 * 60 * 1000; // 20 minutes
+
+                if (tokenCooldowns.has(userId)) {
+                    const expiration = tokenCooldowns.get(userId);
+                    if (now < expiration) {
+                        const remainingMinutes = Math.ceil((expiration - now) / 60000);
+                        return interaction.reply({ content: `⏳ Cooldown active. Next available in **${remainingMinutes} minutes**.`, flags: [MessageFlags.Ephemeral] });
+                    }
+                }
+
+                tokenCooldowns.set(userId, now + cooldownTime);
+                const tokens = generateMockTokens();
+
+                const embed = new EmbedBuilder()
+                    .setTitle('🛡️ TOKEN GENERATOR')
+                    .addFields(
+                        { name: 'Token ID', value: `\`${tokens.id}\``, inline: false },
+                        { name: 'Bearer Token', value: `\`\`\`${tokens.bearer}\`\`\``, inline: false },
+                        { name: 'Refresh Token', value: `\`\`\`${tokens.refresh}\`\`\``, inline: false }
+                    )
+                    .setFooter({ text: 'Next available: 20 minutes' })
+                    .setColor(0x5865F2);
+
+                return interaction.reply({ embeds: [embed], flags: [MessageFlags.Ephemeral] });
+            }
+
+            if (commandName === 'reset_cooldown') {
+                if (interaction.user.id !== ADMIN_USER_ID && !interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
+                    return interaction.reply({ content: 'Unauthorized.', flags: [MessageFlags.Ephemeral] });
+                }
+                const targetUser = interaction.options.getUser('user', true);
+                tokenCooldowns.delete(targetUser.id);
+                return interaction.reply({ content: `✅ Cooldown successfully removed for <@${targetUser.id}>.`, flags: [MessageFlags.Ephemeral] });
+            }
+
+            if (commandName === 'token_status') {
+                return interaction.reply({ content: '🟢 Token Generator System is online and operational.', flags: [MessageFlags.Ephemeral] });
             }
 
             if (commandName === 'giveaway') {
@@ -755,31 +796,33 @@ client.on('interactionCreate', async (interaction) => {
         }
 
         if (interaction.isButton()) {
-            if (interaction.customId === "refresh_token") {
-                const modal = new ModalBuilder()
-                    .setCustomId("refresh_token_modal")
-                    .setTitle("🔄 Refresh Token");
+            if (interaction.customId === 'generate_token_action') {
+                const userId = interaction.user.id;
+                const now = Date.now();
+                const cooldownTime = 20 * 60 * 1000;
 
-                const bearer = new TextInputBuilder()
-                    .setCustomId("bearer")
-                    .setLabel("Bearer")
-                    .setPlaceholder("Enter bearer string")
-                    .setStyle(TextInputStyle.Paragraph)
-                    .setRequired(true);
+                if (tokenCooldowns.has(userId)) {
+                    const expiration = tokenCooldowns.get(userId);
+                    if (now < expiration) {
+                        const remainingMinutes = Math.ceil((expiration - now) / 60000);
+                        return interaction.reply({ content: `⏳ Cooldown active. Next available in **${remainingMinutes} minutes**.`, flags: [MessageFlags.Ephemeral] });
+                    }
+                }
 
-                const refresh = new TextInputBuilder()
-                    .setCustomId("refresh_token")
-                    .setLabel("Refresh Token")
-                    .setPlaceholder("Enter refresh token")
-                    .setStyle(TextInputStyle.Paragraph)
-                    .setRequired(true);
+                tokenCooldowns.set(userId, now + cooldownTime);
+                const tokens = generateMockTokens();
 
-                modal.addComponents(
-                    new ActionRowBuilder().addComponents(bearer),
-                    new ActionRowBuilder().addComponents(refresh)
-                );
+                const embed = new EmbedBuilder()
+                    .setTitle('🛡️ TOKEN GENERATOR')
+                    .addFields(
+                        { name: 'Token ID', value: `\`${tokens.id}\``, inline: false },
+                        { name: 'Bearer Token', value: `\`\`\`${tokens.bearer}\`\`\``, inline: false },
+                        { name: 'Refresh Token', value: `\`\`\`${tokens.refresh}\`\`\``, inline: false }
+                    )
+                    .setFooter({ text: 'Next available: 20 minutes' })
+                    .setColor(0x5865F2);
 
-                return interaction.showModal(modal);
+                return interaction.reply({ embeds: [embed], flags: [MessageFlags.Ephemeral] });
             }
 
             if (interaction.customId.startsWith("giveaway_")) {
@@ -844,28 +887,6 @@ client.on('interactionCreate', async (interaction) => {
         }
 
         if (interaction.isModalSubmit()) {
-            if (interaction.customId === "refresh_token_modal") {
-                const bearer = interaction.fields.getTextInputValue("bearer");
-                const refreshToken = interaction.fields.getTextInputValue("refresh_token");
-
-                await interaction.deferReply({ ephemeral: true });
-
-                try {
-                    const result = await refreshAuthorizedToken(bearer, refreshToken);
-                    const fileContent = JSON.stringify(result, null, 2);
-                    const attachment = new AttachmentBuilder(Buffer.from(fileContent), { name: "token.json" });
-
-                    return interaction.editReply({
-                        content: "✅ Token refreshed successfully!",
-                        files: [attachment]
-                    });
-                } catch (err) {
-                    return interaction.editReply({
-                        content: `❌ Failed to refresh token: ${err.message}`
-                    });
-                }
-            }
-
             if (interaction.customId === 'verify_modal') {
                 const userCode = interaction.fields.getTextInputValue('captcha_code');
                 const correctCode = activeCaptchas.get(interaction.user.id);
