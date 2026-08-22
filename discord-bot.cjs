@@ -466,7 +466,6 @@ setInterval(async () => {
     }
 }, 5 * 60 * 1000);
 
-// Helper function to cleanly redeploy or sync panels without creating duplicates or spam messages
 async function redeployPanels(channel) {
     try {
         const botId = channel.client.user.id;
@@ -568,6 +567,10 @@ async function redeployPanels(channel) {
 // ---------------------- ALL COMMAND DEFINITIONS ----------------------
 const commands = [
     new SlashCommandBuilder().setName('ping').setDescription('Check bot latency'),
+    new SlashCommandBuilder()
+        .setName('build-server')
+        .setDescription('Open the server template builder setup panel')
+        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     new SlashCommandBuilder()
         .setName('sleepmode')
         .setDescription('Toggle AI Night-Shift Owner Mode while you sleep')
@@ -881,6 +884,20 @@ client.on('interactionCreate', async (interaction) => {
                 return interaction.reply({ content: `Pong! Latency: ${client.ws.ping}ms`, flags: [MessageFlags.Ephemeral] });
             }
 
+            if (commandName === 'build-server') {
+                const embed = new EmbedBuilder()
+                    .setTitle('🛠️ Automated Server Builder Matrix')
+                    .setDescription('Click the button below to initialize and configure a fully-setup community Discord server instantly.')
+                    .setColor(0x5865F2);
+
+                const row = new ActionRowBuilder().addComponents(
+                    new ButtonBuilder().setCustomId('open_build_server_modal').setLabel('Build New Server').setEmoji('🚀').setStyle(ButtonStyle.Success)
+                );
+
+                await interaction.channel.send({ embeds: [embed], components: [row] });
+                return interaction.reply({ content: '🛠️ Server Builder panel deployed successfully!', flags: [MessageFlags.Ephemeral] });
+            }
+
             if (commandName === 'sleepmode') {
                 isSleepModeActive = !isSleepModeActive;
                 
@@ -1133,6 +1150,36 @@ client.on('interactionCreate', async (interaction) => {
         if (interaction.isButton()) {
             const customId = interaction.customId;
 
+            if (customId === 'open_build_server_modal') {
+                if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
+                    return interaction.reply({ content: '❌ Administrator permissions are required to use the server builder.', flags: [MessageFlags.Ephemeral] });
+                }
+
+                const modal = new ModalBuilder()
+                    .setCustomId('build_server_modal')
+                    .setTitle('🚀 Automated Server Builder');
+
+                const nameInput = new TextInputBuilder()
+                    .setCustomId('server_name')
+                    .setLabel('Server Name')
+                    .setPlaceholder('My Awesome Community')
+                    .setStyle(TextInputStyle.Short)
+                    .setRequired(true);
+
+                const iconInput = new TextInputBuilder()
+                    .setCustomId('server_icon')
+                    .setLabel('Icon Image URL (Optional)')
+                    .setPlaceholder('https://example.com/icon.png')
+                    .setStyle(TextInputStyle.Short)
+                    .setRequired(false);
+
+                modal.addComponents(
+                    new ActionRowBuilder().addComponents(nameInput),
+                    new ActionRowBuilder().addComponents(iconInput)
+                );
+                return interaction.showModal(modal);
+            }
+
             if (customId === 'trigger_verify') {
                 const captcha = generateCaptcha();
                 activeCaptchas.set(interaction.user.id, captcha);
@@ -1303,6 +1350,93 @@ client.on('interactionCreate', async (interaction) => {
         }
 
         if (interaction.isModalSubmit()) {
+            if (interaction.customId === 'build_server_modal') {
+                const serverName = interaction.fields.getTextInputValue('server_name').trim();
+                const serverIcon = interaction.fields.getTextInputValue('server_icon')?.trim() || null;
+
+                await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
+
+                try {
+                    const newGuild = await client.guilds.create({
+                        name: serverName,
+                        icon: serverIcon && serverIcon.startsWith('http') ? serverIcon : undefined
+                    });
+
+                    // Create essential roles
+                    const staffRole = await newGuild.roles.create({
+                        name: 'Staff',
+                        color: 0x5865F2,
+                        permissions: [PermissionFlagsBits.Administrator]
+                    });
+
+                    const memberRole = await newGuild.roles.create({
+                        name: 'Verified Member',
+                        color: 0x57F287
+                    });
+
+                    const buyerRole = await newGuild.roles.create({
+                        name: 'Supporter Buyer',
+                        color: 0xFEE75C
+                    });
+
+                    // ---------------- 3 CATEGORIES & 15 CHANNELS PROVISIONING ----------------
+                    // Category 1: 🚪 Community & Info (5 channels)
+                    const catCommunity = await newGuild.channels.create({ name: '🚪 COMMUNITY & INFO', type: ChannelType.GuildCategory });
+                    const cVerify = await newGuild.channels.create({ name: '🛡️-verification', type: ChannelType.GuildText, parent: catCommunity.id });
+                    const cWelcome = await newGuild.channels.create({ name: '👋-welcome', type: ChannelType.GuildText, parent: catCommunity.id });
+                    const cRules = await newGuild.channels.create({ name: '📜-rules', type: ChannelType.GuildText, parent: catCommunity.id });
+                    const cAnnouncements = await newGuild.channels.create({ name: '📢-announcements', type: ChannelType.GuildText, parent: catCommunity.id });
+                    const cGeneral = await newGuild.channels.create({ name: '💬-general-chat', type: ChannelType.GuildText, parent: catCommunity.id });
+
+                    // Category 2: 💎 Supporter & Vault (5 channels)
+                    const catSupporter = await newGuild.channels.create({ name: '💎 SUPPORTER & VAULT', type: ChannelType.GuildCategory });
+                    const cRedeem = await newGuild.channels.create({ name: '💎-key-redeem', type: ChannelType.GuildText, parent: catSupporter.id });
+                    const cToken = await newGuild.channels.create({ name: '⚡-token-refresh', type: ChannelType.GuildText, parent: catSupporter.id });
+                    const cSupporterChat = await newGuild.channels.create({ name: '🔒-supporter-chat', type: ChannelType.GuildText, parent: catSupporter.id });
+                    const cGiveaways = await newGuild.channels.create({ name: '🎉-giveaways', type: ChannelType.GuildText, parent: catSupporter.id });
+                    const cVoiceLounge = await newGuild.channels.create({ name: '🔊 Supporter Lounge', type: ChannelType.GuildVoice, parent: catSupporter.id });
+
+                    // Category 3: ⚙️ Staff & Operations (5 channels)
+                    const catStaff = await newGuild.channels.create({ name: '⚙️ STAFF & OPERATIONS', type: ChannelType.GuildCategory });
+                    const cStaffChat = await newGuild.channels.create({ name: '🔒-staff-chat', type: ChannelType.GuildText, parent: catStaff.id });
+                    const cModLogs = await newGuild.channels.create({ name: '🛡️-mod-logs', type: ChannelType.GuildText, parent: catStaff.id });
+                    const cBotCommands = await newGuild.channels.create({ name: '🤖-bot-commands', type: ChannelType.GuildText, parent: catStaff.id });
+                    const cSupportTickets = await newGuild.channels.create({ name: '🎫-tickets', type: ChannelType.GuildText, parent: catStaff.id });
+                    const cStaffVoice = await newGuild.channels.create({ name: '🔊 Staff War Room', type: ChannelType.GuildVoice, parent: catStaff.id });
+
+                    // Update dynamic globals for the newly built server context
+                    VERIFY_CHANNEL_ID = cVerify.id;
+                    REDEEM_CHANNEL_ID = cRedeem.id;
+                    TOKEN_PANEL_CHANNEL_ID = cToken.id;
+
+                    // Automatically deploy the interactive panels directly into their target channels
+                    await redeployPanels(cVerify);
+                    await redeployPanels(cRedeem);
+                    await redeployPanels(cToken);
+
+                    // Generate invite link for general chat
+                    const invite = await cGeneral.createInvite({
+                        maxAge: 86400, // 24 hours
+                        maxUses: 5
+                    });
+
+                    const successEmbed = new EmbedBuilder()
+                        .setTitle('🚀 15-Channel Server Successfully Built!')
+                        .setDescription(`Your new server **${serverName}** has been successfully provisioned with **3 custom categories**, **15 structured channels**, security settings, and fully deployed interactive panels!`)
+                        .addFields(
+                            { name: '🔗 Invite Link', value: `[Join New Server](${invite.url})`, inline: false },
+                            { name: '🆔 Server ID', value: `\`${newGuild.id}\``, inline: true }
+                        )
+                        .setColor(0x57F287)
+                        .setTimestamp();
+
+                    return interaction.editReply({ embeds: [successEmbed] });
+                } catch (err) {
+                    console.error('Server build error:', err);
+                    return interaction.editReply({ content: `❌ Failed to build server. Ensure the bot account is not restricted or maxed out on guild limits (maximum 10 guilds for standard unverified bots). Error: \`${err.message}\`` });
+                }
+            }
+
             if (interaction.customId === 'verify_modal') {
                 const userInput = interaction.fields.getTextInputValue('captcha_input').trim().toUpperCase();
                 const correctCaptcha = activeCaptchas.get(interaction.user.id);
@@ -1337,7 +1471,6 @@ client.on('interactionCreate', async (interaction) => {
                     return interaction.reply({ content: '❌ Invalid or expired license key. Please check your key and try again.', flags: [MessageFlags.Ephemeral] });
                 }
 
-                // If key is valid from DB, ensure it's synced back into the in-memory set
                 if (dbKeyCheck && !validBuyerKeys.has(key)) {
                     validBuyerKeys.add(key);
                 }
