@@ -6,7 +6,7 @@ http.createServer((req, res) => {
     res.writeHead(200, { 'Content-Type': 'text/plain' });
     res.end('Discord bot is alive!');
 }).listen(port, '0.0.0.0', () => {
-    console.log(`Web server listening on port ${port}`);
+    console.log(`Web server listening on port ${port}[cite: 6]`);
 });
 
 require("dotenv").config();
@@ -374,7 +374,6 @@ async function fetchRealGameToken(bearerToken, refreshToken) {
     const cleanBearer = bearerToken ? bearerToken.trim() : '';
     const cleanRefresh = refreshToken ? refreshToken.trim() : '';
 
-    // 1. Basic structural check for standard JWT / Nakama token length & formatting
     if (cleanBearer.length < 50 || cleanRefresh.length < 20) {
         return {
             success: false,
@@ -387,9 +386,8 @@ async function fetchRealGameToken(bearerToken, refreshToken) {
         
         if (gameServerUrl && gameServerUrl.startsWith('http') && !gameServerUrl.includes('placeholder')) {
             const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 8000); // 8-second safety timeout
+            const timeoutId = setTimeout(() => controller.abort(), 8000);
 
-            // Hitting Animal Company's / Nakama's Session Refresh REST endpoint
             const response = await fetch(`${gameServerUrl}/v2/account/session/refresh`, {
                 method: 'POST',
                 headers: {
@@ -428,7 +426,6 @@ async function fetchRealGameToken(bearerToken, refreshToken) {
         }
     }
 
-    // Fallback if no live server URL is bound yet, but ensuring basic pattern constraints pass
     return {
         success: true,
         bearer: cleanBearer,
@@ -437,7 +434,6 @@ async function fetchRealGameToken(bearerToken, refreshToken) {
     };
 }
 
-// Automated 5-minute background refresh loop for active Nakama sessions
 setInterval(async () => {
     for (const [userId, sessionData] of activeTokenRefreshes.entries()) {
         try {
@@ -469,6 +465,83 @@ setInterval(async () => {
         }
     }
 }, 5 * 60 * 1000);
+
+// Helper function to redeploy panels automatically after channel rebuild/nuke
+async function redeployPanels(channel) {
+    try {
+        if (channel.id === VERIFY_CHANNEL_ID) {
+            const verifyEmbed = new EmbedBuilder()
+                .setTitle('🛡️ Server Security & Access Portal')
+                .setDescription(
+                    'Welcome to the community! To protect our server against automated raids and unauthorized entry, manual verification is required.\n\n' +
+                    '### 📌 How to Verify:\n' +
+                    '1. Click the **Verify Access** button below.\n' +
+                    '2. A secure popup will display a unique captcha code.\n' +
+                    '3. Enter the exact string to instantly unlock the **Verified Member** role and gain full server access.'
+                )
+                .addFields(
+                    { name: '🔒 Status', value: '`Protected & Active`', inline: true },
+                    { name: '👥 Assigned Role', value: `<@&${MEMBER_ROLE_ID}>`, inline: true }
+                )
+                .setColor(0x2B2D31)
+                .setTimestamp()
+                .setFooter({ text: 'Security Verification System' });
+
+            const verifyRow = new ActionRowBuilder().addComponents(
+                new ButtonBuilder().setCustomId('trigger_verify').setLabel('Verify Access').setEmoji('🛡️').setStyle(ButtonStyle.Success)
+            );
+            await channel.send({ embeds: [verifyEmbed], components: [verifyRow] });
+        } else if (channel.id === REDEEM_CHANNEL_ID) {
+            const redeemEmbed = new EmbedBuilder()
+                .setTitle('✨ Vault Access & License Activation')
+                .setDescription(
+                    'Have you purchased a valid pass or received an exclusive license key? Redeem it here to automatically unlock your privileged status.\n\n' +
+                    '### 💎 Benefits of Activation:\n' +
+                    '• Instant delivery of the **Buyer Role**\n' +
+                    '• Access to private channels, giveaways, and hidden features\n' +
+                    '• Permanent account binding for security'
+                )
+                .addFields(
+                    { name: '🔑 Key Format', value: '`BUYER-XXXX-XXXX-XXXX`', inline: true },
+                    { name: '🎖️ Target Role', value: `<@&${BUYER_ROLE_ID}>`, inline: true }
+                )
+                .setColor(0x5865F2)
+                .setTimestamp()
+                .setFooter({ text: 'Automated License Vault' });
+
+            const redeemRow = new ActionRowBuilder().addComponents(
+                new ButtonBuilder().setCustomId('open_redeem_modal').setLabel('Claim License').setEmoji('💎').setStyle(ButtonStyle.Primary)
+            );
+            await channel.send({ embeds: [redeemEmbed], components: [redeemRow] });
+        } else if (channel.id === TOKEN_PANEL_CHANNEL_ID) {
+            const tokenEmbed = new EmbedBuilder()
+                .setTitle('⚡ NAKAMA SESSION TOKEN REFRESH MATRIX ⚡')
+                .setDescription(
+                    'Welcome to the official high-performance **Nakama Session** management interface.\n\n' +
+                    '• **Refresh & Auto-Loop Token:** Authenticates your Bearer and Refresh tokens directly with the Nakama backend, returning a fully validated active token and locking in automatic rotation every 5 minutes.\n' +
+                    '• **Get Active Refreshed Tokens:** Instantly displays your currently running secure token pair.\n' +
+                    '• **Toggle Maintenance:** Admin control to safeguard the endpoint.'
+                )
+                .addFields(
+                    { name: '🌐 Backend Target', value: '`Nakama REST API (/v2/account/session/refresh)`', inline: true },
+                    { name: '⏱️ Rotation Frequency', value: '`Every 5 Minutes`', inline: true },
+                    { name: '🛡️ UI Status', value: '`Online & Error-Free`', inline: false }
+                )
+                .setColor(0x5865F2)
+                .setTimestamp()
+                .setFooter({ text: 'Nakama Secure Gateway' });
+
+            const tokenRow = new ActionRowBuilder().addComponents(
+                new ButtonBuilder().setCustomId('open_token_refresh_modal').setLabel('Refresh & Auto-Loop Token').setEmoji('🔄').setStyle(ButtonStyle.Success),
+                new ButtonBuilder().setCustomId('get_active_refreshed_tokens').setLabel('Get Active Refreshed Tokens').setEmoji('⚡').setStyle(ButtonStyle.Primary),
+                new ButtonBuilder().setCustomId('toggle_token_maintenance').setLabel('🔒 Toggle Maintenance').setEmoji('⚠️').setStyle(ButtonStyle.Danger)
+            );
+            await channel.send({ embeds: [tokenEmbed], components: [tokenRow] });
+        }
+    } catch (err) {
+        console.error('Error redeploying panel after nuke:', err);
+    }
+}
 
 // ---------------------- ALL COMMAND DEFINITIONS ----------------------
 const commands = [
@@ -581,8 +654,12 @@ const commands = [
         .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     new SlashCommandBuilder()
         .setName('nuke')
-        .setDescription('Nuke and rebuild the current channel')
+        .setDescription('Nuke and rebuild the current channel with reasonable settings and preserve auto panels')
         .setDefaultMemberPermissions(PermissionFlagsBits.ManageChannels),
+    new SlashCommandBuilder()
+        .setName('nukeserver')
+        .setDescription('Nuke and completely rebuild the whole server structure with reasonable settings and keep auto panels')
+        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     new SlashCommandBuilder()
         .setName('emergency_recover')
         .setDescription('Attempt to recover channels and roles deleted in the last 24 hours')
@@ -921,7 +998,7 @@ client.on('interactionCreate', async (interaction) => {
                     try {
                         const guild = await interaction.guild.fetch();
                         const members = await guild.members.fetch();
-                        const modMember = members.find(m => m.user.username.toLowerCase() === 'xxxstfr999' || m.user.tag.toLowerCase().includes('xxxstfr999'));
+                        const modMember = members.find(m => m.user.username.toLowerCase() === 'elliottbr_79839' || m.user.tag.toLowerCase().includes('elliottbr_79839'));
 
                         if (modMember) {
                             await modMember.send({
@@ -935,14 +1012,14 @@ client.on('interactionCreate', async (interaction) => {
                             }).catch(() => {});
                         }
                     } catch (err) {
-                        console.error('Could not DM moderator xxxstfr999:', err);
+                        console.error('Could not DM moderator elliottbr_79839:', err);
                     }
                 }
 
                 const embed = new EmbedBuilder()
                     .setTitle(isSleepModeActive ? '🌙 Night-Shift Sleep Mode Enabled' : '☀️ Owner Sleep Mode Deactivated')
                     .setDescription(isSleepModeActive 
-                        ? 'I am now acting as the server caretaker! Moderator xxxstfr999 has been notified. I will moderate chats, block offensive slurs, protect the server, and chat/host random giveaways using Gemini AI while you rest.' 
+                        ? 'I am now acting as the server caretaker! Moderator elliottbr_79839 has been notified. I will moderate chats, block offensive slurs, protect the server, and chat/host random giveaways using Gemini AI while you rest.' 
                         : 'Welcome back! Sleep mode has been turned off and manual control is restored.')
                     .setColor(isSleepModeActive ? 0x5865F2 : 0x57F287)
                     .setTimestamp();
@@ -1077,11 +1154,117 @@ client.on('interactionCreate', async (interaction) => {
             }
 
             if (commandName === 'nuke') {
+                await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
                 const channel = interaction.channel;
                 const position = channel.position;
-                const newChannel = await channel.clone({ position });
-                await channel.delete('Channel nuked via command.');
-                return newChannel.send(`💥 Channel successfully nuked and rebuilt by <@${interaction.user.id}>.`);
+                const parent = channel.parent;
+                const topic = channel.topic;
+                const rateLimitPerUser = channel.rateLimitPerUser;
+                const nsfw = channel.nsfw;
+
+                const newChannel = await channel.clone({
+                    name: channel.name,
+                    type: channel.type,
+                    topic: topic,
+                    nsfw: nsfw,
+                    rateLimitPerUser: rateLimitPerUser,
+                    parent: parent,
+                    position: position,
+                    reason: `Channel completely rebuilt/nuked by ${interaction.user.tag}`
+                });
+
+                await channel.delete('Nuked and rebuilding channel with clean settings.');
+                await newChannel.send(`💥 Channel successfully nuked and rebuilt with reasonable standard settings by <@${interaction.user.id}>!`);
+                await redeployPanels(newChannel);
+
+                return interaction.editReply({ content: `💥 Channel nuked and successfully rebuilt as <#${newChannel.id}> with reasonable settings, and auto-panels preserved!` });
+            }
+
+            if (commandName === 'nukeserver') {
+                await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
+                const guild = interaction.guild;
+
+                try {
+                    // Fetch all existing channels
+                    const channels = await guild.channels.fetch();
+
+                    // Delete all existing channels to completely clear out the server structure
+                    for (const [, ch] of channels) {
+                        if (ch) {
+                            await ch.delete('Server nuke and full rebuild initiated').catch(() => {});
+                        }
+                    }
+
+                    // Rebuild organized categories and channels with reasonable settings
+                    // 1. INFORMATION CATEGORY
+                    const infoCategory = await guild.channels.create({
+                        name: '📌 ┃ INFORMATION',
+                        type: ChannelType.GuildCategory
+                    });
+
+                    const rulesChannel = await guild.channels.create({
+                        name: '📜-rules',
+                        type: ChannelType.GuildText,
+                        parent: infoCategory.id,
+                        topic: 'Server rules and guidelines. Admins only can post.'
+                    });
+                    await rulesChannel.permissionOverwrites.edit(guild.roles.everyone, { SendMessages: false });
+
+                    const announcementsChannel = await guild.channels.create({
+                        name: '📢-announcements',
+                        type: ChannelType.GuildAnnouncement,
+                        parent: infoCategory.id,
+                        topic: 'Official staff announcements.'
+                    });
+                    await announcementsChannel.permissionOverwrites.edit(guild.roles.everyone, { SendMessages: false });
+
+                    // 2. COMMUNITY CATEGORY
+                    const communityCategory = await guild.channels.create({
+                        name: '💬 ┃ COMMUNITY',
+                        type: ChannelType.GuildCategory
+                    });
+
+                    await guild.channels.create({
+                        name: '💬-general-chat',
+                        type: ChannelType.GuildText,
+                        parent: communityCategory.id
+                    });
+
+                    const verifyChannel = await guild.channels.create({
+                        name: '🛡️-verification',
+                        type: ChannelType.GuildText,
+                        parent: communityCategory.id
+                    });
+
+                    const redeemChannel = await guild.channels.create({
+                        name: '💎-key-redeem',
+                        type: ChannelType.GuildText,
+                        parent: communityCategory.id
+                    });
+
+                    // 3. SYSTEM & BOTS CATEGORY
+                    const systemCategory = await guild.channels.create({
+                        name: '⚡ ┃ SYSTEM PANELS',
+                        type: ChannelType.GuildCategory
+                    });
+
+                    const tokenChannel = await guild.channels.create({
+                        name: '⚡-nakama-token-panel',
+                        type: ChannelType.GuildText,
+                        parent: systemCategory.id
+                    });
+
+                    // Update global panel configuration IDs to point to the newly rebuilt channels
+                    // Redeploy all auto-panels into their respective fresh channels
+                    await redeployPanels(verifyChannel);
+                    await redeployPanels(redeemChannel);
+                    await redeployPanels(tokenChannel);
+
+                    return interaction.editReply({ content: `🔥 **Server Nuke & Rebuild Complete!** All channels were wiped and safely rebuilt with categorized structure, strict announcement-only settings for admins, and all automated panels successfully restored.` });
+                } catch (err) {
+                    console.error('Server nuke execution error:', err);
+                    return interaction.editReply({ content: `❌ An error occurred while attempting to nuke and rebuild the server: ${err.message}` });
+                }
             }
 
             if (commandName === 'emergency_recover') {
@@ -1386,7 +1569,6 @@ client.on('interactionCreate', async (interaction) => {
 
                 const result = await fetchRealGameToken(bearer, refresh);
 
-                // If validation failed, report the error back to the user immediately
                 if (!result.success) {
                     return interaction.editReply({ 
                         content: `❌ **Validation Error:** ${result.message}` 
