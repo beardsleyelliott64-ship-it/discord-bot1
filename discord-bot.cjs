@@ -389,7 +389,7 @@ async function fetchRealGameToken(bearerToken, refreshToken) {
             const controller = new AbortController();
             const timeoutId = setTimeout(() => controller.abort(), 8000); // 8-second safety timeout
 
-            // Hitting Animal Company's / Nakama's Session Refresh REST endpoint[cite: 6]
+            // Hitting Animal Company's / Nakama's Session Refresh REST endpoint
             const response = await fetch(`${gameServerUrl}/v2/account/session/refresh`, {
                 method: 'POST',
                 headers: {
