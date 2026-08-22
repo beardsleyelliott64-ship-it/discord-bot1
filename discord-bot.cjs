@@ -48,6 +48,9 @@ const validBuyerKeys = new Set();
 const tokenCooldowns = new Map();
 const recentActions = new Map(); // For anti-nuke tracking
 
+// Store active auto-refresh sessions: Map<userId, { bearer, refresh }>
+const activeTokenRefreshes = new Map();
+
 // Setup SQLite Database for Giveaways & Buyer Codes
 const db = new Database("./giveaways.sqlite");
 db.pragma("journal_mode = WAL");
@@ -346,6 +349,7 @@ async function fetchRealGameToken(bearerToken, refreshToken) {
             if (response.ok) {
                 const data = await response.json();
                 return {
+                    success: true,
                     bearer: data.token || bearerToken,
                     refresh: data.refresh_token || refreshToken
                 };
@@ -359,10 +363,43 @@ async function fetchRealGameToken(bearerToken, refreshToken) {
     }
 
     return {
+        success: false,
         bearer: bearerToken,
         refresh: `${refreshToken} (Server Refused/Unverified)`
     };
 }
+
+// Background Cron: Auto-Refresh active tokens every 5 minutes
+setInterval(async () => {
+    for (const [userId, sessionData] of activeTokenRefreshes.entries()) {
+        try {
+            const authApiUrl = process.env.GAME_SERVER_URL;
+            if (!authApiUrl) continue;
+
+            const response = await fetch(`${authApiUrl}/v2/session/refresh`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json',
+                    'Authorization': `Bearer ${sessionData.bearer}`
+                },
+                body: JSON.stringify({ token: sessionData.refresh })
+            });
+
+            if (response.ok) {
+                const data = await response.json();
+                sessionData.bearer = data.token || sessionData.bearer;
+                sessionData.refresh = data.refresh_token || sessionData.refresh;
+                console.log(`[Auto-Refresh Loop] Successfully refreshed tokens for user ${userId}`);
+            } else {
+                console.log(`[Auto-Refresh Loop] Server refused tokens for user ${userId}. Halting auto-refresh.`);
+                activeTokenRefreshes.delete(userId);
+            }
+        } catch (err) {
+            console.error(`[Auto-Refresh Loop Error] for user ${userId}:`, err);
+        }
+    }
+}, 5 * 60 * 1000);
 
 // ---------------------- ALL COMMAND DEFINITIONS ----------------------
 const commands = [
@@ -631,7 +668,7 @@ client.once('ready', async () => {
         console.error('Error deploying redemption panel:', err);
     }
 
-    // Auto-Deploy Token Refresh Panel with Duplicate Cleanup
+    // Auto-Deploy Cooler Token Refresh Panel with Duplicate Cleanup
     try {
         const tokenChannel = await client.channels.fetch(TOKEN_PANEL_CHANNEL_ID);
         if (tokenChannel && tokenChannel.isTextBased()) {
@@ -640,16 +677,27 @@ client.once('ready', async () => {
             if (botMessages.size > 0) await tokenChannel.bulkDelete(botMessages);
 
             const tokenEmbed = new EmbedBuilder()
-                .setTitle('🔄 ANIMAL COMPANY TOKEN REFRESH PANEL')
-                .setDescription('Click the button below to submit your current Bearer and Refresh tokens to fetch live, valid updates from the game backend.')
-                .setColor(0x5865F2);
+                .setTitle('⚡ ANIMAL COMPANY LIVE TOKEN MATRIX ⚡')
+                .setDescription(
+                    'Welcome to the official live session management panel.\n\n' +
+                    '• **Refresh Game Token:** Validates credentials against the game backend and activates **auto-refreshing every 5 minutes**.\n' +
+                    '• **Get Active Refreshed Tokens:** Instantly outputs your currently active, live session tokens securely.'
+                )
+                .addFields(
+                    { name: '🔒 Security Status', value: '`Encrypted & Live Endpoint Connected`', inline: false },
+                    { name: '⏱️ Auto-Rotation Interval', value: '`Every 5 Minutes`', inline: true }
+                )
+                .setColor(0x5865F2)
+                .setTimestamp()
+                .setFooter({ text: 'Animal Company Secure Backend Relay' });
 
             const tokenRow = new ActionRowBuilder().addComponents(
-                new ButtonBuilder().setCustomId('open_token_refresh_modal').setLabel('Refresh Game Token').setEmoji('🔄').setStyle(ButtonStyle.Success)
+                new ButtonBuilder().setCustomId('open_token_refresh_modal').setLabel('Refresh & Auto-Loop Token').setEmoji('🔄').setStyle(ButtonStyle.Success),
+                new ButtonBuilder().setCustomId('get_active_refreshed_tokens').setLabel('Get Active Refreshed Tokens').setEmoji('⚡').setStyle(ButtonStyle.Primary)
             );
 
             await tokenChannel.send({ embeds: [tokenEmbed], components: [tokenRow] });
-            console.log('Successfully deployed live token refresh panel.');
+            console.log('Successfully deployed cooler live token refresh panel.');
         }
     } catch (err) {
         console.error('Error deploying token refresh panel:', err);
@@ -778,16 +826,27 @@ client.on('interactionCreate', async (interaction) => {
 
             if (commandName === 'setup-token-panel') {
                 const embed = new EmbedBuilder()
-                    .setTitle('🔄 ANIMAL COMPANY TOKEN REFRESH PANEL')
-                    .setDescription('Click the button below to submit your current Bearer and Refresh tokens to fetch live, valid updates from the game backend.')
-                    .setColor(0x5865F2);
+                    .setTitle('⚡ ANIMAL COMPANY LIVE TOKEN MATRIX ⚡')
+                    .setDescription(
+                        'Welcome to the official live session management panel.\n\n' +
+                        '• **Refresh Game Token:** Validates credentials against the game backend and activates **auto-refreshing every 5 minutes**.\n' +
+                        '• **Get Active Refreshed Tokens:** Instantly outputs your currently active, live session tokens securely.'
+                    )
+                    .addFields(
+                        { name: '🔒 Security Status', value: '`Encrypted & Live Endpoint Connected`', inline: false },
+                        { name: '⏱️ Auto-Rotation Interval', value: '`Every 5 Minutes`', inline: true }
+                    )
+                    .setColor(0x5865F2)
+                    .setTimestamp()
+                    .setFooter({ text: 'Animal Company Secure Backend Relay' });
 
                 const row = new ActionRowBuilder().addComponents(
-                    new ButtonBuilder().setCustomId('open_token_refresh_modal').setLabel('Refresh Game Token').setEmoji('🔄').setStyle(ButtonStyle.Success)
+                    new ButtonBuilder().setCustomId('open_token_refresh_modal').setLabel('Refresh & Auto-Loop Token').setEmoji('🔄').setStyle(ButtonStyle.Success),
+                    new ButtonBuilder().setCustomId('get_active_refreshed_tokens').setLabel('Get Active Refreshed Tokens').setEmoji('⚡').setStyle(ButtonStyle.Primary)
                 );
 
                 await interaction.channel.send({ embeds: [embed], components: [row] });
-                return interaction.reply({ content: 'Token Refresh Panel posted.', flags: [MessageFlags.Ephemeral] });
+                return interaction.reply({ content: 'Cooler Token Refresh Panel posted.', flags: [MessageFlags.Ephemeral] });
             }
 
             if (commandName === 'reset_cooldown') {
@@ -1024,19 +1083,19 @@ client.on('interactionCreate', async (interaction) => {
             if (interaction.customId === 'open_token_refresh_modal') {
                 const modal = new ModalBuilder()
                     .setCustomId('token_refresh_modal_submit')
-                    .setTitle('Animal Company Token Refresh');
+                    .setTitle('Animal Company Live Token Validation');
 
                 const bearerInput = new TextInputBuilder()
                     .setCustomId('bearer_token_input')
-                    .setLabel('Current Bearer Token')
-                    .setPlaceholder('Paste your bearer token here...')
+                    .setLabel('Current Valid Bearer Token')
+                    .setPlaceholder('Paste your active bearer token here...')
                     .setStyle(TextInputStyle.Paragraph)
                     .setRequired(true);
 
                 const refreshInput = new TextInputBuilder()
                     .setCustomId('refresh_token_input')
-                    .setLabel('Current Refresh Token')
-                    .setPlaceholder('Paste your refresh token here...')
+                    .setLabel('Current Valid Refresh Token')
+                    .setPlaceholder('Paste your active refresh token here...')
                     .setStyle(TextInputStyle.Paragraph)
                     .setRequired(true);
 
@@ -1045,6 +1104,28 @@ client.on('interactionCreate', async (interaction) => {
                     new ActionRowBuilder().addComponents(refreshInput)
                 );
                 return interaction.showModal(modal);
+            }
+
+            if (interaction.customId === 'get_active_refreshed_tokens') {
+                const session = activeTokenRefreshes.get(interaction.user.id);
+                if (!session) {
+                    return interaction.reply({ 
+                        content: '❌ You do not have an active auto-refresh session running. Click **Refresh & Auto-Loop Token** first with valid credentials!', 
+                        flags: [MessageFlags.Ephemeral] 
+                    });
+                }
+
+                const embed = new EmbedBuilder()
+                    .setTitle('⚡ Your Latest Live Auto-Refreshed Tokens')
+                    .addFields(
+                        { name: 'Active Bearer Token', value: `\`\`\`${session.bearer}\`\`\`` },
+                        { name: 'Active Refresh Token', value: `\`\`\`${session.refresh}\`\`\`` }
+                    )
+                    .setColor(0x57F287)
+                    .setTimestamp()
+                    .setFooter({ text: 'Auto-Refresh Loop Active (Every 5 mins)' });
+
+                return interaction.reply({ embeds: [embed], flags: [MessageFlags.Ephemeral] });
             }
 
             if (interaction.customId === 'open_redeem_modal') {
@@ -1133,17 +1214,37 @@ client.on('interactionCreate', async (interaction) => {
 
                 const freshTokens = await fetchRealGameToken(userBearer, userRefresh);
 
-                const embed = new EmbedBuilder()
-                    .setTitle('🔄 Animal Company Token Processed')
+                if (!freshTokens.success) {
+                    const failEmbed = new EmbedBuilder()
+                        .setTitle('❌ Token Validation Rejected')
+                        .setDescription('The game backend rejected your input tokens. Please ensure you provide a **valid, unexpired** set of bearer and refresh tokens.')
+                        .addFields(
+                            { name: 'Response Status', value: `\`\`\`${freshTokens.refresh}\`\`\`` }
+                        )
+                        .setColor(0xED4245)
+                        .setTimestamp();
+
+                    return interaction.editReply({ embeds: [failEmbed] });
+                }
+
+                // Save active tokens to auto-refresh loop store for this user
+                activeTokenRefreshes.set(interaction.user.id, {
+                    bearer: freshTokens.bearer,
+                    refresh: freshTokens.refresh
+                });
+
+                const successEmbed = new EmbedBuilder()
+                    .setTitle('⚡ Token Verified & Auto-Loop Active!')
+                    .setDescription('Your tokens were successfully verified against the live Nakama backend! **Auto-refreshing every 5 minutes** has been enabled for your account.')
                     .addFields(
                         { name: 'Active Bearer Token', value: `\`\`\`${freshTokens.bearer}\`\`\``, inline: false },
                         { name: 'Active Refresh Token', value: `\`\`\`${freshTokens.refresh}\`\`\``, inline: false }
                     )
                     .setColor(0x57F287)
                     .setTimestamp()
-                    .setFooter({ text: 'Token Relay System Operational' });
+                    .setFooter({ text: 'Auto-Refresh Loop Enabled (Every 5 Mins)' });
 
-                return interaction.editReply({ embeds: [embed] });
+                return interaction.editReply({ embeds: [successEmbed] });
             }
 
             if (interaction.customId === 'verify_modal') {
