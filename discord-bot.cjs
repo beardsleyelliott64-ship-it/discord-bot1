@@ -854,6 +854,23 @@ client.on('interactionCreate', async (interaction) => {
                 return interaction.reply({ embeds: [embed], flags: [MessageFlags.Ephemeral] });
             }
 
+            // --- FIXED: OPEN REDEEM MODAL BUTTON HANDLER ---
+            if (interaction.customId === 'open_redeem_modal') {
+                const modal = new ModalBuilder()
+                    .setCustomId('redeem_license_modal')
+                    .setTitle('Claim Your Buyer License');
+
+                const keyInput = new TextInputBuilder()
+                    .setCustomId('license_key_input')
+                    .setLabel('Enter your License Key')
+                    .setPlaceholder('BUYER-XXXX-XXXX-XXXX')
+                    .setStyle(TextInputStyle.Short)
+                    .setRequired(true);
+
+                modal.addComponents(new ActionRowBuilder().addComponents(keyInput));
+                return interaction.showModal(modal);
+            }
+
             if (interaction.customId.startsWith("giveaway_")) {
                 const [action, giveawayId] = interaction.customId.split(":");
                 const giveaway = db.prepare("SELECT * FROM giveaways WHERE id = ?").get(giveawayId);
@@ -929,6 +946,33 @@ client.on('interactionCreate', async (interaction) => {
                 await member.roles.add(MEMBER_ROLE_ID);
 
                 return interaction.reply({ content: '✅ Verification successful! You now have access to the server.', flags: [MessageFlags.Ephemeral] });
+            }
+
+            // --- FIXED: REDEEM MODAL SUBMISSION HANDLER ---
+            if (interaction.customId === 'redeem_license_modal') {
+                const inputKey = interaction.fields.getTextInputValue('license_key_input').trim();
+
+                // Check in giveaway DB first
+                const dbKey = db.prepare("SELECT * FROM buyer_codes WHERE code = ?").get(inputKey);
+                const isValidMemory = validBuyerKeys.has(inputKey);
+
+                if (!dbKey && !isValidMemory) {
+                    return interaction.reply({ content: '❌ Invalid or already claimed license key.', flags: [MessageFlags.Ephemeral] });
+                }
+
+                try {
+                    const member = await interaction.guild.members.fetch(interaction.user.id);
+                    await member.roles.add(BUYER_ROLE_ID);
+
+                    // Remove key from memory/database so it cannot be reused
+                    validBuyerKeys.delete(inputKey);
+                    db.prepare("DELETE FROM buyer_codes WHERE code = ?").run(inputKey);
+
+                    return interaction.reply({ content: '✅ License successfully claimed! The **Buyer** role has been added to your account.', flags: [MessageFlags.Ephemeral] });
+                } catch (err) {
+                    console.error('Error assigning buyer role:', err);
+                    return interaction.reply({ content: '❌ An error occurred while assigning your role. Please contact an admin.', flags: [MessageFlags.Ephemeral] });
+                }
             }
         }
     } catch (error) {
