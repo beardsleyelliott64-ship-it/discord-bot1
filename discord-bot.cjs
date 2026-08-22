@@ -327,30 +327,40 @@ function generateCaptcha() {
     return Math.random().toString(36).substring(2, 8).toUpperCase();
 }
 
-// Helper: Streamlined Token Relay/Refresher Processor
+// Helper: True Nakama Backend Token Refresher
 async function fetchRealGameToken(bearerToken, refreshToken) {
     try {
         const authApiUrl = process.env.GAME_SERVER_URL;
         
         if (authApiUrl && authApiUrl.startsWith('http') && !authApiUrl.includes('placeholder')) {
-            const response = await fetch(authApiUrl, {
+            // Nakama uses standard HTTP Basic auth with the server key or Bearer session token
+            const response = await fetch(`${authApiUrl}/v2/session/refresh`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
                     'Accept': 'application/json',
                     'Authorization': `Bearer ${bearerToken}`
                 },
-                body: JSON.stringify({ refresh_token: refreshToken })
+                body: JSON.stringify({ token: refreshToken })
             });
 
             if (response.ok) {
                 const data = await response.json();
                 return {
-                    bearer: data.token || data.access_token || bearerToken,
+                    bearer: data.token || bearerToken,
                     refresh: data.refresh_token || refreshToken
                 };
+            } else {
+                const errText = await response.text();
+                console.log(`Nakama Server Response (${response.status}):`, errText);
             }
         }
+    } catch (error) {
+        console.error('Live Token Fetch Error:', error);
+    }
+
+    return null; // Returns null if it fails so you know it's a genuine response rejection
+}
 
         // Fallback simulation mode to immediately output validated response format
         return {
