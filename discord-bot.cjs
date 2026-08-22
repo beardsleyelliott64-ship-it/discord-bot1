@@ -101,9 +101,9 @@ CREATE TABLE IF NOT EXISTS entries (
 );
 
 CREATE TABLE IF NOT EXISTS buyer_codes (
-  user_id TEXT PRIMARY KEY,
-  code TEXT NOT NULL UNIQUE,
-  giveaway_id TEXT NOT NULL,
+  user_id TEXT,
+  code TEXT PRIMARY KEY,
+  giveaway_id TEXT,
   created_at INTEGER NOT NULL
 );
 `);
@@ -145,10 +145,8 @@ function hasSpecialPermission(member) {
     return false;
 }
 
-function getOrCreateBuyerCode(userId, giveawayId) {
-  const existing = db.prepare("SELECT code FROM buyer_codes WHERE user_id = ?").get(userId);
-  if (existing) return existing.code;
-
+// Helper: Mint and save a fresh key directly to the database so it can be redeemed via the panel
+function mintAndSaveKey(userId = null, giveawayId = 'MANUAL_MINT') {
   let code;
   do {
     code = makeCode();
@@ -160,6 +158,14 @@ function getOrCreateBuyerCode(userId, giveawayId) {
   `).run(userId, code, giveawayId, Date.now());
 
   validBuyerKeys.add(code);
+  return code;
+}
+
+function getOrCreateBuyerCode(userId, giveawayId) {
+  const existing = db.prepare("SELECT code FROM buyer_codes WHERE user_id = ?").get(userId);
+  if (existing) return existing.code;
+
+  const code = mintAndSaveKey(userId, giveawayId);
   return code;
 }
 
@@ -836,9 +842,8 @@ client.on('interactionCreate', async (interaction) => {
             }
 
             if (commandName === 'generate-code') {
-                const code = makeCode();
-                validBuyerKeys.add(code);
-                return interaction.reply({ content: `🔑 Successfully minted new Supporter license key:\n\`\`\`${code}\`\`\``, flags: [MessageFlags.Ephemeral] });
+                const code = mintAndSaveKey(null, 'MANUAL_COMMAND');
+                return interaction.reply({ content: `🔑 Successfully minted and stored new Supporter license key:\n\`\`\`${code}\`\`\``, flags: [MessageFlags.Ephemeral] });
             }
 
             if (commandName === 'reset_cooldown') {
@@ -910,12 +915,11 @@ client.on('interactionCreate', async (interaction) => {
                 if (!hasSpecialPermission(interaction.member)) {
                     return interaction.reply({ content: '❌ You do not have permission to mint license keys.', flags: [MessageFlags.Ephemeral] });
                 }
-                const code = makeCode();
-                validBuyerKeys.add(code);
+                const code = mintAndSaveKey(null, 'PANEL_MINT');
                 
                 const embed = new EmbedBuilder()
                     .setTitle('🔑 License Key Generated Successfully')
-                    .setDescription(`Your newly minted supporter key has been created:\n\`\`\`${code}\`\`\`\n*Keep this key confidential.*`)
+                    .setDescription(`Your newly minted supporter key has been created and saved to the database:\n\`\`\`${code}\`\`\`\n*Users can now redeem this key instantly via the Redeem Panel.*`)
                     .setColor(0x57F287)
                     .setTimestamp();
 
@@ -1101,19 +1105,21 @@ client.on('interactionCreate', async (interaction) => {
 
             if (interaction.customId === 'redeem_modal') {
                 const key = interaction.fields.getTextInputValue('key_input').trim();
-                let isValidKey = validBuyerKeys.has(key);
-                let dbKeyCheck = null;
+                
+                // Query database directly to check if the minted key exists
+                const dbKeyRecord = db.prepare('SELECT * FROM buyer_codes WHERE code = ?').get(key);
 
-                if (!isValidKey) {
-                    dbKeyCheck = db.prepare('SELECT * FROM buyer_codes WHERE code = ?').get(key);
-                    if (dbKeyCheck) isValidKey = true;
+                if (!dbKeyRecord) {
+                    return interaction.reply({ content: '❌ Invalid or expired license key. Ensure it matches a valid minted `SUPORTER-XXXX-XXXX-XXXX` key.', flags: [MessageFlags.Ephemeral] });
                 }
 
-                if (!isValidKey) {
-                    return interaction.reply({ content: '❌ Invalid or expired license key. Ensure it matches the `SUPORTER-XXXX-XXXX-XXXX` format.', flags: [MessageFlags.Ephemeral] });
+                // Optional: Check if key was already claimed by another user (if user_id is set and not yours)
+                if (dbKeyRecord.user_id && dbKeyRecord.user_id !== interaction.user.id) {
+                    return interaction.reply({ content: '❌ This license key has already been claimed by another user.', flags: [MessageFlags.Ephemeral] });
                 }
 
-                if (dbKeyCheck && !validBuyerKeys.has(key)) validBuyerKeys.add(key);
+                // Bind the key to the redeeming user in the database
+                db.prepare('UPDATE buyer_codes SET user_id = ? WHERE code = ?').run(interaction.user.id, key);
 
                 const member = await interaction.guild.members.fetch(interaction.user.id).catch(() => null);
                 if (member) {
