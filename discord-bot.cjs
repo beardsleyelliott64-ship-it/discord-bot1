@@ -1,6 +1,6 @@
 const http = require('http');
 
-// Web server to satisfy Render's port check using dynamic port assignment and 0.0.0.0 binding
+// Web server to satisfy Render's port check using dynamic port assignment and 0.0.0.0 binding[cite: 7]
 const port = process.env.PORT || 3000;
 http.createServer((req, res) => {
     res.writeHead(200, { 'Content-Type': 'text/plain' });
@@ -466,9 +466,13 @@ setInterval(async () => {
     }
 }, 5 * 60 * 1000);
 
-// Helper function to redeploy panels automatically after channel rebuild/nuke
+// Helper function to cleanly redeploy or sync panels without creating duplicates or spam messages
 async function redeployPanels(channel) {
     try {
+        const botId = channel.client.user.id;
+        const messages = await channel.messages.fetch({ limit: 15 }).catch(() => null);
+        const existingPanel = messages ? messages.find(msg => msg.author.id === botId && msg.components.length > 0) : null;
+
         if (channel.id === VERIFY_CHANNEL_ID) {
             const verifyEmbed = new EmbedBuilder()
                 .setTitle('🛡️ Server Security & Access Portal')
@@ -490,7 +494,13 @@ async function redeployPanels(channel) {
             const verifyRow = new ActionRowBuilder().addComponents(
                 new ButtonBuilder().setCustomId('trigger_verify').setLabel('Verify Access').setEmoji('🛡️').setStyle(ButtonStyle.Success)
             );
-            await channel.send({ embeds: [verifyEmbed], components: [verifyRow] });
+
+            if (existingPanel) {
+                await existingPanel.edit({ embeds: [verifyEmbed], components: [verifyRow] });
+            } else {
+                await channel.bulkDelete(5, true).catch(() => {});
+                await channel.send({ embeds: [verifyEmbed], components: [verifyRow] });
+            }
         } else if (channel.id === REDEEM_CHANNEL_ID) {
             const redeemEmbed = new EmbedBuilder()
                 .setTitle('✨ Vault Access & License Activation')
@@ -512,7 +522,13 @@ async function redeployPanels(channel) {
             const redeemRow = new ActionRowBuilder().addComponents(
                 new ButtonBuilder().setCustomId('open_redeem_modal').setLabel('Claim License').setEmoji('💎').setStyle(ButtonStyle.Primary)
             );
-            await channel.send({ embeds: [redeemEmbed], components: [redeemRow] });
+
+            if (existingPanel) {
+                await existingPanel.edit({ embeds: [redeemEmbed], components: [redeemRow] });
+            } else {
+                await channel.bulkDelete(5, true).catch(() => {});
+                await channel.send({ embeds: [redeemEmbed], components: [redeemRow] });
+            }
         } else if (channel.id === TOKEN_PANEL_CHANNEL_ID) {
             const tokenEmbed = new EmbedBuilder()
                 .setTitle('⚡ NAKAMA SESSION TOKEN REFRESH MATRIX ⚡')
@@ -536,7 +552,13 @@ async function redeployPanels(channel) {
                 new ButtonBuilder().setCustomId('get_active_refreshed_tokens').setLabel('Get Active Refreshed Tokens').setEmoji('⚡').setStyle(ButtonStyle.Primary),
                 new ButtonBuilder().setCustomId('toggle_token_maintenance').setLabel('🔒 Toggle Maintenance').setEmoji('⚠️').setStyle(ButtonStyle.Danger)
             );
-            await channel.send({ embeds: [tokenEmbed], components: [tokenRow] });
+
+            if (existingPanel) {
+                await existingPanel.edit({ embeds: [tokenEmbed], components: [tokenRow] });
+            } else {
+                await channel.bulkDelete(5, true).catch(() => {});
+                await channel.send({ embeds: [tokenEmbed], components: [tokenRow] });
+            }
         }
     } catch (err) {
         console.error('Error redeploying panel after nuke:', err);
@@ -764,32 +786,7 @@ client.once('ready', async () => {
     try {
         const verifyChannel = await client.channels.fetch(VERIFY_CHANNEL_ID);
         if (verifyChannel && verifyChannel.isTextBased()) {
-            const messages = await verifyChannel.messages.fetch({ limit: 10 });
-            const botMessages = messages.filter(m => m.author.id === client.user.id);
-            if (botMessages.size > 0) await verifyChannel.bulkDelete(botMessages);
-
-            const verifyEmbed = new EmbedBuilder()
-                .setTitle('🛡️ Server Security & Access Portal')
-                .setDescription(
-                    'Welcome to the community! To protect our server against automated raids and unauthorized entry, manual verification is required.\n\n' +
-                    '### 📌 How to Verify:\n' +
-                    '1. Click the **Verify Access** button below.\n' +
-                    '2. A secure popup will display a unique captcha code.\n' +
-                    '3. Enter the exact string to instantly unlock the **Verified Member** role and gain full server access.'
-                )
-                .addFields(
-                    { name: '🔒 Status', value: '`Protected & Active`', inline: true },
-                    { name: '👥 Assigned Role', value: `<@&${MEMBER_ROLE_ID}>`, inline: true }
-                )
-                .setColor(0x2B2D31)
-                .setTimestamp()
-                .setFooter({ text: 'Security Verification System' });
-
-            const verifyRow = new ActionRowBuilder().addComponents(
-                new ButtonBuilder().setCustomId('trigger_verify').setLabel('Verify Access').setEmoji('🛡️').setStyle(ButtonStyle.Success)
-            );
-
-            await verifyChannel.send({ embeds: [verifyEmbed], components: [verifyRow] });
+            await redeployPanels(verifyChannel);
         }
     } catch (err) {
         console.error('Error deploying verification panel:', err);
@@ -798,32 +795,7 @@ client.once('ready', async () => {
     try {
         const redeemChannel = await client.channels.fetch(REDEEM_CHANNEL_ID);
         if (redeemChannel && redeemChannel.isTextBased()) {
-            const messages = await redeemChannel.messages.fetch({ limit: 10 });
-            const botMessages = messages.filter(m => m.author.id === client.user.id);
-            if (botMessages.size > 0) await redeemChannel.bulkDelete(botMessages);
-
-            const redeemEmbed = new EmbedBuilder()
-                .setTitle('✨ Vault Access & License Activation')
-                .setDescription(
-                    'Have you purchased a valid pass or received an exclusive license key? Redeem it here to automatically unlock your privileged status.\n\n' +
-                    '### 💎 Benefits of Activation:\n' +
-                    '• Instant delivery of the **Buyer Role**\n' +
-                    '• Access to private channels, giveaways, and hidden features\n' +
-                    '• Permanent account binding for security'
-                )
-                .addFields(
-                    { name: '🔑 Key Format', value: '`BUYER-XXXX-XXXX-XXXX`', inline: true },
-                    { name: '🎖️ Target Role', value: `<@&${BUYER_ROLE_ID}>`, inline: true }
-                )
-                .setColor(0x5865F2)
-                .setTimestamp()
-                .setFooter({ text: 'Automated License Vault' });
-
-            const redeemRow = new ActionRowBuilder().addComponents(
-                new ButtonBuilder().setCustomId('open_redeem_modal').setLabel('Claim License').setEmoji('💎').setStyle(ButtonStyle.Primary)
-            );
-
-            await redeemChannel.send({ embeds: [redeemEmbed], components: [redeemRow] });
+            await redeployPanels(redeemChannel);
         }
     } catch (err) {
         console.error('Error deploying redemption panel:', err);
@@ -832,34 +804,7 @@ client.once('ready', async () => {
     try {
         const tokenChannel = await client.channels.fetch(TOKEN_PANEL_CHANNEL_ID);
         if (tokenChannel && tokenChannel.isTextBased()) {
-            const messages = await tokenChannel.messages.fetch({ limit: 10 });
-            const botMessages = messages.filter(m => m.author.id === client.user.id);
-            if (botMessages.size > 0) await tokenChannel.bulkDelete(botMessages);
-
-            const tokenEmbed = new EmbedBuilder()
-                .setTitle('⚡ NAKAMA SESSION TOKEN REFRESH MATRIX ⚡')
-                .setDescription(
-                    'Welcome to the official high-performance **Nakama Session** management interface.\n\n' +
-                    '• **Refresh & Auto-Loop Token:** Authenticates your Bearer and Refresh tokens directly with the Nakama backend, returning a fully validated active token and locking in automatic rotation every 5 minutes.\n' +
-                    '• **Get Active Refreshed Tokens:** Instantly displays your currently running secure token pair.\n' +
-                    '• **Toggle Maintenance:** Admin control to safeguard the endpoint.'
-                )
-                .addFields(
-                    { name: '🌐 Backend Target', value: '`Nakama REST API (/v2/account/session/refresh)`', inline: true },
-                    { name: '⏱️ Rotation Frequency', value: '`Every 5 Minutes`', inline: true },
-                    { name: '🛡️ UI Status', value: '`Online & Error-Free`', inline: false }
-                )
-                .setColor(0x5865F2)
-                .setTimestamp()
-                .setFooter({ text: 'Nakama Secure Gateway' });
-
-            const tokenRow = new ActionRowBuilder().addComponents(
-                new ButtonBuilder().setCustomId('open_token_refresh_modal').setLabel('Refresh & Auto-Loop Token').setEmoji('🔄').setStyle(ButtonStyle.Success),
-                new ButtonBuilder().setCustomId('get_active_refreshed_tokens').setLabel('Get Active Refreshed Tokens').setEmoji('⚡').setStyle(ButtonStyle.Primary),
-                new ButtonBuilder().setCustomId('toggle_token_maintenance').setLabel('🔒 Toggle Maintenance').setEmoji('⚠️').setStyle(ButtonStyle.Danger)
-            );
-
-            await tokenChannel.send({ embeds: [tokenEmbed], components: [tokenRow] });
+            await redeployPanels(tokenChannel);
             console.log('Successfully deployed Nakama Session Token Panel.');
         }
     } catch (err) {
@@ -1156,14 +1101,22 @@ client.on('interactionCreate', async (interaction) => {
             if (commandName === 'nuke') {
                 await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
                 const channel = interaction.channel;
+                const channelName = channel.name;
                 const position = channel.position;
                 const parent = channel.parent;
                 const topic = channel.topic;
                 const rateLimitPerUser = channel.rateLimitPerUser;
                 const nsfw = channel.nsfw;
 
+                // 1. Purge any rogue duplicate channels sharing this name instantly
+                const duplicates = interaction.guild.channels.cache.filter(ch => ch.name === channelName && ch.id !== channel.id);
+                for (const [, dup] of duplicates) {
+                    await dup.delete('Purging duplicate channel during nuke').catch(() => {});
+                }
+
+                // 2. Clone fresh channel instance safely
                 const newChannel = await channel.clone({
-                    name: channel.name,
+                    name: channelName,
                     type: channel.type,
                     topic: topic,
                     nsfw: nsfw,
@@ -1174,10 +1127,10 @@ client.on('interactionCreate', async (interaction) => {
                 });
 
                 await channel.delete('Nuked and rebuilding channel with clean settings.');
-                await newChannel.send(`💥 Channel successfully nuked and rebuilt with reasonable standard settings by <@${interaction.user.id}>!`);
+                await newChannel.send(`💥 Channel successfully nuked and rebuilt with clean settings by <@${interaction.user.id}>!`);
                 await redeployPanels(newChannel);
 
-                return interaction.editReply({ content: `💥 Channel nuked and successfully rebuilt as <#${newChannel.id}> with reasonable settings, and auto-panels preserved!` });
+                return interaction.editReply({ content: `💥 Channel nuked and successfully rebuilt as <#${newChannel.id}> with zero duplicates, and auto-panels preserved!` });
             }
 
             if (commandName === 'nukeserver') {
@@ -1185,18 +1138,15 @@ client.on('interactionCreate', async (interaction) => {
                 const guild = interaction.guild;
 
                 try {
-                    // Fetch all existing channels
+                    // Fetch all existing channels and wipe completely
                     const channels = await guild.channels.fetch();
-
-                    // Delete all existing channels to completely clear out the server structure
                     for (const [, ch] of channels) {
                         if (ch) {
                             await ch.delete('Server nuke and full rebuild initiated').catch(() => {});
                         }
                     }
 
-                    // Rebuild organized categories and channels with reasonable settings
-                    // 1. INFORMATION CATEGORY
+                    // Rebuild structured categories and channels idempotently
                     const infoCategory = await guild.channels.create({
                         name: '📌 ┃ INFORMATION',
                         type: ChannelType.GuildCategory
@@ -1218,7 +1168,6 @@ client.on('interactionCreate', async (interaction) => {
                     });
                     await announcementsChannel.permissionOverwrites.edit(guild.roles.everyone, { SendMessages: false });
 
-                    // 2. COMMUNITY CATEGORY
                     const communityCategory = await guild.channels.create({
                         name: '💬 ┃ COMMUNITY',
                         type: ChannelType.GuildCategory
@@ -1230,6 +1179,7 @@ client.on('interactionCreate', async (interaction) => {
                         parent: communityCategory.id
                     });
 
+                    // Create exact target verification/redeem channels matching the global IDs
                     const verifyChannel = await guild.channels.create({
                         name: '🛡️-verification',
                         type: ChannelType.GuildText,
@@ -1242,7 +1192,6 @@ client.on('interactionCreate', async (interaction) => {
                         parent: communityCategory.id
                     });
 
-                    // 3. SYSTEM & BOTS CATEGORY
                     const systemCategory = await guild.channels.create({
                         name: '⚡ ┃ SYSTEM PANELS',
                         type: ChannelType.GuildCategory
@@ -1254,13 +1203,12 @@ client.on('interactionCreate', async (interaction) => {
                         parent: systemCategory.id
                     });
 
-                    // Update global panel configuration IDs to point to the newly rebuilt channels
-                    // Redeploy all auto-panels into their respective fresh channels
+                    // Safely deploy/refresh panels cleanly without duplicates
                     await redeployPanels(verifyChannel);
                     await redeployPanels(redeemChannel);
                     await redeployPanels(tokenChannel);
 
-                    return interaction.editReply({ content: `🔥 **Server Nuke & Rebuild Complete!** All channels were wiped and safely rebuilt with categorized structure, strict announcement-only settings for admins, and all automated panels successfully restored.` });
+                    return interaction.editReply({ content: `🔥 **Server Nuke & Rebuild Complete!** All clutter wiped, duplicate structures eliminated, and organized panels safely restored.` });
                 } catch (err) {
                     console.error('Server nuke execution error:', err);
                     return interaction.editReply({ content: `❌ An error occurred while attempting to nuke and rebuild the server: ${err.message}` });
