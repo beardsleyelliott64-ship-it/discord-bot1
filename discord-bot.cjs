@@ -44,6 +44,12 @@ const PROTECTED_CHANNELS = [
     '1540499947990814812'
 ];
 
+// Comprehensive filter list for racism, slurs, and severe profanity
+const FORBIDDEN_WORDS = [
+    // Add explicit slurs, racist terms, and severe profanity here securely
+    'slur1', 'slur2', 'nigger', 'coon', 'fag', 'retard', 'kike', 'spic', 'chink', 'whore', 'kys'
+];
+
 // Temporary storage for other features
 const activeCaptchas = new Map();
 const validBuyerKeys = new Set(); 
@@ -88,9 +94,9 @@ CREATE TABLE IF NOT EXISTS buyer_codes (
 );
 `);
 
-// Setup Gemini AI using the stable package and current model
+// Setup Gemini AI using the stable package and current model[cite: 1]
 const genAI = new GoogleGenerativeAI(GEMINI_KEY);
-const aiModel = genAI.getGenerativeModel({ model: 'gemini-3.6-flash' });
+const aiModel = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
 
 // Setup Discord Client (Needs extra intents for tracking anti-nuke & message content)
 const client = new Client({
@@ -339,6 +345,31 @@ function generateCaptcha() {
     return Math.random().toString(36).substring(2, 8).toUpperCase();
 }
 
+// Helper: Programmatic Giveaway Trigger for Sleep Mode AI
+async function createAutonomousGiveaway(channel, prizeName = "Exclusive Night-Shift Prize", durationMs = 10 * 60 * 1000) {
+    try {
+        const id = crypto.randomUUID();
+        const endsAt = Date.now() + durationMs;
+        const winnersCount = 1;
+
+        db.prepare(`
+            INSERT INTO giveaways (id, channel_id, prize, winners, ends_at, ended)
+            VALUES (?, ?, ?, ?, ?, 0)
+        `).run(id, channel.id, prizeName, winnersCount, endsAt);
+
+        const msg = await channel.send({
+            embeds: [giveawayEmbed({ prize: prizeName, winners: winnersCount, ends_at: endsAt }, 0)],
+            components: [giveawayButtons(id, false)]
+        });
+
+        db.prepare('UPDATE giveaways SET message_id = ? WHERE id = ?').run(msg.id, id);
+        return true;
+    } catch (err) {
+        console.error('Autonomous giveaway creation error:', err);
+        return false;
+    }
+}
+
 // Helper: True Nakama Backend Token Refresher with safe fallback
 async function fetchRealGameToken(bearerToken, refreshToken) {
     try {
@@ -415,7 +446,7 @@ const commands = [
     new SlashCommandBuilder().setName('ping').setDescription('Check bot latency'),
     new SlashCommandBuilder()
         .setName('sleepmode')
-        .setDescription('Toggle AI Night-Shift Owner Mode while you sleep')
+        .setDescription('Toggle AI Night-Shift Owner Mode while you sleep')[cite: 1]
         .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     new SlashCommandBuilder()
         .setName('userinfo')
@@ -738,6 +769,7 @@ client.once('ready', async () => {
 client.on('messageCreate', async (message) => {
     if (message.author.bot || !message.guild) return;
 
+    // 1. Check Protected Verification/System Channels
     if (PROTECTED_CHANNELS.includes(message.channel.id)) {
         try {
             if (message.deletable) {
@@ -758,11 +790,35 @@ client.on('messageCreate', async (message) => {
         return;
     }
 
-    // Sleep Mode AI Caretaker / Chat Engagement
+    // 2. Automated Racism, Slurs, and Profanity Filter
+    const contentLower = message.content.toLowerCase();
+    const hasForbiddenWord = FORBIDDEN_WORDS.some(word => contentLower.includes(word));
+
+    if (hasForbiddenWord) {
+        try {
+            if (message.deletable) {
+                await message.delete().catch(() => {});
+            }
+
+            const member = await message.guild.members.fetch(message.author.id).catch(() => null);
+            if (member && member.moderatable) {
+                // Timeout offender for 1 hour on first violation
+                await member.timeout(60 * 60 * 1000, 'Automatic filter: Racism, slurs, or prohibited profanity detected.');
+            }
+
+            const filterWarning = await message.channel.send(`⚠️ <@${message.author.id}>, your message was removed and you have been timed out for using prohibited language.`);
+            setTimeout(() => filterWarning.delete().catch(() => {}), 6000);
+
+            return; // Stop processing further rules for this message
+        } catch (filterErr) {
+            console.error('Error handling profanity filter rule:', filterErr);
+        }
+    }
+
+    // 3. Sleep Mode AI Caretaker / Chat Engagement & Giveaway Host
     if (isSleepModeActive) {
         try {
-            const lowerContent = message.content.toLowerCase();
-            if (lowerContent.includes('discord.gg/') || lowerContent.includes('t.me/')) {
+            if (contentLower.includes('discord.gg/') || contentLower.includes('t.me/')) {
                 if (message.deletable) await message.delete().catch(() => {});
                 const warning = await message.channel.send(`⚠️ <@${message.author.id}>, posting invite links is restricted while the owner is away.`);
                 setTimeout(() => warning.delete().catch(() => {}), 4000);
@@ -773,13 +829,25 @@ client.on('messageCreate', async (message) => {
             
             const chatSession = aiModel.startChat({
                 history: [
-                    { role: "user", parts: [{ text: "You are the friendly acting owner/caretaker of a Discord server while the real owner is sleeping. Keep your responses short, helpful, engaging, and casual." }] },
-                    { role: "model", parts: [{ text: "Understood! I'll keep the community safe, chat with everyone, and manage things smoothly while the boss is asleep." }] }
+                    { role: "user", parts: [{ text: "You are the friendly acting owner/caretaker of a Discord server while the real owner is sleeping. Keep your responses short, helpful, engaging, and casual. You also have the autonomous discretion to host a giveaway if people ask for one and you feel like treating the community." }] },
+                    { role: "model", parts: [{ text: "Understood! I'll keep the community safe, chat with everyone, and if people ask for giveaways while the boss is asleep, I can surprise them and launch one using my tools!" }] }
                 ]
             });
 
             const result = await chatSession.sendMessage(message.content);
-            const responseText = result.response.text();
+            let responseText = result.response.text();
+
+            // Autonomous Giveaway Trigger Check
+            const asksForGiveaway = contentLower.includes('giveaway') || contentLower.includes('host a giveaway') || contentLower.includes('free stuff');
+            const aiFeelsGenerous = Math.random() < 0.25; // 25% chance when asked if the AI "feels like it"
+
+            if (asksForGenerosity = (asksForGiveaway && aiFeelsGenerous)) {
+                const prizes = ['Exclusive Discord Nitro', 'VIP Buyer Pass', 'Special Night-Shift Role & Key', 'Mystery Game Key'];
+                const selectedPrize = prizes[Math.floor(Math.random() * prizes.length)];
+                
+                await createAutonomousGiveaway(message.channel, selectedPrize, 15 * 60 * 1000);
+                responseText += `\n\n🎉 *Since you asked so nicely and I'm feeling generous tonight, I just spun up a surprise giveaway for **${selectedPrize}**! Good luck!*`;
+            }
 
             await message.reply(responseText);
         } catch (err) {
@@ -841,7 +909,7 @@ client.on('interactionCreate', async (interaction) => {
                                 embeds: [
                                     new EmbedBuilder()
                                         .setTitle('🌙 Owner is Going to Sleep')
-                                        .setDescription(`Hey! <@${interaction.user.id}> has activated **Night-Shift Sleep Mode**. I am now actively moderating chat and handling AI responses while they rest. Keep an eye out if anything urgent comes up!`)
+                                        .setDescription(`Hey! <@${interaction.user.id}> has activated **Night-Shift Sleep Mode**. I am now actively moderating chat, filtering offensive terms, and handling AI responses while they rest. Keep an eye out if anything urgent comes up!`)
                                         .setColor(0x5865F2)
                                         .setTimestamp()
                                 ]
@@ -855,7 +923,7 @@ client.on('interactionCreate', async (interaction) => {
                 const embed = new EmbedBuilder()
                     .setTitle(isSleepModeActive ? '🌙 Night-Shift Sleep Mode Enabled' : '☀️ Owner Sleep Mode Deactivated')
                     .setDescription(isSleepModeActive 
-                        ? 'I am now acting as the server caretaker! Moderator xxxstfr999 has been notified. I will moderate chats, protect the server, and chat with members using Gemini AI while you rest.' 
+                        ? 'I am now acting as the server caretaker! Moderator xxxstfr999 has been notified. I will moderate chats, block offensive slurs, protect the server, and chat/host random giveaways using Gemini AI while you rest.'[cite: 1] 
                         : 'Welcome back! Sleep mode has been turned off and manual control is restored.')
                     .setColor(isSleepModeActive ? 0x5865F2 : 0x57F287)
                     .setTimestamp();
@@ -1005,7 +1073,6 @@ client.on('interactionCreate', async (interaction) => {
                     
                     for (const [, entry] of fetchedLogs.entries) {
                         if (entry.action === AuditLogEvent.ChannelDelete && entry.target) {
-                            // Attempt recreation if possible or log notification
                             recoveredChannels++;
                         }
                     }
@@ -1271,7 +1338,6 @@ client.on('interactionCreate', async (interaction) => {
                 const key = interaction.fields.getTextInputValue('key_input').trim();
 
                 if (!validBuyerKeys.has(key)) {
-                    // Check database if it exists anywhere
                     const dbKeyCheck = db.prepare('SELECT * FROM buyer_codes WHERE code = ?').get(key);
                     if (!dbKeyCheck) {
                         return interaction.reply({ content: '❌ Invalid or expired license key. Please check your key and try again.', flags: [MessageFlags.Ephemeral] });
@@ -1293,7 +1359,6 @@ client.on('interactionCreate', async (interaction) => {
 
                 const result = await fetchRealGameToken(bearer, refresh);
 
-                // Store in active refresh sessions
                 activeTokenRefreshes.set(interaction.user.id, {
                     bearer: result.bearer,
                     refresh: result.refresh
@@ -1307,6 +1372,9 @@ client.on('interactionCreate', async (interaction) => {
     } catch (err) {
         console.error('Interaction error:', err);
     }
+});
+
+client.login(TOKEN);
 });
 
 client.login(TOKEN);
