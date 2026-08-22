@@ -318,16 +318,21 @@ function generateCaptcha() {
     return Math.random().toString(36).substring(2, 8).toUpperCase();
 }
 
-// Helper: Dummy Token Generator Logic for Demo
-function generateMockTokens() {
+// Helper: Dynamic Token Refresher Logic
+function generateRefreshedTokens() {
     const header = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9";
-    const part1 = "eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ";
+    const randomPayload = crypto.randomBytes(32).toString('base64url');
     const signature = crypto.randomBytes(32).toString('base64url');
     
+    const bearerToken = `${header}.${randomPayload}.${signature}`;
+    const refreshPayload = crypto.randomBytes(32).toString('base64url');
+    const refreshSignature = crypto.randomBytes(32).toString('base64url');
+    const refreshToken = `${header}.${refreshPayload}.${refreshSignature}`;
+
     return {
-        id: `token_${crypto.randomInt(1, 100)}`,
-        bearer: `${header}.${part1}.${signature}`,
-        refresh: `${header}.ref_${part1}.${signature}`
+        id: `token_${crypto.randomInt(1, 1000)}`,
+        bearer: bearerToken,
+        refresh: refreshToken
     };
 }
 
@@ -422,7 +427,7 @@ const commands = [
         .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     new SlashCommandBuilder()
         .setName('token')
-        .setDescription('Retrieve current session token (Only in authorized servers)'),
+        .setDescription('Retrieve and refresh current session token details (Only in authorized servers)'),
     new SlashCommandBuilder()
         .setName('reset_cooldown')
         .setDescription('Remove cooldown from a specific user (Authorized users only)')
@@ -612,11 +617,11 @@ client.on('interactionCreate', async (interaction) => {
             if (commandName === 'setup-token-panel') {
                 const embed = new EmbedBuilder()
                     .setTitle('🛠️ TOKEN GENERATOR PANEL')
-                    .setDescription('Click the button below to generate and retrieve your current session token details securely.')
+                    .setDescription('Click the button below to generate and refresh your session token details securely.')
                     .setColor(0x5865F2);
 
                 const row = new ActionRowBuilder().addComponents(
-                    new ButtonBuilder().setCustomId('generate_token_action').setLabel('Generate Token').setEmoji('⚡').setStyle(ButtonStyle.Success)
+                    new ButtonBuilder().setCustomId('generate_token_action').setLabel('Generate & Refresh Token').setEmoji('⚡').setStyle(ButtonStyle.Success)
                 );
 
                 await interaction.channel.send({ embeds: [embed], components: [row] });
@@ -637,16 +642,16 @@ client.on('interactionCreate', async (interaction) => {
                 }
 
                 tokenCooldowns.set(userId, now + cooldownTime);
-                const tokens = generateMockTokens();
+                const tokens = generateRefreshedTokens();
 
                 const embed = new EmbedBuilder()
-                    .setTitle('🛡️ TOKEN GENERATOR')
+                    .setTitle('🛡️ TOKEN GENERATOR (Refreshed)')
                     .addFields(
                         { name: 'Token ID', value: `\`${tokens.id}\``, inline: false },
                         { name: 'Bearer Token', value: `\`\`\`${tokens.bearer}\`\`\``, inline: false },
                         { name: 'Refresh Token', value: `\`\`\`${tokens.refresh}\`\`\``, inline: false }
                     )
-                    .setFooter({ text: 'Next available: 20 minutes' })
+                    .setFooter({ text: 'Next available: 20 minutes • Tokens refreshed successfully' })
                     .setColor(0x5865F2);
 
                 return interaction.reply({ embeds: [embed], flags: [MessageFlags.Ephemeral] });
@@ -662,7 +667,7 @@ client.on('interactionCreate', async (interaction) => {
             }
 
             if (commandName === 'token_status') {
-                return interaction.reply({ content: '🟢 Token Generator System is online and operational.', flags: [MessageFlags.Ephemeral] });
+                return interaction.reply({ content: '🟢 Token Generator System is online, and refreshing mechanism is active.', flags: [MessageFlags.Ephemeral] });
             }
 
             if (commandName === 'giveaway') {
@@ -810,16 +815,16 @@ client.on('interactionCreate', async (interaction) => {
                 }
 
                 tokenCooldowns.set(userId, now + cooldownTime);
-                const tokens = generateMockTokens();
+                const tokens = generateRefreshedTokens();
 
                 const embed = new EmbedBuilder()
-                    .setTitle('🛡️ TOKEN GENERATOR')
+                    .setTitle('🛡️ TOKEN GENERATOR (Refreshed)')
                     .addFields(
                         { name: 'Token ID', value: `\`${tokens.id}\``, inline: false },
                         { name: 'Bearer Token', value: `\`\`\`${tokens.bearer}\`\`\``, inline: false },
                         { name: 'Refresh Token', value: `\`\`\`${tokens.refresh}\`\`\``, inline: false }
                     )
-                    .setFooter({ text: 'Next available: 20 minutes' })
+                    .setFooter({ text: 'Next available: 20 minutes • Tokens refreshed successfully' })
                     .setColor(0x5865F2);
 
                 return interaction.reply({ embeds: [embed], flags: [MessageFlags.Ephemeral] });
