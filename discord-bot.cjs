@@ -15,7 +15,7 @@ const crypto = require("node:crypto");
 const { 
     Client, GatewayIntentBits, SlashCommandBuilder, PermissionFlagsBits, 
     ChannelType, ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder, 
-    REST, Routes, ModalBuilder, TextInputBuilder, TextInputStyle, MessageFlags, Events, AttachmentBuilder 
+    REST, Routes, ModalBuilder, TextInputBuilder, TextInputStyle, MessageFlags, Events, AttachmentBuilder, AuditLogEvent
 } = require('discord.js');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const Database = require("better-sqlite3");
@@ -451,7 +451,11 @@ const commands = [
     new SlashCommandBuilder()
         .setName('nuke')
         .setDescription('Nuke and rebuild the current channel')
-        .setDefaultMemberPermissions(PermissionFlagsBits.ManageChannels)
+        .setDefaultMemberPermissions(PermissionFlagsBits.ManageChannels),
+    new SlashCommandBuilder()
+        .setName('emergency_recover')
+        .setDescription('Attempt to recover channels and roles deleted in the last 24 hours')
+        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
 ];
 
 // ---------------------- BOT INITIALIZATION ----------------------
@@ -635,7 +639,7 @@ client.on('channelDelete', async (channel) => {
     try {
         const fetchedLogs = await channel.guild.fetchAuditLogs({
             limit: 1,
-            type: 12, // CHANNEL_DELETE
+            type: AuditLogEvent.ChannelDelete,
         });
         const deletionLog = fetchedLogs.entries.first();
         if (!deletionLog) return;
@@ -822,6 +826,58 @@ client.on('interactionCreate', async (interaction) => {
 
                 return interaction.editReply({ content: `🔍 Scan complete! Detected and banned **${bannedCount}** spammers across server channels.` });
             }
+
+            // --- EMERGENCY RECOVER COMMAND ---
+            if (commandName === 'emergency_recover') {
+                if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
+                    return interaction.reply({ content: 'Unauthorized.', flags: [MessageFlags.Ephemeral] });
+                }
+
+                await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
+                const guild = interaction.guild;
+                let recoveredChannels = 0;
+                let recoveredRoles = 0;
+                const past24Hours = Date.now() - (24 * 60 * 60 * 1000);
+
+                try {
+                    // Recover Channels
+                    const channelLogs = await guild.fetchAuditLogs({ type: AuditLogEvent.ChannelDelete, limit: 100 });
+                    for (const [, log] of channelLogs.entries) {
+                        if (log.createdTimestamp > past24Hours && log.target) {
+                            const exists = guild.channels.cache.find(c => c.name === log.target.name);
+                            if (!exists) {
+                                await guild.channels.create({
+                                    name: log.target.name,
+                                    type: log.target.type,
+                                }).catch(console.error);
+                                recoveredChannels++;
+                            }
+                        }
+                    }
+
+                    // Recover Roles
+                    const roleLogs = await guild.fetchAuditLogs({ type: AuditLogEvent.RoleDelete, limit: 100 });
+                    for (const [, log] of roleLogs.entries) {
+                        if (log.createdTimestamp > past24Hours && log.target) {
+                           const exists = guild.roles.cache.find(r => r.name === log.target.name);
+                           if (!exists) {
+                               await guild.roles.create({
+                                   name: log.target.name,
+                                   color: log.changes.find(c => c.key === 'color')?.old || 0,
+                                   permissions: log.changes.find(c => c.key === 'permissions')?.old || 0n
+                               }).catch(console.error);
+                               recoveredRoles++;
+                           }
+                        }
+                    }
+
+                    return interaction.editReply({ content: `✅ **Emergency Recovery Complete!**\nRecreated **${recoveredChannels}** channels and **${recoveredRoles}** roles based on recent audit logs.` });
+                } catch (err) {
+                    console.error('Error during emergency recovery:', err);
+                    return interaction.editReply({ content: '❌ An error occurred during recovery.' });
+                }
+            }
+
 
             if (commandName === 'giveaway') {
                 const subcommand = interaction.options.getSubcommand();
