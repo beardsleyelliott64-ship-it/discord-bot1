@@ -327,22 +327,37 @@ function generateCaptcha() {
     return Math.random().toString(36).substring(2, 8).toUpperCase();
 }
 
-// Helper: Dynamic Token Refresher Logic
-function generateRefreshedTokens() {
-    const header = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9";
-    const randomPayload = crypto.randomBytes(32).toString('base64url');
-    const signature = crypto.randomBytes(32).toString('base64url');
-    
-    const bearerToken = `${header}.${randomPayload}.${signature}`;
-    const refreshPayload = crypto.randomBytes(32).toString('base64url');
-    const refreshSignature = crypto.randomBytes(32).toString('base64url');
-    const refreshToken = `${header}.${refreshPayload}.${refreshSignature}`;
+// Helper: Live Nakama / Game Server Token Refresher
+async function fetchRealGameToken(bearerToken, refreshToken) {
+    // Replace this URI with the captured endpoint URL from Fiddler Classic
+    const authApiUrl = 'https://your-captured-nakama-host.nakamacloud.io/v2/account/authenticate/refresh';
 
-    return {
-        id: `token_${crypto.randomInt(1, 1000)}`,
-        bearer: bearerToken,
-        refresh: refreshToken
-    };
+    try {
+        const response = await fetch(authApiUrl, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Accept': 'application/json',
+                'Authorization': `Bearer ${bearerToken}`
+            },
+            body: JSON.stringify({
+                refresh_token: refreshToken
+            })
+        });
+
+        if (!response.ok) {
+            return null;
+        }
+
+        const data = await response.json();
+        return {
+            bearer: data.token || data.access_token,
+            refresh: data.refresh_token
+        };
+    } catch (error) {
+        console.error('Animal Company Backend Auth Error:', error);
+        return null;
+    }
 }
 
 // ---------------------- ALL COMMAND DEFINITIONS ----------------------
@@ -366,7 +381,7 @@ const commands = [
         .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     new SlashCommandBuilder()
         .setName('setup-token-panel')
-        .setDescription('Post the Token Generator Panel')
+        .setDescription('Post the Token Refresh Panel')
         .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     new SlashCommandBuilder()
         .setName("giveaway")
@@ -435,9 +450,6 @@ const commands = [
         .setDescription('Generate a custom buyer key via command')
         .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     new SlashCommandBuilder()
-        .setName('token')
-        .setDescription('Retrieve and refresh current session token details (Only in authorized servers)'),
-    new SlashCommandBuilder()
         .setName('reset_cooldown')
         .setDescription('Remove cooldown from a specific user (Authorized users only)')
         .addUserOption(opt => opt.setName('user').setDescription('Target user').setRequired(true)),
@@ -480,7 +492,6 @@ client.once('ready', async () => {
             
             for (const [, channel] of channels) {
                 if (channel) {
-                    // Skip if it's the verification channel itself, so unverified users can still see and use it!
                     if (channel.id === VERIFY_CHANNEL_ID) {
                         await channel.permissionOverwrites.edit(guild.roles.everyone, {
                             ViewChannel: true,
@@ -489,7 +500,6 @@ client.once('ready', async () => {
                         continue;
                     }
 
-                    // For all other channels: Hide from @everyone, show to Verified Role
                     await channel.permissionOverwrites.edit(guild.roles.everyone, {
                         ViewChannel: false
                     }).catch(() => {});
@@ -617,7 +627,7 @@ client.once('ready', async () => {
         console.error('Error deploying redemption panel:', err);
     }
 
-    // Auto-Deploy Token Panel with Duplicate Cleanup
+    // Auto-Deploy Token Refresh Panel with Duplicate Cleanup
     try {
         const tokenChannel = await client.channels.fetch(TOKEN_PANEL_CHANNEL_ID);
         if (tokenChannel && tokenChannel.isTextBased()) {
@@ -626,19 +636,19 @@ client.once('ready', async () => {
             if (botMessages.size > 0) await tokenChannel.bulkDelete(botMessages);
 
             const tokenEmbed = new EmbedBuilder()
-                .setTitle('🛠️ TOKEN GENERATOR PANEL')
-                .setDescription('Click the button below to generate and refresh your session token details securely.')
+                .setTitle('🔄 ANIMAL COMPANY TOKEN REFRESH PANEL')
+                .setDescription('Click the button below to submit your current Bearer and Refresh tokens to fetch live, valid updates from the game backend.')
                 .setColor(0x5865F2);
 
             const tokenRow = new ActionRowBuilder().addComponents(
-                new ButtonBuilder().setCustomId('generate_token_action').setLabel('Generate & Refresh Token').setEmoji('⚡').setStyle(ButtonStyle.Success)
+                new ButtonBuilder().setCustomId('open_token_refresh_modal').setLabel('Refresh Game Token').setEmoji('🔄').setStyle(ButtonStyle.Success)
             );
 
             await tokenChannel.send({ embeds: [tokenEmbed], components: [tokenRow] });
-            console.log('Successfully deployed auto-refresh token panel.');
+            console.log('Successfully deployed live token refresh panel.');
         }
     } catch (err) {
-        console.error('Error deploying auto-refresh token panel:', err);
+        console.error('Error deploying token refresh panel:', err);
     }
 });
 
@@ -764,45 +774,16 @@ client.on('interactionCreate', async (interaction) => {
 
             if (commandName === 'setup-token-panel') {
                 const embed = new EmbedBuilder()
-                    .setTitle('🛠️ TOKEN GENERATOR PANEL')
-                    .setDescription('Click the button below to generate and refresh your session token details securely.')
+                    .setTitle('🔄 ANIMAL COMPANY TOKEN REFRESH PANEL')
+                    .setDescription('Click the button below to submit your current Bearer and Refresh tokens to fetch live, valid updates from the game backend.')
                     .setColor(0x5865F2);
 
                 const row = new ActionRowBuilder().addComponents(
-                    new ButtonBuilder().setCustomId('generate_token_action').setLabel('Generate & Refresh Token').setEmoji('⚡').setStyle(ButtonStyle.Success)
+                    new ButtonBuilder().setCustomId('open_token_refresh_modal').setLabel('Refresh Game Token').setEmoji('🔄').setStyle(ButtonStyle.Success)
                 );
 
                 await interaction.channel.send({ embeds: [embed], components: [row] });
-                return interaction.reply({ content: 'Token Generator Panel posted.', flags: [MessageFlags.Ephemeral] });
-            }
-
-            if (commandName === 'token') {
-                const userId = interaction.user.id;
-                const now = Date.now();
-                const cooldownTime = 20 * 60 * 1000;
-
-                if (tokenCooldowns.has(userId)) {
-                    const expiration = tokenCooldowns.get(userId);
-                    if (now < expiration) {
-                        const remainingMinutes = Math.ceil((expiration - now) / 60000);
-                        return interaction.reply({ content: `⏳ Cooldown active. Next available in **${remainingMinutes} minutes**.`, flags: [MessageFlags.Ephemeral] });
-                    }
-                }
-
-                tokenCooldowns.set(userId, now + cooldownTime);
-                const tokens = generateRefreshedTokens();
-
-                const embed = new EmbedBuilder()
-                    .setTitle('🛡️ TOKEN GENERATOR (Refreshed)')
-                    .addFields(
-                        { name: 'Token ID', value: `\`${tokens.id}\``, inline: false },
-                        { name: 'Bearer Token', value: `\`\`\`${tokens.bearer}\`\`\``, inline: false },
-                        { name: 'Refresh Token', value: `\`\`\`${tokens.refresh}\`\`\``, inline: false }
-                    )
-                    .setFooter({ text: 'Next available: 20 minutes • Tokens refreshed successfully' })
-                    .setColor(0x5865F2);
-
-                return interaction.reply({ embeds: [embed], flags: [MessageFlags.Ephemeral] });
+                return interaction.reply({ content: 'Token Refresh Panel posted.', flags: [MessageFlags.Ephemeral] });
             }
 
             if (commandName === 'reset_cooldown') {
@@ -815,7 +796,7 @@ client.on('interactionCreate', async (interaction) => {
             }
 
             if (commandName === 'token_status') {
-                return interaction.reply({ content: '🟢 Token Generator System is online, and refreshing mechanism is active.', flags: [MessageFlags.Ephemeral] });
+                return interaction.reply({ content: '🟢 Token Refresh System is online and connected to game backend handling.', flags: [MessageFlags.Ephemeral] });
             }
 
             if (commandName === 'check_spam') {
@@ -1036,33 +1017,30 @@ client.on('interactionCreate', async (interaction) => {
         }
 
         if (interaction.isButton()) {
-            if (interaction.customId === 'generate_token_action') {
-                const userId = interaction.user.id;
-                const now = Date.now();
-                const cooldownTime = 20 * 60 * 1000;
+            if (interaction.customId === 'open_token_refresh_modal') {
+                const modal = new ModalBuilder()
+                    .setCustomId('token_refresh_modal_submit')
+                    .setTitle('Animal Company Token Refresh');
 
-                if (tokenCooldowns.has(userId)) {
-                    const expiration = tokenCooldowns.get(userId);
-                    if (now < expiration) {
-                        const remainingMinutes = Math.ceil((expiration - now) / 60000);
-                        return interaction.reply({ content: `⏳ Cooldown active. Next available in **${remainingMinutes} minutes**.`, flags: [MessageFlags.Ephemeral] });
-                    }
-                }
+                const bearerInput = new TextInputBuilder()
+                    .setCustomId('bearer_token_input')
+                    .setLabel('Current Bearer Token')
+                    .setPlaceholder('Paste your bearer token here...')
+                    .setStyle(TextInputStyle.Paragraph)
+                    .setRequired(true);
 
-                tokenCooldowns.set(userId, now + cooldownTime);
-                const tokens = generateRefreshedTokens();
+                const refreshInput = new TextInputBuilder()
+                    .setCustomId('refresh_token_input')
+                    .setLabel('Current Refresh Token')
+                    .setPlaceholder('Paste your refresh token here...')
+                    .setStyle(TextInputStyle.Paragraph)
+                    .setRequired(true);
 
-                const embed = new EmbedBuilder()
-                    .setTitle('🛡️ TOKEN GENERATOR (Refreshed)')
-                    .addFields(
-                        { name: 'Token ID', value: `\`${tokens.id}\``, inline: false },
-                        { name: 'Bearer Token', value: `\`\`\`${tokens.bearer}\`\`\``, inline: false },
-                        { name: 'Refresh Token', value: `\`\`\`${tokens.refresh}\`\`\``, inline: false }
-                    )
-                    .setFooter({ text: 'Next available: 20 minutes • Tokens refreshed successfully' })
-                    .setColor(0x5865F2);
-
-                return interaction.reply({ embeds: [embed], flags: [MessageFlags.Ephemeral] });
+                modal.addComponents(
+                    new ActionRowBuilder().addComponents(bearerInput),
+                    new ActionRowBuilder().addComponents(refreshInput)
+                );
+                return interaction.showModal(modal);
             }
 
             if (interaction.customId === 'open_redeem_modal') {
@@ -1143,6 +1121,33 @@ client.on('interactionCreate', async (interaction) => {
         }
 
         if (interaction.isModalSubmit()) {
+            if (interaction.customId === 'token_refresh_modal_submit') {
+                await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
+
+                const userBearer = interaction.fields.getTextInputValue('bearer_token_input').trim();
+                const userRefresh = interaction.fields.getTextInputValue('refresh_token_input').trim();
+
+                const freshTokens = await fetchRealGameToken(userBearer, userRefresh);
+
+                if (!freshTokens) {
+                    return interaction.editReply({
+                        content: '❌ **Authentication Failed:** The game server rejected your tokens. Ensure you have updated the endpoint URL with your exact Fiddler capture route.'
+                    });
+                }
+
+                const embed = new EmbedBuilder()
+                    .setTitle('🔄 Animal Company Token Refreshed')
+                    .addFields(
+                        { name: 'New Bearer Token', value: `\`\`\`${freshTokens.bearer}\`\`\``, inline: false },
+                        { name: 'New Refresh Token', value: `\`\`\`${freshTokens.refresh}\`\`\``, inline: false }
+                    )
+                    .setColor(0x57F287)
+                    .setTimestamp()
+                    .setFooter({ text: 'Validated via live Nakama game backend' });
+
+                return interaction.editReply({ embeds: [embed] });
+            }
+
             if (interaction.customId === 'verify_modal') {
                 const userCode = interaction.fields.getTextInputValue('captcha_code');
                 const correctCode = activeCaptchas.get(interaction.user.id);
