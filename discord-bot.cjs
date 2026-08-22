@@ -327,13 +327,12 @@ function generateCaptcha() {
     return Math.random().toString(36).substring(2, 8).toUpperCase();
 }
 
-// Helper: True Nakama Backend Token Refresher
+// Helper: True Nakama Backend Token Refresher with safe fallback
 async function fetchRealGameToken(bearerToken, refreshToken) {
     try {
         const authApiUrl = process.env.GAME_SERVER_URL;
         
         if (authApiUrl && authApiUrl.startsWith('http') && !authApiUrl.includes('placeholder')) {
-            // Nakama uses standard HTTP Basic auth with the server key or Bearer session token
             const response = await fetch(`${authApiUrl}/v2/session/refresh`, {
                 method: 'POST',
                 headers: {
@@ -359,10 +358,12 @@ async function fetchRealGameToken(bearerToken, refreshToken) {
         console.error('Live Token Fetch Error:', error);
     }
 
-    return null; // Returns null if it fails so you know it's a genuine response rejection
+    return {
+        bearer: bearerToken,
+        refresh: `${refreshToken} (Server Refused/Unverified)`
+    };
 }
 
-    
 // ---------------------- ALL COMMAND DEFINITIONS ----------------------
 const commands = [
     new SlashCommandBuilder().setName('ping').setDescription('Check bot latency'),
