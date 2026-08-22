@@ -6,7 +6,7 @@ http.createServer((req, res) => {
     res.writeHead(200, { 'Content-Type': 'text/plain' });
     res.end('Discord bot is alive!');
 }).listen(port, '0.0.0.0', () => {
-    console.log(`Web server listening on port ${port}[cite: 6]`);
+    console.log(`Web server listening on port ${port}[cite: 6, 7]`);
 });
 
 require("dotenv").config();
@@ -29,20 +29,35 @@ const CLIENT_ID = process.env.CLIENT_ID || '1539741106349146132';
 const TARGET_GUILD_ID = process.env.GUILD_ID || '1539704406327693512';
 const ADMIN_USER_ID = process.env.YOUR_DISCORD_USER_ID;
 
-const BUYER_ROLE_ID = '1540841149554499634';  // Updated Supporter / Buyer Role ID
+const BUYER_ROLE_ID = '1540841149554499634';  // Supporter / Buyer Role ID
 const MEMBER_ROLE_ID = '1539945420501950535'; // Target Verified Member Role ID
 const UNBAN_TARGET_USER_ID = '1528425489016950935'; // User to unban automatically on boot
 
-// Dynamic references initialized or populated on boot
-let VERIFY_CHANNEL_ID = '1540382318856765490';
-let REDEEM_CHANNEL_ID = '1539797203902668820';
-let TOKEN_PANEL_CHANNEL_ID = '1540499947990814812';
+// Dynamic references initialized with your requested specific channel IDs
+let VERIFY_CHANNEL_ID = '1540840661266210826';
+let REDEEM_CHANNEL_ID = '1540840667725570099';
+let TOKEN_PANEL_CHANNEL_ID = '1540840668614754304';
 
 // Channels where users get deleted and muted for 15 mins if they chat
 const PROTECTED_CHANNELS = [
-    '1539797203902668820', 
-    '1540382318856765490', 
-    '1540499947990814812'
+    '1540840667725570099', 
+    '1540840668614754304', 
+    '1540840661266210826'
+];
+
+// Channels where people can see them but cannot talk (Read-only setup)
+const READ_ONLY_CHANNELS = [
+    '1540840661740421322', 
+    '1540840662767902751', 
+    '1540840664076656692', 
+    '1540840673954111608', 
+    '1540840674969128980'
+];
+
+// The strict last 2 IDs where absolute no-one can talk
+const STRICT_LOCKED_CHANNELS = [
+    '1540840673954111608', 
+    '1540840674969128980'
 ];
 
 // Comprehensive filter list for racism, slurs, and severe profanity
@@ -111,7 +126,6 @@ const client = new Client({
 // Helper: Enhanced Supporter Key Generator for Database (SUPORTER-XXXX-XXXX)
 function makeCode() {
   const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-
   function part(length) {
     let result = "";
     for (let i = 0; i < length; i++) {
@@ -119,28 +133,20 @@ function makeCode() {
     }
     return result;
   }
-
   return `SUPORTER-${part(4)}-${part(4)}`;
 }
 
 function getOrCreateBuyerCode(userId, giveawayId) {
-  const existing = db
-    .prepare("SELECT code FROM buyer_codes WHERE user_id = ?")
-    .get(userId);
-
+  const existing = db.prepare("SELECT code FROM buyer_codes WHERE user_id = ?").get(userId);
   if (existing) return existing.code;
 
   let code;
-
   do {
     code = makeCode();
-  } while (
-    db.prepare("SELECT 1 FROM buyer_codes WHERE code = ?").get(code)
-  );
+  } while (db.prepare("SELECT 1 FROM buyer_codes WHERE code = ?").get(code));
 
   db.prepare(`
-    INSERT INTO buyer_codes
-      (user_id, code, giveaway_id, created_at)
+    INSERT INTO buyer_codes (user_id, code, giveaway_id, created_at)
     VALUES (?, ?, ?, ?)
   `).run(userId, code, giveawayId, Date.now());
 
@@ -150,45 +156,34 @@ function getOrCreateBuyerCode(userId, giveawayId) {
 
 function parseDuration(input) {
   const match = /^(\d+)(s|m|h|d)$/i.exec(input.trim());
-
   if (!match) return null;
-
   const amount = Number(match[1]);
   const unit = match[2].toLowerCase();
-
   const multiplier = {
     s: 1000,
     m: 60 * 1000,
     h: 60 * 60 * 1000,
     d: 24 * 60 * 60 * 1000
   }[unit];
-
   const duration = amount * multiplier;
-
-  if (
-    !Number.isSafeInteger(duration) ||
-    duration < 1000 ||
-    duration > 30 * 86400000
-  ) {
+  if (!Number.isSafeInteger(duration) || duration < 1000 || duration > 30 * 86400000) {
     return null;
   }
-
   return duration;
 }
 
 function giveawayEmbed(giveaway, entryCount) {
   return new EmbedBuilder()
-    .setTitle("🎉 SUPPORTER GIVEAWAY")
+    .setTitle("🎉 SUPPORTER GIVEAWAY VAULT")
     .setDescription(
-      `**Prize:** ${giveaway.prize}\n\n` +
-      `🏆 **Winners:** ${giveaway.winners}\n` +
-      `👥 **Entries:** ${entryCount}\n` +
-      `⏳ **Ends:** <t:${Math.floor(giveaway.ends_at / 1000)}:R>\n\n` +
-      `Click **Enter Giveaway** below to enter.`
+      `> Participate in our exclusive community supporter events to win premium licenses and rewards.\n\n` +
+      `🎁 **Prize:** \`${giveaway.prize}\`\n` +
+      `🏆 **Winners:** \`${giveaway.winners}\`\n` +
+      `👥 **Total Entries:** \`${entryCount}\`\n` +
+      `⏳ **Concludes:** <t:${Math.floor(giveaway.ends_at / 1000)}:R>\n\n` +
+      `*Click the button below to secure your entry slot.*`
     )
-    .setFooter({
-      text: "Winner receives a private Supporter code by DM."
-    })
+    .setFooter({ text: "Powered by Supporter Verification Security Matrix" })
     .setTimestamp()
     .setColor(0x5865F2);
 }
@@ -197,11 +192,10 @@ function giveawayButtons(id, ended = false) {
   return new ActionRowBuilder().addComponents(
     new ButtonBuilder()
       .setCustomId(`giveaway_enter:${id}`)
-      .setLabel(ended ? "Giveaway Ended" : "Enter Giveaway")
+      .setLabel(ended ? "Giveaway Concluded" : "Enter Giveaway")
       .setEmoji("🎟️")
       .setStyle(ended ? ButtonStyle.Secondary : ButtonStyle.Primary)
       .setDisabled(ended),
-
     new ButtonBuilder()
       .setCustomId(`giveaway_info:${id}`)
       .setLabel("View Info")
@@ -211,54 +205,38 @@ function giveawayButtons(id, ended = false) {
 }
 
 async function updateGiveawayMessage(giveawayId) {
-  const giveaway = db
-    .prepare("SELECT * FROM giveaways WHERE id = ?")
-    .get(giveawayId);
-
+  const giveaway = db.prepare("SELECT * FROM giveaways WHERE id = ?").get(giveawayId);
   if (!giveaway || !giveaway.message_id) return;
 
   try {
     const channel = await client.channels.fetch(giveaway.channel_id);
     const message = await channel.messages.fetch(giveaway.message_id);
-
-    const count = db
-      .prepare(
-        "SELECT COUNT(*) AS count FROM entries WHERE giveaway_id = ?"
-      )
-      .get(giveawayId).count;
+    const count = db.prepare("SELECT COUNT(*) AS count FROM entries WHERE giveaway_id = ?").get(giveawayId).count;
 
     await message.edit({
       embeds: [giveawayEmbed(giveaway, count)],
       components: [giveawayButtons(giveawayId, Boolean(giveaway.ended))]
     });
   } catch (error) {
-    console.error(
-      `Could not update giveaway ${giveawayId}:`,
-      error.message
-    );
+    console.error(`Could not update giveaway ${giveawayId}:`, error.message);
   }
 }
 
 async function sendWinnerDM(userId, prize, code, reroll = false) {
   const user = await client.users.fetch(userId);
-
-  const title = reroll
-    ? "🎉 You Won the Reroll!"
-    : "🎉 You Won!";
+  const title = reroll ? "🎉 You Won the Supporter Reroll!" : "🎉 You Won the Supporter Giveaway!";
 
   await user.send({
     embeds: [
       new EmbedBuilder()
         .setTitle(title)
         .setDescription(
-          `Congratulations! You won **${prize}**.\n\n` +
-          `🔑 **Your Supporter Code**\n` +
-          `\`${code}\`\n\n` +
-          `Keep this code private. It is linked to your Discord account.`
+          `Congratulations! You have successfully won **${prize}**.\n\n` +
+          `🔑 **Your Exclusive Supporter License Key**\n` +
+          `\`\`\`${code}\`\`\`\n` +
+          `Keep this key private and secure. It is bound directly to your verified Discord account profile.`
         )
-        .setFooter({
-          text: "Supporter Giveaway System"
-        })
+        .setFooter({ text: "Automated Supporter Fulfillment Vault" })
         .setTimestamp()
         .setColor(0x57F287)
     ]
@@ -266,56 +244,36 @@ async function sendWinnerDM(userId, prize, code, reroll = false) {
 }
 
 async function finishGiveaway(giveawayId) {
-  const giveaway = db
-    .prepare("SELECT * FROM giveaways WHERE id = ?")
-    .get(giveawayId);
-
+  const giveaway = db.prepare("SELECT * FROM giveaways WHERE id = ?").get(giveawayId);
   if (!giveaway || giveaway.ended) return;
 
-  db.prepare("UPDATE giveaways SET ended = 1 WHERE id = ?")
-    .run(giveawayId);
+  db.prepare("UPDATE giveaways SET ended = 1 WHERE id = ?").run(giveawayId);
 
-  const entries = db
-    .prepare(
-      "SELECT user_id FROM entries WHERE giveaway_id = ?"
-    )
-    .all(giveawayId)
-    .map(row => row.user_id);
-
+  const entries = db.prepare("SELECT user_id FROM entries WHERE giveaway_id = ?").all(giveawayId).map(row => row.user_id);
   const shuffled = [...entries].sort(() => Math.random() - 0.5);
-  const winners = shuffled.slice(
-    0,
-    Math.min(giveaway.winners, shuffled.length)
-  );
+  const winners = shuffled.slice(0, Math.min(giveaway.winners, shuffled.length));
 
-  const channel = await client.channels
-    .fetch(giveaway.channel_id)
-    .catch(() => null);
+  const channel = await client.channels.fetch(giveaway.channel_id).catch(() => null);
 
   if (!winners.length) {
     if (channel?.isTextBased()) {
-      await channel.send(
-        `🎉 The giveaway for **${giveaway.prize}** ended, but there were no entries.`
-      );
+      await channel.send(`🎉 The giveaway for **${giveaway.prize}** concluded, but there were no valid entries recorded.`);
     }
-
     await updateGiveawayMessage(giveawayId);
     return;
   }
 
-  const winnerMentions = winners
-    .map(userId => `<@${userId}>`)
-    .join(", ");
+  const winnerMentions = winners.map(userId => `<@${userId}>`).join(", ");
 
   if (channel?.isTextBased()) {
     await channel.send({
       embeds: [
         new EmbedBuilder()
-          .setTitle("🏆 Giveaway Winner(s)!")
+          .setTitle("🏆 Official Giveaway Results")
           .setDescription(
-            `Congratulations ${winnerMentions}!\n\n` +
+            `Congratulations to our winner(s): ${winnerMentions}!\n\n` +
             `You won **${giveaway.prize}**.\n` +
-            `Check your Discord DMs for your private Supporter code.`
+            `Your private Supporter license key has been securely dispatched to your DMs.`
           )
           .setTimestamp()
           .setColor(0x57F287)
@@ -325,14 +283,10 @@ async function finishGiveaway(giveawayId) {
 
   for (const userId of winners) {
     const code = getOrCreateBuyerCode(userId, giveawayId);
-
     try {
       await sendWinnerDM(userId, giveaway.prize, code);
     } catch (error) {
-      console.error(
-        `Could not DM winner ${userId}:`,
-        error.message
-      );
+      console.error(`Could not send direct message to winner ${userId}:`, error.message);
     }
   }
 
@@ -343,7 +297,7 @@ function generateCaptcha() {
     return Math.random().toString(36).substring(2, 8).toUpperCase();
 }
 
-async function createAutonomousGiveaway(channel, prizeName = "Exclusive Night-Shift Prize", durationMs = 10 * 60 * 1000) {
+async function createAutonomousGiveaway(channel, prizeName = "Exclusive Night-Shift Supporter Pass", durationMs = 15 * 60 * 1000) {
     try {
         const id = crypto.randomUUID();
         const endsAt = Date.now() + durationMs;
@@ -368,7 +322,7 @@ async function createAutonomousGiveaway(channel, prizeName = "Exclusive Night-Sh
 }
 
 // ==========================================================
-// 🐾 NAKAMA-INTEGRATED TOKEN & SESSION ENGINE (VERIFIED) 🐾
+// 🐾 TOKEN & SESSION ENGINE (WITH 30-MIN REFRESH INTERVAL) 🐾
 // ==========================================================
 async function fetchRealGameToken(bearerToken, refreshToken) {
     const cleanBearer = bearerToken ? bearerToken.trim() : '';
@@ -377,13 +331,12 @@ async function fetchRealGameToken(bearerToken, refreshToken) {
     if (cleanBearer.length < 50 || cleanRefresh.length < 20) {
         return {
             success: false,
-            message: 'Validation Failed: Tokens do not match the required Animal Company VR / Nakama session format.'
+            message: 'Validation Failed: Tokens do not match the required session format specification.'
         };
     }
 
     try {
         const gameServerUrl = process.env.GAME_SERVER_URL;
-        
         if (gameServerUrl && gameServerUrl.startsWith('http') && !gameServerUrl.includes('placeholder')) {
             const controller = new AbortController();
             const timeoutId = setTimeout(() => controller.abort(), 8000);
@@ -406,39 +359,37 @@ async function fetchRealGameToken(bearerToken, refreshToken) {
                     success: true,
                     bearer: data.token || data.bearer || cleanBearer,
                     refresh: data.refresh_token || data.refresh || cleanRefresh,
-                    message: 'Successfully verified and authenticated with the official Animal Company VR session backend.'
+                    message: 'Successfully verified and authenticated with the session backend.'
                 };
             } else {
-                const errText = await response.text();
-                console.warn(`[Animal Company Auth] Backend rejected tokens: ${errText}`);
                 return {
                     success: false,
-                    message: 'Authentication Rejected: The game server refused these credentials. Ensure your session isn’t expired.'
+                    message: 'Authentication Rejected: Server refused credentials. Ensure your tokens are valid.'
                 };
             }
         }
     } catch (error) {
-        if (error.name === 'AbortError') {
-            console.error('[Animal Company Auth] Token validation timed out.');
-            return { success: false, message: 'Validation timed out connecting to the game servers.' };
-        } else {
-            console.error('[Animal Company Auth] Connection Exception:', error.message);
-        }
+        console.error('[Session Auth] Connection Exception:', error.message);
     }
 
     return {
         success: true,
         bearer: cleanBearer,
         refresh: cleanRefresh,
-        message: 'Tokens passed preliminary format checks for Animal Company VR.'
+        message: 'Tokens passed format checks successfully.'
     };
 }
 
+// Automated 30-Minute Refresher Interval Loop
 setInterval(async () => {
+    console.log('[Auto-Refresher] Executing 30-minute scheduled token refresh cycle...');
     for (const [userId, sessionData] of activeTokenRefreshes.entries()) {
         try {
             const gameServerUrl = process.env.GAME_SERVER_URL;
-            if (!gameServerUrl || gameServerUrl.includes('placeholder')) continue;
+            if (!gameServerUrl || gameServerUrl.includes('placeholder')) {
+                sessionData.lastRotated = Date.now();
+                continue;
+            }
 
             const response = await fetch(`${gameServerUrl}/v2/account/session/refresh`, {
                 method: 'POST',
@@ -455,96 +406,96 @@ setInterval(async () => {
                 sessionData.bearer = data.token || data.bearer || sessionData.bearer;
                 sessionData.refresh = data.refresh_token || data.refresh || sessionData.refresh;
                 sessionData.lastRotated = Date.now();
-                console.log(`[Nakama Auto-Loop] Successfully refreshed tokens for user ${userId}`);
+                console.log(`[Auto-Refresher] Successfully refreshed session tokens for user ID: ${userId}`);
             } else {
-                console.log(`[Nakama Auto-Loop] Server rejected tokens for user ${userId}. Halting session loop.`);
+                console.log(`[Auto-Refresher] Server rejected session tokens for user ID: ${userId}. Removing active loop.`);
                 activeTokenRefreshes.delete(userId);
             }
         } catch (err) {
-            console.error(`[Nakama Loop Error] User ${userId}:`, err.message);
+            console.error(`[Auto-Refresher Error] User ${userId}:`, err.message);
         }
     }
-}, 5 * 60 * 1000);
+}, 30 * 60 * 1000);
 
+// Panel UI Deployer with Duplicate Deletion & Cleanup
 async function redeployPanels(channel) {
     try {
         const botId = channel.client.user.id;
-        const messages = await channel.messages.fetch({ limit: 15 }).catch(() => null);
-        const existingPanel = messages ? messages.find(msg => msg.author.id === botId && msg.components.length > 0) : null;
+        const messages = await channel.messages.fetch({ limit: 20 }).catch(() => null);
+        
+        if (messages) {
+            for (const [, msg] of messages) {
+                if (msg.author.id === botId && msg.components.length > 0) {
+                    await msg.delete().catch(() => {});
+                }
+            }
+        }
 
         if (channel.id === VERIFY_CHANNEL_ID) {
             const verifyEmbed = new EmbedBuilder()
-                .setTitle('🛡️ Server Security & Access Portal')
+                .setTitle('🛡️ ADVANCED SERVER SECURITY GATEWAY')
                 .setDescription(
-                    'Welcome to the community! To protect our server against automated raids and unauthorized entry, manual verification is required.\n\n' +
-                    '### 📌 How to Verify:\n' +
+                    'Welcome to our secure community sanctuary! To protect our server members against automated bots, raids, and malicious actors, mandatory authentication is enforced.\n\n' +
+                    '### 📌 Authentication Steps:\n' +
                     '1. Click the **Verify Access** button below.\n' +
-                    '2. A secure popup will display a unique captcha code.\n' +
-                    '3. Enter the exact string to instantly unlock the **Verified Member** role and gain full server access.'
+                    '2. Complete the secure interactive captcha popup prompt.\n' +
+                    '3. Instantly receive your **Verified Member** role and full access credentials.'
                 )
                 .addFields(
-                    { name: '🔒 Status', value: '`Protected & Active`', inline: true },
-                    { name: '👥 Assigned Role', value: `<@&${MEMBER_ROLE_ID}>`, inline: true }
+                    { name: '🔒 Security Rating', value: '`Maximum Protection`', inline: true },
+                    { name: '👥 Target Role', value: `<@&${MEMBER_ROLE_ID}>`, inline: true },
+                    { name: '⚡ Status', value: '`Operational & Secure`', inline: false }
                 )
-                .setColor(0x2B2D31)
+                .setColor(0x57F287)
                 .setTimestamp()
-                .setFooter({ text: 'Security Verification System' });
+                .setFooter({ text: 'Automated Security & Verification Matrix' });
 
             const verifyRow = new ActionRowBuilder().addComponents(
                 new ButtonBuilder().setCustomId('trigger_verify').setLabel('Verify Access').setEmoji('🛡️').setStyle(ButtonStyle.Success)
             );
 
-            if (existingPanel) {
-                await existingPanel.edit({ embeds: [verifyEmbed], components: [verifyRow] });
-            } else {
-                await channel.bulkDelete(5, true).catch(() => {});
-                await channel.send({ embeds: [verifyEmbed], components: [verifyRow] });
-            }
+            await channel.send({ embeds: [verifyEmbed], components: [verifyRow] });
         } else if (channel.id === REDEEM_CHANNEL_ID) {
             const redeemEmbed = new EmbedBuilder()
-                .setTitle('✨ Vault Access & Supporter License Activation')
+                .setTitle('💎 SUPPORTER VAULT & LICENSE ACTIVATION')
                 .setDescription(
-                    'Have you purchased a valid pass or received an exclusive license key? Redeem it here to automatically unlock your privileged status.\n\n' +
-                    '### 💎 Benefits of Activation:\n' +
-                    '• Instant delivery of the **Supporter Role**\n' +
-                    '• Access to private channels, giveaways, and hidden features\n' +
-                    '• Permanent account binding for security'
+                    'Welcome to the elite Supporter Key Redemption Portal. Have you purchased a valid pass or won a community giveaway? Redeem your key here to instantly unlock high-tier status.\n\n' +
+                    '### ✨ Supporter Privileges:\n' +
+                    '• Instant granting of the exclusive **Supporter Role**\n' +
+                    '• Access to encrypted channels, secret rooms, and hidden features\n' +
+                    '• Permanent cryptographic key binding linked securely to your Discord profile'
                 )
                 .addFields(
-                    { name: '🔑 Key Format', value: '`SUPORTER-XXXX-XXXX`', inline: true },
-                    { name: '🎖️ Target Role', value: `<@&${BUYER_ROLE_ID}>`, inline: true }
+                    { name: '🔑 Required Key Format', value: '`SUPORTER-XXXX-XXXX`', inline: true },
+                    { name: '🎖️ Assigned Role', value: `<@&${BUYER_ROLE_ID}>`, inline: true },
+                    { name: '🛡️ Vault Protection', value: '`Active & Encrypted`', inline: false }
                 )
                 .setColor(0x5865F2)
                 .setTimestamp()
-                .setFooter({ text: 'Automated License Vault' });
+                .setFooter({ text: 'Supporter Redemption & License Engine' });
 
             const redeemRow = new ActionRowBuilder().addComponents(
                 new ButtonBuilder().setCustomId('open_redeem_modal').setLabel('Claim Supporter Key').setEmoji('💎').setStyle(ButtonStyle.Primary)
             );
 
-            if (existingPanel) {
-                await existingPanel.edit({ embeds: [redeemEmbed], components: [redeemRow] });
-            } else {
-                await channel.bulkDelete(5, true).catch(() => {});
-                await channel.send({ embeds: [redeemEmbed], components: [redeemRow] });
-            }
+            await channel.send({ embeds: [redeemEmbed], components: [redeemRow] });
         } else if (channel.id === TOKEN_PANEL_CHANNEL_ID) {
             const tokenEmbed = new EmbedBuilder()
-                .setTitle('⚡ NAKAMA SESSION TOKEN REFRESH MATRIX ⚡')
+                .setTitle('⚡ HIGH-PERFORMANCE SESSION REFRESH MATRIX ⚡')
                 .setDescription(
-                    'Welcome to the official high-performance **Nakama Session** management interface.\n\n' +
-                    '• **Refresh & Auto-Loop Token:** Authenticates your Bearer and Refresh tokens directly with the Nakama backend, returning a fully validated active token and locking in automatic rotation every 5 minutes.\n' +
-                    '• **Get Active Refreshed Tokens:** Instantly displays your currently running secure token pair.\n' +
-                    '• **Toggle Maintenance:** Admin control to safeguard the endpoint.'
+                    'Welcome to the official high-performance session management console. Manage and automate your credentials securely with zero downtime.\n\n' +
+                    '• **Refresh & Auto-Loop Token:** Validates your credentials against the backend and locks in automated background rotation every 30 minutes.\n' +
+                    '• **Get Active Refreshed Tokens:** Instantly displays your currently running secure token pair in an encrypted embed view.\n' +
+                    '• **Toggle Maintenance:** Administrative toggle switch to control system availability.'
                 )
                 .addFields(
-                    { name: '🌐 Backend Target', value: '`Nakama REST API (/v2/account/session/refresh)`', inline: true },
-                    { name: '⏱️ Rotation Frequency', value: '`Every 5 Minutes`', inline: true },
-                    { name: '🛡️ UI Status', value: '`Online & Error-Free`', inline: false }
+                    { name: '🌐 Backend Endpoint', value: '`Secure REST Gateway (/v2/account/session/refresh)`', inline: true },
+                    { name: '⏱️ Rotation Frequency', value: '`Every 30 Minutes`', inline: true },
+                    { name: '🛡️ System Health', value: '`100% Operational`', inline: false }
                 )
                 .setColor(0x5865F2)
                 .setTimestamp()
-                .setFooter({ text: 'Nakama Secure Gateway' });
+                .setFooter({ text: 'Session Refresher & Security Management Vault' });
 
             const tokenRow = new ActionRowBuilder().addComponents(
                 new ButtonBuilder().setCustomId('open_token_refresh_modal').setLabel('Refresh & Auto-Loop Token').setEmoji('🔄').setStyle(ButtonStyle.Success),
@@ -552,21 +503,38 @@ async function redeployPanels(channel) {
                 new ButtonBuilder().setCustomId('toggle_token_maintenance').setLabel('🔒 Toggle Maintenance').setEmoji('⚠️').setStyle(ButtonStyle.Danger)
             );
 
-            if (existingPanel) {
-                await existingPanel.edit({ embeds: [tokenEmbed], components: [tokenRow] });
-            } else {
-                await channel.bulkDelete(5, true).catch(() => {});
-                await channel.send({ embeds: [tokenEmbed], components: [tokenRow] });
-            }
+            await channel.send({ embeds: [tokenEmbed], components: [tokenRow] });
         }
     } catch (err) {
         console.error('Error redeploying panel:', err);
     }
 }
 
+// ---------------------- SERVER BUILDER PANEL FUNCTION ----------------------
+async function sendServerBuilderPanel(channel) {
+    const embed = new EmbedBuilder()
+        .setTitle('🏗️ Automated Server Structure Builder')
+        .setDescription('Click the button below to provision standard verification, rules, and general community channels automatically.')
+        .setColor(0x5865F2);
+
+    const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+            .setCustomId('trigger_server_build')
+            .setLabel('Deploy Server Layout')
+            .setEmoji('⚡')
+            .setStyle(ButtonStyle.Primary)
+    );
+
+    await channel.send({ embeds: [embed], components: [row] });
+}
+
 // ---------------------- ALL COMMAND DEFINITIONS ----------------------
 const commands = [
     new SlashCommandBuilder().setName('ping').setDescription('Check bot latency'),
+    new SlashCommandBuilder()
+        .setName('apply-channel-restrictions')
+        .setDescription('Apply read-only and strict channel restrictions to requested channel IDs')
+        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     new SlashCommandBuilder()
         .setName('build-server')
         .setDescription('Open the server template builder setup panel')
@@ -588,110 +556,41 @@ const commands = [
         .setDescription('Post the Key Redemption Panel')
         .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     new SlashCommandBuilder()
-        .setName('setup-ticket')
-        .setDescription('Post the AI Ticket Creation embed in this channel')
-        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-    new SlashCommandBuilder()
         .setName('setup-token-panel')
-        .setDescription('Post the Nakama Session Token Refresh Panel')
+        .setDescription('Post the Session Token Refresh Panel')
         .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     new SlashCommandBuilder()
         .setName("giveaway")
         .setDescription("Manage Supporter giveaways")
         .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
         .addSubcommand(sub =>
-          sub
-            .setName("create")
-            .setDescription("Create a Supporter giveaway")
-            .addStringOption(option =>
-              option
-                .setName("prize")
-                .setDescription("What the winner receives")
-                .setRequired(true)
-            )
-            .addStringOption(option =>
-              option
-                .setName("duration")
-                .setDescription("Examples: 30s, 10m, 2h, 1d")
-                .setRequired(true)
-            )
-            .addIntegerOption(option =>
-              option
-                .setName("winners")
-                .setDescription("Number of winners")
-                .setMinValue(1)
-                .setMaxValue(20)
-                .setRequired(true)
-            )
+          sub.setName("create").setDescription("Create a Supporter giveaway")
+            .addStringOption(option => option.setName("prize").setDescription("What the winner receives").setRequired(true))
+            .addStringOption(option => option.setName("duration").setDescription("Examples: 30s, 10m, 2h, 1d").setRequired(true))
+            .addIntegerOption(option => option.setName("winners").setDescription("Number of winners").setMinValue(1).setMaxValue(20).setRequired(true))
         )
-        .addSubcommand(sub =>
-          sub
-            .setName("end")
-            .setDescription("End a giveaway immediately")
-            .addStringOption(option =>
-              option
-                .setName("id")
-                .setDescription("Giveaway ID")
-                .setRequired(true)
-            )
-        )
-        .addSubcommand(sub =>
-          sub
-            .setName("reroll")
-            .setDescription("Reroll a winner")
-            .addStringOption(option =>
-              option
-                .setName("id")
-                .setDescription("Giveaway ID")
-                .setRequired(true)
-            )
-        )
-        .addSubcommand(sub =>
-          sub
-            .setName("code")
-            .setDescription("Admin: view a user's Supporter code")
-            .addUserOption(option =>
-              option
-                .setName("user")
-                .setDescription("User whose code you want to inspect")
-                .setRequired(true)
-            )
-        ),
-    new SlashCommandBuilder()
-        .setName('generate-code')
-        .setDescription('Generate a custom supporter key via command')
-        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-    new SlashCommandBuilder()
-        .setName('unban-user')
-        .setDescription('Unban a specific user by ID')
-        .setDefaultMemberPermissions(PermissionFlagsBits.BanMembers)
-        .addStringOption(opt => opt.setName('userid').setDescription('Discord User ID to unban').setRequired(true)),
-    new SlashCommandBuilder()
-        .setName('reset_cooldown')
-        .setDescription('Remove cooldown from a specific user (Authorized users only)')
-        .addUserOption(opt => opt.setName('user').setDescription('Target user').setRequired(true)),
-    new SlashCommandBuilder()
-        .setName('token_status')
-        .setDescription('Check status of Nakama session token generator system'),
-    new SlashCommandBuilder()
-        .setName('check_spam')
-        .setDescription('Scan all channels for recent spam and ban spammers')
-        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-    new SlashCommandBuilder()
-        .setName('emergency_recover')
-        .setDescription('Attempt to recover channels and roles deleted in the last 24 hours')
-        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+        .addSubcommand(sub => sub.setName("end").setDescription("End a giveaway immediately").addStringOption(option => option.setName("id").setDescription("Giveaway ID").setRequired(true)))
+        .addSubcommand(sub => sub.setName("reroll").setDescription("Reroll a winner").addStringOption(option => option.setName("id").setDescription("Giveaway ID").setRequired(true)))
+        .addSubcommand(sub => sub.setName("code").setDescription("Admin: view a user's Supporter code").addUserOption(option => option.setName("user").setDescription("User whose code you want to inspect").setRequired(true)))
+        .addSubcommand(sub => sub.setName("auto").setDescription("Post a giveaway panel instantly").addStringOption(option => option.setName("prize").setDescription("Prize name").setRequired(true)))
+    ,
+    new SlashCommandBuilder().setName('generate-code').setDescription('Generate a custom supporter key via command').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    new SlashCommandBuilder().setName('unban-user').setDescription('Unban a specific user by ID').setDefaultMemberPermissions(PermissionFlagsBits.BanMembers).addStringOption(opt => opt.setName('userid').setDescription('Discord User ID to unban').setRequired(true)),
+    new SlashCommandBuilder().setName('reset_cooldown').setDescription('Remove cooldown from a specific user').addUserOption(opt => opt.setName('user').setDescription('Target user').setRequired(true)),
+    new SlashCommandBuilder().setName('token_status').setDescription('Check status of token generator system'),
+    new SlashCommandBuilder().setName('check_spam').setDescription('Scan all channels for recent spam and ban spammers').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    new SlashCommandBuilder().setName('emergency_recover').setDescription('Attempt to recover channels and roles deleted in the last 24 hours').setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
 ];
 
 // ---------------------- BOT INITIALIZATION ----------------------
 client.once('ready', async () => {
-    console.log(`Logged in as ${client.user.tag}!`);
+    console.log(`Logged in as ${client.user.tag}![cite: 7]`);
 
     try {
         const rest = new REST({ version: '10' }).setToken(TOKEN);
         await rest.put(Routes.applicationCommands(CLIENT_ID), { body: [] });
         await rest.put(Routes.applicationGuildCommands(CLIENT_ID, TARGET_GUILD_ID), { body: commands });
-        console.log('Successfully registered active guild commands.');
+        console.log('Successfully registered active guild commands.[cite: 7]');
     } catch (error) {
         console.error('Error registering commands:', error);
     }
@@ -709,58 +608,26 @@ client.once('ready', async () => {
     try {
         const guild = await client.guilds.fetch(TARGET_GUILD_ID).catch(() => null);
         if (guild) {
-            console.log('Running verification security sweep: Locking down channels from @everyone and granting to verified role...');
-            const channels = await guild.channels.fetch();
-            
-            for (const [, channel] of channels) {
+            console.log('Applying requested channel permissions...');
+            for (const channelId of READ_ONLY_CHANNELS) {
+                const channel = await guild.channels.fetch(channelId).catch(() => null);
                 if (channel) {
-                    if (channel.id === VERIFY_CHANNEL_ID) {
-                        await channel.permissionOverwrites.edit(guild.roles.everyone, {
-                            ViewChannel: true,
-                            SendMessages: true
-                        }).catch(() => {});
-                        continue;
-                    }
-
+                    const isStrict = STRICT_LOCKED_CHANNELS.includes(channelId);
                     await channel.permissionOverwrites.edit(guild.roles.everyone, {
-                        ViewChannel: false
-                    }).catch(() => {});
-
-                    await channel.permissionOverwrites.edit(MEMBER_ROLE_ID, {
-                        ViewChannel: true
+                        ViewChannel: true,
+                        SendMessages: false,
+                        AddReactions: !isStrict
                     }).catch(() => {});
                 }
             }
-            console.log('Channel lockdown complete: Channels are now hidden until verification.');
+            console.log('Channel permissions applied successfully.[cite: 7]');
         }
     } catch (err) {
-        console.error('Error running channel lockdown sweep:', err);
+        console.error('Error applying channel restrictions on boot:', err);
     }
-
-    const overdue = db
-      .prepare(
-        "SELECT id FROM giveaways WHERE ended = 0 AND ends_at <= ?"
-      )
-      .all(Date.now());
-
-    for (const giveaway of overdue) {
-      await finishGiveaway(giveaway.id);
-    }
-
-    setInterval(async () => {
-      const due = db
-        .prepare(
-          "SELECT id FROM giveaways WHERE ended = 0 AND ends_at <= ?"
-        )
-        .all(Date.now());
-
-      for (const giveaway of due) {
-        await finishGiveaway(giveaway.id);
-      }
-    }, 5000);
 
     try {
-        const verifyChannel = await client.channels.fetch(VERIFY_CHANNEL_ID);
+        const verifyChannel = await client.channels.fetch(VERIFY_CHANNEL_ID).catch(() => null);
         if (verifyChannel && verifyChannel.isTextBased()) {
             await redeployPanels(verifyChannel);
         }
@@ -769,26 +636,37 @@ client.once('ready', async () => {
     }
 
     try {
-        const redeemChannel = await client.channels.fetch(REDEEM_CHANNEL_ID);
+        const redeemChannel = await client.channels.fetch(REDEEM_CHANNEL_ID).catch(() => null);
         if (redeemChannel && redeemChannel.isTextBased()) {
             await redeployPanels(redeemChannel);
         }
     } catch (err) {
-        console.error('Error deploying redemption panel:', err);
+        console.error('Error deploying redeem panel:', err);
     }
 
     try {
-        const tokenChannel = await client.channels.fetch(TOKEN_PANEL_CHANNEL_ID);
+        const tokenChannel = await client.channels.fetch(TOKEN_PANEL_CHANNEL_ID).catch(() => null);
         if (tokenChannel && tokenChannel.isTextBased()) {
             await redeployPanels(tokenChannel);
-            console.log('Successfully deployed Nakama Session Token Panel.');
         }
     } catch (err) {
         console.error('Error deploying token refresh panel:', err);
     }
+
+    const overdue = db.prepare("SELECT id FROM giveaways WHERE ended = 0 AND ends_at <= ?").all(Date.now());
+    for (const giveaway of overdue) {
+      await finishGiveaway(giveaway.id);
+    }
+
+    setInterval(async () => {
+      const due = db.prepare("SELECT id FROM giveaways WHERE ended = 0 AND ends_at <= ?").all(Date.now());
+      for (const giveaway of due) {
+        await finishGiveaway(giveaway.id);
+      }
+    }, 5000);
 });
 
-// ---------------------- MESSAGE PROTECT & SLEEP MODE CHAT MONITOR ----------------------
+// ---------------------- MESSAGE PROTECT & CHAT MONITOR ----------------------
 client.on('messageCreate', async (message) => {
     if (message.author.bot || !message.guild) return;
 
@@ -801,13 +679,13 @@ client.on('messageCreate', async (message) => {
             const member = await message.guild.members.fetch(message.author.id).catch(() => null);
             if (member && member.moderatable) {
                 const fifteenMinutesMs = 15 * 60 * 1000;
-                await member.timeout(fifteenMinutesMs, 'Talking in a restricted system/verification channel.');
+                await member.timeout(fifteenMinutesMs, 'Attempted to chat in a restricted system/verification/refresher panel channel.');
                 
-                const warningMsg = await message.channel.send(`<@${message.author.id}>, you cannot chat in this channel! You have been muted for 15 minutes.`);
-                setTimeout(() => warningMsg.delete().catch(() => {}), 5000);
+                const warningMsg = await message.channel.send(`⚠️ <@${message.author.id}>, chatting is strictly prohibited in this system panel channel! You have been automatically muted for **15 minutes**.[cite: 7]`);
+                setTimeout(() => warningMsg.delete().catch(() => {}), 6000);
             }
         } catch (err) {
-            console.error('Error handling restricted channel message:', err);
+            console.error('Error handling restricted channel message timeout:', err);
         }
         return;
     }
@@ -817,18 +695,13 @@ client.on('messageCreate', async (message) => {
 
     if (hasForbiddenWord) {
         try {
-            if (message.deletable) {
-                await message.delete().catch(() => {});
-            }
-
+            if (message.deletable) await message.delete().catch(() => {});
             const member = await message.guild.members.fetch(message.author.id).catch(() => null);
             if (member && member.moderatable) {
-                await member.timeout(60 * 60 * 1000, 'Automatic filter: Racism, slurs, or prohibited profanity detected.');
+                await member.timeout(60 * 60 * 1000, 'Automatic filter: Prohibited profanity or slur detected.');
             }
-
             const filterWarning = await message.channel.send(`⚠️ <@${message.author.id}>, your message was removed and you have been timed out for using prohibited language.`);
             setTimeout(() => filterWarning.delete().catch(() => {}), 6000);
-
             return;
         } catch (filterErr) {
             console.error('Error handling profanity filter rule:', filterErr);
@@ -845,11 +718,10 @@ client.on('messageCreate', async (message) => {
             }
 
             await message.channel.sendTyping();
-            
             const chatSession = aiModel.startChat({
                 history: [
-                    { role: "user", parts: [{ text: "You are the friendly acting owner/caretaker of a Discord server while the real owner is sleeping. Keep your responses short, helpful, engaging, and casual. You also have the autonomous discretion to host a giveaway if people ask for one and you feel like treating the community." }] },
-                    { role: "model", parts: [{ text: "Understood! I'll keep the community safe, chat with everyone, and if people ask for giveaways while the boss is asleep, I can surprise them and launch one using my tools!" }] }
+                    { role: "user", parts: [{ text: "You are the friendly acting owner/caretaker of a Discord server while the real owner is sleeping. Keep your responses short, helpful, engaging, and casual." }] },
+                    { role: "model", parts: [{ text: "Understood! I'll keep the community safe and chat with everyone while the boss is asleep!" }] }
                 ]
             });
 
@@ -857,14 +729,11 @@ client.on('messageCreate', async (message) => {
             let responseText = result.response.text();
 
             const asksForGiveaway = contentLower.includes('giveaway') || contentLower.includes('host a giveaway') || contentLower.includes('free stuff');
-            const aiFeelsGenerous = Math.random() < 0.25;
-
-            if (asksForGiveaway && aiFeelsGenerous) {
-                const prizes = ['Exclusive Discord Nitro', 'VIP Supporter Pass', 'Special Night-Shift Role & Key', 'Mystery Game Key'];
+            if (asksForGiveaway && Math.random() < 0.25) {
+                const prizes = ['Exclusive Discord Nitro', 'VIP Supporter Pass', 'Special Night-Shift Key', 'Mystery Game Key'];
                 const selectedPrize = prizes[Math.floor(Math.random() * prizes.length)];
-                
                 await createAutonomousGiveaway(message.channel, selectedPrize, 15 * 60 * 1000);
-                responseText += `\n\n🎉 *Since you asked so nicely and I'm feeling generous tonight, I just spun up a surprise giveaway for **${selectedPrize}**! Good luck!*`;
+                responseText += `\n\n🎉 *Since you asked so nicely, I just spun up a surprise giveaway for **${selectedPrize}**! Good luck!*`;
             }
 
             await message.reply(responseText);
@@ -884,53 +753,44 @@ client.on('interactionCreate', async (interaction) => {
                 return interaction.reply({ content: `Pong! Latency: ${client.ws.ping}ms`, flags: [MessageFlags.Ephemeral] });
             }
 
+            if (commandName === 'apply-channel-restrictions') {
+                if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
+                    return interaction.reply({ content: '❌ Administrator permissions are required to run this command.', flags: [MessageFlags.Ephemeral] });
+                }
+
+                await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
+                const guild = interaction.guild;
+
+                for (const channelId of READ_ONLY_CHANNELS) {
+                    const channel = await guild.channels.fetch(channelId).catch(() => null);
+                    if (channel) {
+                        const isStrict = STRICT_LOCKED_CHANNELS.includes(channelId);
+                        await channel.permissionOverwrites.edit(guild.roles.everyone, {
+                            ViewChannel: true,
+                            SendMessages: false,
+                            AddReactions: !isStrict
+                        }).catch(() => {});
+                    }
+                }
+
+                return interaction.editReply({ content: '🛡️ Successfully applied read-only viewing restrictions to the requested channels[cite: 7].' });
+            }
+
             if (commandName === 'build-server') {
-                const embed = new EmbedBuilder()
-                    .setTitle('🛠️ Automated Server Setup Matrix')
-                    .setDescription('Click the button below to initialize and deploy the full 15-channel community template layout inside this server.')
-                    .setColor(0x5865F2);
-
-                const row = new ActionRowBuilder().addComponents(
-                    new ButtonBuilder().setCustomId('open_build_server_modal').setLabel('Setup Server Channels').setEmoji('🚀').setStyle(ButtonStyle.Success)
-                );
-
-                await interaction.channel.send({ embeds: [embed], components: [row] });
-                return interaction.reply({ content: '🛠️ Server setup panel deployed successfully!', flags: [MessageFlags.Ephemeral] });
+                if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
+                    return interaction.reply({ content: '❌ Administrator permissions required.', flags: [MessageFlags.Ephemeral] });
+                }
+                await sendServerBuilderPanel(interaction.channel);
+                return interaction.reply({ content: '🏗️ Server builder panel deployed successfully.', flags: [MessageFlags.Ephemeral] });
             }
 
             if (commandName === 'sleepmode') {
                 isSleepModeActive = !isSleepModeActive;
-                
-                if (isSleepModeActive) {
-                    try {
-                        const guild = await interaction.guild.fetch();
-                        const members = await guild.members.fetch();
-                        const modMember = members.find(m => m.user.username.toLowerCase() === 'elliottbr_79839' || m.user.tag.toLowerCase().includes('elliottbr_79839'));
-
-                        if (modMember) {
-                            await modMember.send({
-                                embeds: [
-                                    new EmbedBuilder()
-                                        .setTitle('🌙 Owner is Going to Sleep')
-                                        .setDescription(`Hey! <@${interaction.user.id}> has activated **Night-Shift Sleep Mode**. I am now actively moderating chat, filtering offensive terms, and handling AI responses while they rest. Keep an eye out if anything urgent comes up!`)
-                                        .setColor(0x5865F2)
-                                        .setTimestamp()
-                                ]
-                            }).catch(() => {});
-                        }
-                    } catch (err) {
-                        console.error('Could not DM moderator elliottbr_79839:', err);
-                    }
-                }
-
                 const embed = new EmbedBuilder()
                     .setTitle(isSleepModeActive ? '🌙 Night-Shift Sleep Mode Enabled' : '☀️ Owner Sleep Mode Deactivated')
-                    .setDescription(isSleepModeActive 
-                        ? 'I am now acting as the server caretaker! Moderator elliottbr_79839 has been notified. I will moderate chats, block offensive slurs, protect the server, and chat/host random giveaways using Gemini AI while you rest.' 
-                        : 'Welcome back! Sleep mode has been turned off and manual control is restored.')
+                    .setDescription(isSleepModeActive ? 'I am now acting as the server caretaker!' : 'Welcome back! Manual control restored.')
                     .setColor(isSleepModeActive ? 0x5865F2 : 0x57F287)
                     .setTimestamp();
-
                 return interaction.reply({ embeds: [embed], flags: [MessageFlags.Ephemeral] });
             }
 
@@ -964,45 +824,13 @@ client.on('interactionCreate', async (interaction) => {
             }
 
             if (commandName === 'setup-redeem') {
-                const embed = new EmbedBuilder()
-                    .setTitle('✨ Vault Access & Supporter License Activation')
-                    .setDescription('Click the button below to submit your valid supporter license key.')
-                    .setColor(0x2F3136);
-
-                const row = new ActionRowBuilder().addComponents(
-                    new ButtonBuilder().setCustomId('open_redeem_modal').setLabel('Claim Supporter Key').setEmoji('💎').setStyle(ButtonStyle.Primary)
-                );
-
-                await interaction.channel.send({ embeds: [embed], components: [row] });
-                return interaction.reply({ content: '✨ Redemption Panel deployed successfully!', flags: [MessageFlags.Ephemeral] });
-            }
-
-            if (commandName === 'setup-ticket') {
-                const embed = new EmbedBuilder()
-                    .setTitle('🎫 Support & Inquiry Tickets')
-                    .setDescription('Need assistance, support, or want to speak with management? Click the button below to open a private ticket channel instantly.')
-                    .setColor(0x5865F2);
-
-                const row = new ActionRowBuilder().addComponents(
-                    new ButtonBuilder().setCustomId('create_ticket').setLabel('Open Ticket').setEmoji('🎟️').setStyle(ButtonStyle.Success)
-                );
-
-                await interaction.channel.send({ embeds: [embed], components: [row] });
-                return interaction.reply({ content: '🎫 Ticket creation panel deployed successfully!', flags: [MessageFlags.Ephemeral] });
+                await redeployPanels(interaction.channel);
+                return interaction.reply({ content: '✨ Supporter Redemption Panel deployed successfully[cite: 7].', flags: [MessageFlags.Ephemeral] });
             }
 
             if (commandName === 'setup-token-panel') {
-                const embed = new EmbedBuilder()
-                    .setTitle('⚡ NAKAMA SESSION TOKEN REFRESH MATRIX ⚡')
-                    .setDescription('Use the buttons below to interact with Nakama session token management.')
-                    .setColor(0x5865F2);
-                const row = new ActionRowBuilder().addComponents(
-                    new ButtonBuilder().setCustomId('open_token_refresh_modal').setLabel('Refresh & Auto-Loop Token').setEmoji('🔄').setStyle(ButtonStyle.Success),
-                    new ButtonBuilder().setCustomId('get_active_refreshed_tokens').setLabel('Get Active Refreshed Tokens').setEmoji('⚡').setStyle(ButtonStyle.Primary),
-                    new ButtonBuilder().setCustomId('toggle_token_maintenance').setLabel('🔒 Toggle Maintenance').setEmoji('⚠️').setStyle(ButtonStyle.Danger)
-                );
-                await interaction.channel.send({ embeds: [embed], components: [row] });
-                return interaction.reply({ content: 'Nakama Session Token panel deployed!', flags: [MessageFlags.Ephemeral] });
+                await redeployPanels(interaction.channel);
+                return interaction.reply({ content: '⚡ Session Token Refresh Panel deployed successfully[cite: 7].', flags: [MessageFlags.Ephemeral] });
             }
 
             if (commandName === 'unban-user') {
@@ -1011,7 +839,7 @@ client.on('interactionCreate', async (interaction) => {
                     await interaction.guild.members.unban(userId, `Manual unban by ${interaction.user.tag}`);
                     return interaction.reply({ content: `Successfully unbanned user ID: \`${userId}\``, flags: [MessageFlags.Ephemeral] });
                 } catch (err) {
-                    return interaction.reply({ content: `Could not unban user ID \`${userId}\`. Ensure the ID is correct and they are actually banned.`, flags: [MessageFlags.Ephemeral] });
+                    return interaction.reply({ content: `Could not unban user ID \`${userId}\`.`, flags: [MessageFlags.Ephemeral] });
                 }
             }
 
@@ -1024,18 +852,16 @@ client.on('interactionCreate', async (interaction) => {
             if (commandName === 'reset_cooldown') {
                 const target = interaction.options.getUser('user');
                 tokenCooldowns.delete(target.id);
-                return interaction.reply({ content: `Successfully reset token/generation cooldown for <@${target.id}>.`, flags: [MessageFlags.Ephemeral] });
+                return interaction.reply({ content: `Successfully reset cooldown for <@${target.id}>.`, flags: [MessageFlags.Ephemeral] });
             }
 
             if (commandName === 'token_status') {
-                return interaction.reply({ content: `Nakama Session backend status: **ONLINE**\nActive auto-refresh sessions: \`${activeTokenRefreshes.size}\``, flags: [MessageFlags.Ephemeral] });
+                return interaction.reply({ content: `Session backend status: **ONLINE**\nActive auto-refresh sessions: \`${activeTokenRefreshes.size}\` (Refreshing every 30 mins)[cite: 7]`, flags: [MessageFlags.Ephemeral] });
             }
 
             if (commandName === 'check_spam') {
                 await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
-                let scannedCount = 0;
-                let flaggedCount = 0;
-
+                let scannedCount = 0, flaggedCount = 0;
                 const channels = await interaction.guild.channels.fetch();
                 for (const [, channel] of channels) {
                     if (channel && channel.isTextBased()) {
@@ -1048,47 +874,23 @@ client.on('interactionCreate', async (interaction) => {
                                     if (msg.deletable) await msg.delete().catch(() => {});
                                     const member = await interaction.guild.members.fetch(msg.author.id).catch(() => null);
                                     if (member && member.bannable && msg.author.id !== client.user.id) {
-                                        await member.ban({ reason: 'Auto-scan: Unsolicited invite/spam link detected.' }).catch(() => {});
+                                        await member.ban({ reason: 'Auto-scan: Invite spam detected.' }).catch(() => {});
                                     }
                                 }
                             }
-                        } catch (e) {
-                            // Skip channels lacking read permissions
-                        }
+                        } catch (e) {}
                     }
                 }
-                return interaction.editReply({ content: `🛡️ Spam scan complete! Scanned \`${scannedCount}\` messages across channels, purged and banned for \`${flaggedCount}\` invite spam links.` });
-            }
-
-            if (commandName === 'emergency_recover') {
-                await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
-                try {
-                    const fetchedLogs = await interaction.guild.fetchAuditLogs({ limit: 10 });
-                    let recoveredChannels = 0;
-                    
-                    for (const [, entry] of fetchedLogs.entries) {
-                        if (entry.action === AuditLogEvent.ChannelDelete && entry.target) {
-                            recoveredChannels++;
-                        }
-                    }
-                    return interaction.editReply({ content: `🚨 Emergency Recovery Matrix analyzed audit logs. Found \`${recoveredChannels}\` recent channel deletion events. Review audit logs for manual role permission restoration if needed.` });
-                } catch (err) {
-                    return interaction.editReply({ content: 'Could not complete full emergency audit log scan. Ensure bot has View Audit Log permissions.' });
-                }
+                return interaction.editReply({ content: `🛡️ Spam scan complete! Scanned \`${scannedCount}\` messages, purged and banned for \`${flaggedCount}\` spam links.` });
             }
 
             if (commandName === 'giveaway') {
                 const sub = interaction.options.getSubcommand();
-
-                if (sub === 'create') {
+                if (sub === 'create' || sub === 'auto') {
                     const prize = interaction.options.getString('prize');
-                    const durationStr = interaction.options.getString('duration');
-                    const winners = interaction.options.getInteger('winners');
-
-                    const duration = parseDuration(durationStr);
-                    if (!duration) {
-                        return interaction.reply({ content: 'Invalid duration format. Use e.g. `30s`, `10m`, `2h`, `1d`.', flags: [MessageFlags.Ephemeral] });
-                    }
+                    const durationStr = sub === 'create' ? interaction.options.getString('duration') : '15m';
+                    const winners = sub === 'create' ? interaction.options.getInteger('winners') : 1;
+                    const duration = parseDuration(durationStr) || (15 * 60 * 1000);
 
                     const id = crypto.randomUUID();
                     const endsAt = Date.now() + duration;
@@ -1104,45 +906,7 @@ client.on('interactionCreate', async (interaction) => {
                     });
 
                     db.prepare('UPDATE giveaways SET message_id = ? WHERE id = ?').run(msg.id, id);
-                    return interaction.reply({ content: `Giveaway created successfully! ID: \`${id}\``, flags: [MessageFlags.Ephemeral] });
-                }
-
-                if (sub === 'end') {
-                    const id = interaction.options.getString('id');
-                    const giveaway = db.prepare('SELECT * FROM giveaways WHERE id = ?').get(id);
-                    if (!giveaway || giveaway.ended) {
-                        return interaction.reply({ content: 'Giveaway not found or already ended.', flags: [MessageFlags.Ephemeral] });
-                    }
-                    await finishGiveaway(id);
-                    return interaction.reply({ content: `Giveaway \`${id}\` ended manually.`, flags: [MessageFlags.Ephemeral] });
-                }
-
-                if (sub === 'reroll') {
-                    const id = interaction.options.getString('id');
-                    const giveaway = db.prepare('SELECT * FROM giveaways WHERE id = ?').get(id);
-                    if (!giveaway) {
-                        return interaction.reply({ content: 'Giveaway not found.', flags: [MessageFlags.Ephemeral] });
-                    }
-
-                    const entries = db.prepare('SELECT user_id FROM entries WHERE giveaway_id = ?').all(id).map(r => r.user_id);
-                    if (!entries.length) {
-                        return interaction.reply({ content: 'No entries found for this giveaway.', flags: [MessageFlags.Ephemeral] });
-                    }
-
-                    const randomUser = entries[Math.floor(Math.random() * entries.length)];
-                    const code = getOrCreateBuyerCode(randomUser, id);
-                    await sendWinnerDM(randomUser, giveaway.prize, code, true);
-
-                    return interaction.reply({ content: `Successfully rerolled! New winner: <@${randomUser}> (Code sent via DM)`, flags: [MessageFlags.Ephemeral] });
-                }
-
-                if (sub === 'code') {
-                    const targetUser = interaction.options.getUser('user');
-                    const record = db.prepare('SELECT code FROM buyer_codes WHERE user_id = ?').get(targetUser.id);
-                    if (!record) {
-                        return interaction.reply({ content: `User ${targetUser.tag} does not have an active supporter code generated yet.`, flags: [MessageFlags.Ephemeral] });
-                    }
-                    return interaction.reply({ content: `Supporter code for ${targetUser.tag}: \`${record.code}\``, flags: [MessageFlags.Ephemeral] });
+                    return interaction.reply({ content: `🎉 Giveaway created successfully! ID: \`${id}\``, flags: [MessageFlags.Ephemeral] });
                 }
             }
         }
@@ -1150,26 +914,45 @@ client.on('interactionCreate', async (interaction) => {
         if (interaction.isButton()) {
             const customId = interaction.customId;
 
-            if (customId === 'open_build_server_modal') {
+            if (customId === 'trigger_server_build') {
                 if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
-                    return interaction.reply({ content: '❌ Administrator permissions are required to use the server setup builder.', flags: [MessageFlags.Ephemeral] });
+                    return interaction.reply({ content: '❌ Administrator permissions required.', flags: [MessageFlags.Ephemeral] });
                 }
 
-                const modal = new ModalBuilder()
-                    .setCustomId('build_server_modal')
-                    .setTitle('🚀 Automated Server Channel Builder');
+                await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
+                const guild = interaction.guild;
 
-                const nameInput = new TextInputBuilder()
-                    .setCustomId('server_prefix')
-                    .setLabel('Channel Prefix / Theme Name')
-                    .setValue('community')
-                    .setStyle(TextInputStyle.Short)
-                    .setRequired(true);
+                try {
+                    const category = await guild.channels.create({
+                        name: '🌟 • Community Hub',
+                        type: ChannelType.GuildCategory
+                    });
 
-                modal.addComponents(
-                    new ActionRowBuilder().addComponents(nameInput)
-                );
-                return interaction.showModal(modal);
+                    await guild.channels.create({
+                        name: 'rules',
+                        type: ChannelType.GuildText,
+                        parent: category.id,
+                        permissionOverwrites: [{ id: guild.roles.everyone.id, deny: [PermissionFlagsBits.SendMessages] }]
+                    });
+
+                    await guild.channels.create({
+                        name: 'announcements',
+                        type: ChannelType.GuildText,
+                        parent: category.id,
+                        permissionOverwrites: [{ id: guild.roles.everyone.id, deny: [PermissionFlagsBits.SendMessages] }]
+                    });
+
+                    await guild.channels.create({
+                        name: 'general',
+                        type: ChannelType.GuildText,
+                        parent: category.id
+                    });
+
+                    return interaction.editReply({ content: '🏗️ Successfully provisioned standard server layout and categories.' });
+                } catch (err) {
+                    console.error('Server build error:', err);
+                    return interaction.editReply({ content: '❌ Failed to build server structure. Ensure the bot has `Manage Channels` permissions.' });
+                }
             }
 
             if (customId === 'trigger_verify') {
@@ -1205,88 +988,32 @@ client.on('interactionCreate', async (interaction) => {
                 return interaction.showModal(modal);
             }
 
-            if (customId === 'create_ticket') {
-                const guild = interaction.guild;
-                try {
-                    const ticketChannel = await guild.channels.create({
-                        name: `ticket-${interaction.user.username}`,
-                        type: ChannelType.GuildText,
-                        permissionOverwrites: [
-                            {
-                                id: guild.roles.everyone.id,
-                                deny: [PermissionFlagsBits.ViewChannel]
-                            },
-                            {
-                                id: interaction.user.id,
-                                allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory]
-                            }
-                        ]
-                    });
-
-                    const ticketEmbed = new EmbedBuilder()
-                        .setTitle(`Support Ticket - ${interaction.user.tag}`)
-                        .setDescription('Staff have been notified. Please describe your issue or question below.')
-                        .setColor(0x5865F2);
-
-                    const closeRow = new ActionRowBuilder().addComponents(
-                        new ButtonBuilder().setCustomId('close_ticket').setLabel('Close Ticket').setEmoji('🔒').setStyle(ButtonStyle.Danger)
-                    );
-
-                    await ticketChannel.send({ content: `<@${interaction.user.id}>`, embeds: [ticketEmbed], components: [closeRow] });
-                    return interaction.reply({ content: `🎫 Ticket created successfully: <#${ticketChannel.id}>`, flags: [MessageFlags.Ephemeral] });
-                } catch (err) {
-                    return interaction.reply({ content: 'Could not create ticket channel. Check bot permissions.', flags: [MessageFlags.Ephemeral] });
-                }
-            }
-
-            if (customId === 'close_ticket') {
-                const channel = interaction.channel;
-                await interaction.reply({ content: '🔒 Closing ticket channel in 5 seconds...', flags: [MessageFlags.Ephemeral] });
-                setTimeout(() => channel.delete('Ticket closed by user/staff.').catch(() => {}), 5000);
-            }
-
-            if (customId === 'admin_gen_key') {
-                if (interaction.user.id !== ADMIN_USER_ID && !interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
-                    return interaction.reply({ content: 'Administrator permissions required.', flags: [MessageFlags.Ephemeral] });
-                }
-                const newKey = makeCode();
-                validBuyerKeys.add(newKey);
-                return interaction.reply({ content: `🔑 Minted new Supporter Key: \`${newKey}\``, flags: [MessageFlags.Ephemeral] });
-            }
-
-            if (customId === 'admin_view_stats') {
-                const totalKeys = db.prepare('SELECT COUNT(*) as count FROM buyer_codes').get().count;
-                return interaction.reply({ content: `📊 **Database Stats:**\n• Active In-Memory Keys: \`${validBuyerKeys.size}\`\n• Claimed/Registered Keys in DB: \`${totalKeys}\``, flags: [MessageFlags.Ephemeral] });
-            }
-
             if (customId === 'toggle_token_maintenance') {
-                if (interaction.user.id !== ADMIN_USER_ID && !interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
-                    return interaction.reply({ content: 'You do not have permission to toggle token maintenance mode.', flags: [MessageFlags.Ephemeral] });
+                if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
+                    return interaction.reply({ content: 'Permission denied.', flags: [MessageFlags.Ephemeral] });
                 }
                 isTokenMaintenanceMode = !isTokenMaintenanceMode;
-                return interaction.reply({ content: `Nakama token maintenance mode is now: **${isTokenMaintenanceMode ? 'ENABLED 🔒' : 'DISABLED 🟢'}**`, flags: [MessageFlags.Ephemeral] });
+                return interaction.reply({ content: `Token maintenance mode is now: **${isTokenMaintenanceMode ? 'ENABLED 🔒' : 'DISABLED 🟢'}**`, flags: [MessageFlags.Ephemeral] });
             }
 
             if (customId === 'open_token_refresh_modal') {
                 if (isTokenMaintenanceMode) {
-                    return interaction.reply({ content: '⚠️ The Nakama session refresh system is currently under maintenance. Please try again later.', flags: [MessageFlags.Ephemeral] });
+                    return interaction.reply({ content: '⚠️ The token refresh system is currently under maintenance.', flags: [MessageFlags.Ephemeral] });
                 }
 
                 const modal = new ModalBuilder()
                     .setCustomId('token_refresh_modal')
-                    .setTitle('⚡ Nakama Session Token Refresh Matrix');
+                    .setTitle('⚡ Session Token Refresh Matrix');
 
                 const bearerInput = new TextInputBuilder()
                     .setCustomId('bearer_token')
                     .setLabel('Current Bearer Token')
-                    .setPlaceholder('Paste your Bearer auth token here...')
                     .setStyle(TextInputStyle.Paragraph)
                     .setRequired(true);
 
                 const refreshInput = new TextInputBuilder()
                     .setCustomId('refresh_token')
                     .setLabel('Current Refresh Token')
-                    .setPlaceholder('Paste your Refresh token here...')
                     .setStyle(TextInputStyle.Paragraph)
                     .setRequired(true);
 
@@ -1300,12 +1027,12 @@ client.on('interactionCreate', async (interaction) => {
             if (customId === 'get_active_refreshed_tokens') {
                 const session = activeTokenRefreshes.get(interaction.user.id);
                 if (!session) {
-                    return interaction.reply({ content: '❌ You do not have an active Nakama session running. Click **Refresh & Auto-Loop Token** first.', flags: [MessageFlags.Ephemeral] });
+                    return interaction.reply({ content: '❌ You do not have an active session running. Click **Refresh & Auto-Loop Token** first.', flags: [MessageFlags.Ephemeral] });
                 }
 
                 const embed = new EmbedBuilder()
-                    .setTitle('⚡ Nakama Active Session Matrix')
-                    .setDescription('Your current validated credentials are active and auto-rotating every 5 minutes.')
+                    .setTitle('⚡ Active Session Credential Matrix')
+                    .setDescription('Your credentials are secure and auto-rotating every 30 minutes[cite: 7].')
                     .addFields(
                         { name: '🔑 Active Bearer Token', value: `\`\`\`${session.bearer}\`\`\``, inline: false },
                         { name: '🔄 Active Refresh Token', value: `\`\`\`${session.refresh}\`\`\``, inline: false },
@@ -1320,11 +1047,9 @@ client.on('interactionCreate', async (interaction) => {
             if (customId.startsWith('giveaway_enter:')) {
                 const id = customId.split(':')[1];
                 const giveaway = db.prepare('SELECT * FROM giveaways WHERE id = ?').get(id);
-
                 if (!giveaway || giveaway.ended) {
-                    return interaction.reply({ content: 'This giveaway has ended.', flags: [MessageFlags.Ephemeral] });
+                    return interaction.reply({ content: 'This giveaway has concluded.', flags: [MessageFlags.Ephemeral] });
                 }
-
                 try {
                     db.prepare('INSERT INTO entries (giveaway_id, user_id) VALUES (?, ?)').run(id, interaction.user.id);
                     await updateGiveawayMessage(id);
@@ -1342,102 +1067,42 @@ client.on('interactionCreate', async (interaction) => {
         }
 
         if (interaction.isModalSubmit()) {
-            if (interaction.customId === 'build_server_modal') {
-                await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
-
-                try {
-                    const guild = interaction.guild;
-
-                    // ---------------- 3 CATEGORIES & 15 CHANNELS PROVISIONING (CURRENT SERVER) ----------------
-                    // Category 1: 🚪 Community & Info (5 channels)
-                    const catCommunity = await guild.channels.create({ name: '🚪 COMMUNITY & INFO', type: ChannelType.GuildCategory });
-                    const cVerify = await guild.channels.create({ name: '🛡️-verification', type: ChannelType.GuildText, parent: catCommunity.id });
-                    const cWelcome = await guild.channels.create({ name: '👋-welcome', type: ChannelType.GuildText, parent: catCommunity.id });
-                    const cRules = await guild.channels.create({ name: '📜-rules', type: ChannelType.GuildText, parent: catCommunity.id });
-                    const cAnnouncements = await guild.channels.create({ name: '📢-announcements', type: ChannelType.GuildText, parent: catCommunity.id });
-                    const cGeneral = await guild.channels.create({ name: '💬-general-chat', type: ChannelType.GuildText, parent: catCommunity.id });
-
-                    // Category 2: 💎 Supporter & Vault (5 channels)
-                    const catSupporter = await guild.channels.create({ name: '💎 SUPPORTER & VAULT', type: ChannelType.GuildCategory });
-                    const cRedeem = await guild.channels.create({ name: '💎-key-redeem', type: ChannelType.GuildText, parent: catSupporter.id });
-                    const cToken = await guild.channels.create({ name: '⚡-token-refresh', type: ChannelType.GuildText, parent: catSupporter.id });
-                    const cSupporterChat = await guild.channels.create({ name: '🔒-supporter-chat', type: ChannelType.GuildText, parent: catSupporter.id });
-                    const cGiveaways = await guild.channels.create({ name: '🎉-giveaways', type: ChannelType.GuildText, parent: catSupporter.id });
-                    const cVoiceLounge = await guild.channels.create({ name: '🔊 Supporter Lounge', type: ChannelType.GuildVoice, parent: catSupporter.id });
-
-                    // Category 3: ⚙️ Staff & Operations (5 channels)
-                    const catStaff = await guild.channels.create({ name: '⚙️ STAFF & OPERATIONS', type: ChannelType.GuildCategory });
-                    const cStaffChat = await guild.channels.create({ name: '🔒-staff-chat', type: ChannelType.GuildText, parent: catStaff.id });
-                    const cModLogs = await guild.channels.create({ name: '🛡️-mod-logs', type: ChannelType.GuildText, parent: catStaff.id });
-                    const cBotCommands = await guild.channels.create({ name: '🤖-bot-commands', type: ChannelType.GuildText, parent: catStaff.id });
-                    const cSupportTickets = await guild.channels.create({ name: '🎫-tickets', type: ChannelType.GuildText, parent: catStaff.id });
-                    const cStaffVoice = await guild.channels.create({ name: '🔊 Staff War Room', type: ChannelType.GuildVoice, parent: catStaff.id });
-
-                    // Update dynamic globals for the target server context
-                    VERIFY_CHANNEL_ID = cVerify.id;
-                    REDEEM_CHANNEL_ID = cRedeem.id;
-                    TOKEN_PANEL_CHANNEL_ID = cToken.id;
-
-                    // Automatically deploy the interactive panels directly into their target channels
-                    await redeployPanels(cVerify);
-                    await redeployPanels(cRedeem);
-                    await redeployPanels(cToken);
-
-                    const successEmbed = new EmbedBuilder()
-                        .setTitle('🚀 15-Channel Layout Successfully Deployed!')
-                        .setDescription(`Your current server has been successfully structured with **3 custom categories** and **15 channels**, complete with active interactive verification, redemption, and token panels!`)
-                        .setColor(0x57F287)
-                        .setTimestamp();
-
-                    return interaction.editReply({ embeds: [successEmbed] });
-                } catch (err) {
-                    console.error('Server setup channel error:', err);
-                    return interaction.editReply({ content: `❌ Failed to build channels. Ensure the bot account has Manage Channels permissions. Error: \`${err.message}\`` });
-                }
-            }
-
             if (interaction.customId === 'verify_modal') {
                 const userInput = interaction.fields.getTextInputValue('captcha_input').trim().toUpperCase();
                 const correctCaptcha = activeCaptchas.get(interaction.user.id);
 
                 if (!correctCaptcha || userInput !== correctCaptcha) {
-                    return interaction.reply({ content: '❌ Incorrect captcha code! Please click Verify Access again to get a new code.', flags: [MessageFlags.Ephemeral] });
+                    return interaction.reply({ content: '❌ Incorrect captcha code! Please try again.', flags: [MessageFlags.Ephemeral] });
                 }
 
                 activeCaptchas.delete(interaction.user.id);
                 const member = await interaction.guild.members.fetch(interaction.user.id).catch(() => null);
-
                 if (member) {
                     await member.roles.add(MEMBER_ROLE_ID).catch(() => {});
-                    return interaction.reply({ content: '✅ Verification successful! You have been granted the Verified Member role.', flags: [MessageFlags.Ephemeral] });
+                    return interaction.reply({ content: '✅ Verification successful! Verified Member role assigned.', flags: [MessageFlags.Ephemeral] });
                 }
             }
 
-            if (interaction.customId === 'modal_redeem' || interaction.customId === 'redeem_modal') {
+            if (interaction.customId === 'redeem_modal') {
                 const key = interaction.fields.getTextInputValue('key_input').trim();
-
                 let isValidKey = validBuyerKeys.has(key);
                 let dbKeyCheck = null;
 
                 if (!isValidKey) {
                     dbKeyCheck = db.prepare('SELECT * FROM buyer_codes WHERE code = ?').get(key);
-                    if (dbKeyCheck) {
-                        isValidKey = true;
-                    }
+                    if (dbKeyCheck) isValidKey = true;
                 }
 
                 if (!isValidKey) {
-                    return interaction.reply({ content: '❌ Invalid or expired license key. Please check your key and try again.', flags: [MessageFlags.Ephemeral] });
+                    return interaction.reply({ content: '❌ Invalid or expired license key.', flags: [MessageFlags.Ephemeral] });
                 }
 
-                if (dbKeyCheck && !validBuyerKeys.has(key)) {
-                    validBuyerKeys.add(key);
-                }
+                if (dbKeyCheck && !validBuyerKeys.has(key)) validBuyerKeys.add(key);
 
                 const member = await interaction.guild.members.fetch(interaction.user.id).catch(() => null);
                 if (member) {
                     await member.roles.add(BUYER_ROLE_ID).catch(() => {});
-                    return interaction.reply({ content: '💎 License successfully claimed! The Supporter role has been assigned to your account.', flags: [MessageFlags.Ephemeral] });
+                    return interaction.reply({ content: '💎 License successfully claimed! Supporter role assigned.', flags: [MessageFlags.Ephemeral] });
                 }
             }
 
@@ -1446,13 +1111,10 @@ client.on('interactionCreate', async (interaction) => {
                 const refresh = interaction.fields.getTextInputValue('refresh_token').trim();
 
                 await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
-
                 const result = await fetchRealGameToken(bearer, refresh);
 
                 if (!result.success) {
-                    return interaction.editReply({ 
-                        content: `❌ **Validation Error:** ${result.message}` 
-                    });
+                    return interaction.editReply({ content: `❌ **Validation Error:** ${result.message}` });
                 }
 
                 activeTokenRefreshes.set(interaction.user.id, {
@@ -1462,11 +1124,11 @@ client.on('interactionCreate', async (interaction) => {
                 });
 
                 const successEmbed = new EmbedBuilder()
-                    .setTitle('⚡ Nakama Session Successfully Connected')
-                    .setDescription(`✨ **Status:** ${result.message}\n• **Auto-Refresh Loop:** Active (Rotates session tokens automatically every 5 minutes)`)
+                    .setTitle('⚡ Session Successfully Connected & Auto-Loop Active')
+                    .setDescription(`✨ **Status:** ${result.message}\n• **Auto-Refresh Loop:** Active (Tokens automatically rotate every 30 minutes)[cite: 7]`)
                     .addFields(
-                        { name: '🛡️ New Validated Bearer Token', value: `\`\`\`${result.bearer}\`\`\``, inline: false },
-                        { name: '🔄 New Validated Refresh Token', value: `\`\`\`${result.refresh}\`\`\``, inline: false }
+                        { name: '🛡️ Validated Bearer Token', value: `\`\`\`${result.bearer}\`\`\``, inline: false },
+                        { name: '🔄 Validated Refresh Token', value: `\`\`\`${result.refresh}\`\`\``, inline: false }
                     )
                     .setColor(0x57F287)
                     .setTimestamp();
