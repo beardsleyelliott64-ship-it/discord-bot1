@@ -90,7 +90,7 @@ CREATE TABLE IF NOT EXISTS buyer_codes (
 
 // Setup Gemini AI using the stable package and current model
 const genAI = new GoogleGenerativeAI(GEMINI_KEY);
-const aiModel = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
+const aiModel = genAI.getGenerativeModel({ model: 'gemini-3.0-flash' });
 
 // Setup Discord Client (Needs extra intents for tracking anti-nuke & message content)
 const client = new Client({
