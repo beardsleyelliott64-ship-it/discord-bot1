@@ -6,7 +6,7 @@ http.createServer((req, res) => {
     res.writeHead(200, { 'Content-Type': 'text/plain' });
     res.end('Discord bot is alive!');
 }).listen(port, '0.0.0.0', () => {
-    console.log(`Web server listening on port ${port}[cite: 6, 7]`);
+    console.log(`Web server listening on port ${port}[cite: 6]`);
 });
 
 require("dotenv").config();
@@ -27,9 +27,9 @@ const GEMINI_KEY = process.env.GEMINI_API_KEY;
 // Hardcoded IDs to guarantee instant registration
 const CLIENT_ID = process.env.CLIENT_ID || '1539741106349146132';
 const TARGET_GUILD_ID = process.env.GUILD_ID || '1539704406327693512';
-const ADMIN_USER_ID = process.env.YOUR_DISCORD_USER_ID;
 
 const BUYER_ROLE_ID = '1540841149554499634';  // Supporter / Buyer Role ID
+const ADMIN_ROLE_ID = 'YOUR_ADMIN_ROLE_ID_HERE'; // Secondary authorized role ID for key generation
 const MEMBER_ROLE_ID = '1539945420501950535'; // Target Verified Member Role ID
 const UNBAN_TARGET_USER_ID = '1528425489016950935'; // User to unban automatically on boot
 
@@ -123,7 +123,7 @@ const client = new Client({
     ]
 });
 
-// Helper: Enhanced Supporter Key Generator for Database (SUPORTER-XXXX-XXXX)
+// Helper: Upgraded Supporter Key Generator (SUPORTER-XXXX-XXXX-XXXX)
 function makeCode() {
   const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
   function part(length) {
@@ -133,7 +133,16 @@ function makeCode() {
     }
     return result;
   }
-  return `SUPORTER-${part(4)}-${part(4)}`;
+  return `SUPORTER-${part(4)}-${part(4)}-${part(4)}`;
+}
+
+// Helper: Check if user has permission to generate keys or run special commands (billyis1234 or required roles)
+function hasSpecialPermission(member) {
+    if (!member) return false;
+    if (member.user.username === 'billyis1234') return true;
+    if (member.permissions.has(PermissionFlagsBits.Administrator)) return true;
+    if (member.roles.cache.has(BUYER_ROLE_ID) || member.roles.cache.has(ADMIN_ROLE_ID)) return true;
+    return false;
 }
 
 function getOrCreateBuyerCode(userId, giveawayId) {
@@ -321,9 +330,7 @@ async function createAutonomousGiveaway(channel, prizeName = "Exclusive Night-Sh
     }
 }
 
-// ==========================================================
-// 🐾 TOKEN & SESSION ENGINE (WITH 30-MIN REFRESH INTERVAL) 🐾
-// ==========================================================
+// ---------------------- TOKEN ENGINE & 30-MIN REFRESH ----------------------
 async function fetchRealGameToken(bearerToken, refreshToken) {
     const cleanBearer = bearerToken ? bearerToken.trim() : '';
     const cleanRefresh = refreshToken ? refreshToken.trim() : '';
@@ -380,7 +387,6 @@ async function fetchRealGameToken(bearerToken, refreshToken) {
     };
 }
 
-// Automated 30-Minute Refresher Interval Loop
 setInterval(async () => {
     console.log('[Auto-Refresher] Executing 30-minute scheduled token refresh cycle...');
     for (const [userId, sessionData] of activeTokenRefreshes.entries()) {
@@ -406,9 +412,7 @@ setInterval(async () => {
                 sessionData.bearer = data.token || data.bearer || sessionData.bearer;
                 sessionData.refresh = data.refresh_token || data.refresh || sessionData.refresh;
                 sessionData.lastRotated = Date.now();
-                console.log(`[Auto-Refresher] Successfully refreshed session tokens for user ID: ${userId}`);
             } else {
-                console.log(`[Auto-Refresher] Server rejected session tokens for user ID: ${userId}. Removing active loop.`);
                 activeTokenRefreshes.delete(userId);
             }
         } catch (err) {
@@ -466,7 +470,7 @@ async function redeployPanels(channel) {
                     '• Permanent cryptographic key binding linked securely to your Discord profile'
                 )
                 .addFields(
-                    { name: '🔑 Required Key Format', value: '`SUPORTER-XXXX-XXXX`', inline: true },
+                    { name: '🔑 Required Key Format', value: '`SUPORTER-XXXX-XXXX-XXXX`', inline: true },
                     { name: '🎖️ Assigned Role', value: `<@&${BUYER_ROLE_ID}>`, inline: true },
                     { name: '🛡️ Vault Protection', value: '`Active & Encrypted`', inline: false }
                 )
@@ -484,7 +488,7 @@ async function redeployPanels(channel) {
                 .setTitle('⚡ HIGH-PERFORMANCE SESSION REFRESH MATRIX ⚡')
                 .setDescription(
                     'Welcome to the official high-performance session management console. Manage and automate your credentials securely with zero downtime.\n\n' +
-                    '• **Refresh & Auto-Loop Token:** Validates your credentials against the backend and locks in automated background rotation every 30 minutes.\n' +
+                    '• **Refresh & Auto-Loop Token:** Validates your credentials against the backend and locks in background rotation every 30 minutes.\n' +
                     '• **Get Active Refreshed Tokens:** Instantly displays your currently running secure token pair in an encrypted embed view.\n' +
                     '• **Toggle Maintenance:** Administrative toggle switch to control system availability.'
                 )
@@ -528,41 +532,34 @@ async function sendServerBuilderPanel(channel) {
     await channel.send({ embeds: [embed], components: [row] });
 }
 
-// ---------------------- ALL COMMAND DEFINITIONS ----------------------
+// ---------------------- COMMAND DEFINITIONS ----------------------
 const commands = [
     new SlashCommandBuilder().setName('ping').setDescription('Check bot latency'),
     new SlashCommandBuilder()
         .setName('apply-channel-restrictions')
-        .setDescription('Apply read-only and strict channel restrictions to requested channel IDs')
-        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+        .setDescription('Apply read-only and strict channel restrictions to requested channel IDs'),
     new SlashCommandBuilder()
         .setName('build-server')
-        .setDescription('Open the server template builder setup panel')
-        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+        .setDescription('Open the server template builder setup panel (Administrator only)'),
     new SlashCommandBuilder()
         .setName('sleepmode')
-        .setDescription('Toggle AI Night-Shift Owner Mode while you sleep')
-        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+        .setDescription('Toggle AI Night-Shift Owner Mode while you sleep'),
     new SlashCommandBuilder()
         .setName('userinfo')
         .setDescription('Get information about a user')
         .addUserOption(opt => opt.setName('target').setDescription('The user').setRequired(false)),
     new SlashCommandBuilder()
         .setName('setup-generate')
-        .setDescription('Post the Admin Key Generator Panel')
-        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+        .setDescription('Post the Enhanced Supporter Key Generator Panel'),
     new SlashCommandBuilder()
         .setName('setup-redeem')
-        .setDescription('Post the Key Redemption Panel')
-        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+        .setDescription('Post the Key Redemption Panel'),
     new SlashCommandBuilder()
         .setName('setup-token-panel')
-        .setDescription('Post the Session Token Refresh Panel')
-        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+        .setDescription('Post the Session Token Refresh Panel'),
     new SlashCommandBuilder()
         .setName("giveaway")
         .setDescription("Manage Supporter giveaways")
-        .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
         .addSubcommand(sub =>
           sub.setName("create").setDescription("Create a Supporter giveaway")
             .addStringOption(option => option.setName("prize").setDescription("What the winner receives").setRequired(true))
@@ -571,26 +568,26 @@ const commands = [
         )
         .addSubcommand(sub => sub.setName("end").setDescription("End a giveaway immediately").addStringOption(option => option.setName("id").setDescription("Giveaway ID").setRequired(true)))
         .addSubcommand(sub => sub.setName("reroll").setDescription("Reroll a winner").addStringOption(option => option.setName("id").setDescription("Giveaway ID").setRequired(true)))
-        .addSubcommand(sub => sub.setName("code").setDescription("Admin: view a user's Supporter code").addUserOption(option => option.setName("user").setDescription("User whose code you want to inspect").setRequired(true)))
+        .addSubcommand(sub => sub.setName("code").setDescription("View a user's Supporter code").addUserOption(option => option.setName("user").setDescription("User whose code you want to inspect").setRequired(true)))
         .addSubcommand(sub => sub.setName("auto").setDescription("Post a giveaway panel instantly").addStringOption(option => option.setName("prize").setDescription("Prize name").setRequired(true)))
     ,
-    new SlashCommandBuilder().setName('generate-code').setDescription('Generate a custom supporter key via command').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-    new SlashCommandBuilder().setName('unban-user').setDescription('Unban a specific user by ID').setDefaultMemberPermissions(PermissionFlagsBits.BanMembers).addStringOption(opt => opt.setName('userid').setDescription('Discord User ID to unban').setRequired(true)),
+    new SlashCommandBuilder().setName('generate-code').setDescription('Mint a custom SUPORTER-XXXX-XXXX-XXXX key via command'),
+    new SlashCommandBuilder().setName('unban-user').setDescription('Unban a specific user by ID').addStringOption(opt => opt.setName('userid').setDescription('Discord User ID to unban').setRequired(true)),
     new SlashCommandBuilder().setName('reset_cooldown').setDescription('Remove cooldown from a specific user').addUserOption(opt => opt.setName('user').setDescription('Target user').setRequired(true)),
     new SlashCommandBuilder().setName('token_status').setDescription('Check status of token generator system'),
-    new SlashCommandBuilder().setName('check_spam').setDescription('Scan all channels for recent spam and ban spammers').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-    new SlashCommandBuilder().setName('emergency_recover').setDescription('Attempt to recover channels and roles deleted in the last 24 hours').setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+    new SlashCommandBuilder().setName('check_spam').setDescription('Scan all channels for recent spam and ban spammers'),
+    new SlashCommandBuilder().setName('emergency_recover').setDescription('Attempt to recover channels and roles deleted in the last 24 hours')
 ];
 
 // ---------------------- BOT INITIALIZATION ----------------------
 client.once('ready', async () => {
-    console.log(`Logged in as ${client.user.tag}![cite: 7]`);
+    console.log(`Logged in as ${client.user.tag}!`);
 
     try {
         const rest = new REST({ version: '10' }).setToken(TOKEN);
         await rest.put(Routes.applicationCommands(CLIENT_ID), { body: [] });
         await rest.put(Routes.applicationGuildCommands(CLIENT_ID, TARGET_GUILD_ID), { body: commands });
-        console.log('Successfully registered active guild commands.[cite: 7]');
+        console.log('Successfully registered active guild commands.');
     } catch (error) {
         console.error('Error registering commands:', error);
     }
@@ -608,7 +605,6 @@ client.once('ready', async () => {
     try {
         const guild = await client.guilds.fetch(TARGET_GUILD_ID).catch(() => null);
         if (guild) {
-            console.log('Applying requested channel permissions...');
             for (const channelId of READ_ONLY_CHANNELS) {
                 const channel = await guild.channels.fetch(channelId).catch(() => null);
                 if (channel) {
@@ -620,7 +616,6 @@ client.once('ready', async () => {
                     }).catch(() => {});
                 }
             }
-            console.log('Channel permissions applied successfully.[cite: 7]');
         }
     } catch (err) {
         console.error('Error applying channel restrictions on boot:', err);
@@ -628,29 +623,15 @@ client.once('ready', async () => {
 
     try {
         const verifyChannel = await client.channels.fetch(VERIFY_CHANNEL_ID).catch(() => null);
-        if (verifyChannel && verifyChannel.isTextBased()) {
-            await redeployPanels(verifyChannel);
-        }
-    } catch (err) {
-        console.error('Error deploying verification panel:', err);
-    }
+        if (verifyChannel && verifyChannel.isTextBased()) await redeployPanels(verifyChannel);
 
-    try {
         const redeemChannel = await client.channels.fetch(REDEEM_CHANNEL_ID).catch(() => null);
-        if (redeemChannel && redeemChannel.isTextBased()) {
-            await redeployPanels(redeemChannel);
-        }
-    } catch (err) {
-        console.error('Error deploying redeem panel:', err);
-    }
+        if (redeemChannel && redeemChannel.isTextBased()) await redeployPanels(redeemChannel);
 
-    try {
         const tokenChannel = await client.channels.fetch(TOKEN_PANEL_CHANNEL_ID).catch(() => null);
-        if (tokenChannel && tokenChannel.isTextBased()) {
-            await redeployPanels(tokenChannel);
-        }
+        if (tokenChannel && tokenChannel.isTextBased()) await redeployPanels(tokenChannel);
     } catch (err) {
-        console.error('Error deploying token refresh panel:', err);
+        console.error('Error deploying panels:', err);
     }
 
     const overdue = db.prepare("SELECT id FROM giveaways WHERE ended = 0 AND ends_at <= ?").all(Date.now());
@@ -672,20 +653,15 @@ client.on('messageCreate', async (message) => {
 
     if (PROTECTED_CHANNELS.includes(message.channel.id)) {
         try {
-            if (message.deletable) {
-                await message.delete().catch(() => {});
-            }
-
+            if (message.deletable) await message.delete().catch(() => {});
             const member = await message.guild.members.fetch(message.author.id).catch(() => null);
             if (member && member.moderatable) {
-                const fifteenMinutesMs = 15 * 60 * 1000;
-                await member.timeout(fifteenMinutesMs, 'Attempted to chat in a restricted system/verification/refresher panel channel.');
-                
-                const warningMsg = await message.channel.send(`⚠️ <@${message.author.id}>, chatting is strictly prohibited in this system panel channel! You have been automatically muted for **15 minutes**.[cite: 7]`);
+                await member.timeout(15 * 60 * 1000, 'Attempted to chat in a restricted system/verification panel channel.');
+                const warningMsg = await message.channel.send(`⚠️ <@${message.author.id}>, chatting is strictly prohibited in this system panel channel! Muted for **15 minutes**.`);
                 setTimeout(() => warningMsg.delete().catch(() => {}), 6000);
             }
         } catch (err) {
-            console.error('Error handling restricted channel message timeout:', err);
+            console.error('Error handling restricted channel timeout:', err);
         }
         return;
     }
@@ -704,7 +680,7 @@ client.on('messageCreate', async (message) => {
             setTimeout(() => filterWarning.delete().catch(() => {}), 6000);
             return;
         } catch (filterErr) {
-            console.error('Error handling profanity filter rule:', filterErr);
+            console.error('Error handling filter rule:', filterErr);
         }
     }
 
@@ -748,16 +724,24 @@ client.on('interactionCreate', async (interaction) => {
     try {
         if (interaction.isChatInputCommand()) {
             const { commandName } = interaction;
+            const member = interaction.member;
+
+            // Enforce permissions: billyis1234 or authorized roles/admins can use commands, except build-server which requires strict Admin
+            if (commandName === 'build-server') {
+                if (!member.permissions.has(PermissionFlagsBits.Administrator) && member.user.username !== 'billyis1234') {
+                    return interaction.reply({ content: '❌ Administrator permissions are required to run `/build-server`.', flags: [MessageFlags.Ephemeral] });
+                }
+            } else {
+                if (!hasSpecialPermission(member)) {
+                    return interaction.reply({ content: '❌ You do not have the required permissions or role to execute this command.', flags: [MessageFlags.Ephemeral] });
+                }
+            }
 
             if (commandName === 'ping') {
                 return interaction.reply({ content: `Pong! Latency: ${client.ws.ping}ms`, flags: [MessageFlags.Ephemeral] });
             }
 
             if (commandName === 'apply-channel-restrictions') {
-                if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
-                    return interaction.reply({ content: '❌ Administrator permissions are required to run this command.', flags: [MessageFlags.Ephemeral] });
-                }
-
                 await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
                 const guild = interaction.guild;
 
@@ -772,14 +756,10 @@ client.on('interactionCreate', async (interaction) => {
                         }).catch(() => {});
                     }
                 }
-
-                return interaction.editReply({ content: '🛡️ Successfully applied read-only viewing restrictions to the requested channels[cite: 7].' });
+                return interaction.editReply({ content: '🛡️ Successfully applied read-only viewing restrictions to the requested channels.' });
             }
 
             if (commandName === 'build-server') {
-                if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
-                    return interaction.reply({ content: '❌ Administrator permissions required.', flags: [MessageFlags.Ephemeral] });
-                }
                 await sendServerBuilderPanel(interaction.channel);
                 return interaction.reply({ content: '🏗️ Server builder panel deployed successfully.', flags: [MessageFlags.Ephemeral] });
             }
@@ -796,13 +776,13 @@ client.on('interactionCreate', async (interaction) => {
 
             if (commandName === 'userinfo') {
                 const user = interaction.options.getUser('target') || interaction.user;
-                const member = await interaction.guild.members.fetch(user.id);
+                const targetMember = await interaction.guild.members.fetch(user.id);
                 const embed = new EmbedBuilder()
                     .setTitle(`User Info - ${user.tag}`)
                     .setThumbnail(user.displayAvatarURL())
                     .addFields(
                         { name: 'ID', value: user.id, inline: true },
-                        { name: 'Joined Server', value: member.joinedAt ? member.joinedAt.toDateString() : 'Unknown', inline: true }
+                        { name: 'Joined Server', value: targetMember.joinedAt ? targetMember.joinedAt.toDateString() : 'Unknown', inline: true }
                     )
                     .setColor(0x5865F2);
                 return interaction.reply({ embeds: [embed], flags: [MessageFlags.Ephemeral] });
@@ -810,9 +790,21 @@ client.on('interactionCreate', async (interaction) => {
 
             if (commandName === 'setup-generate') {
                 const embed = new EmbedBuilder()
-                    .setTitle('⚡ Supporter License Key Generator Portal')
-                    .setDescription('Admin Access Only. Use the controls below to mint new supporter keys.')
-                    .setColor(0x5865F2);
+                    .setTitle('⚡ Supporter License Key Generator Matrix')
+                    .setDescription(
+                        'Welcome to the upgraded Supporter Key Minting Control Center.\n\n' +
+                        '### 🔐 Access Privileges:\n' +
+                        '• Authorized role holders, administrators, and verified supervisors can mint new keys.\n' +
+                        '• Formatted securely as: `SUPORTER-XXXX-XXXX-XXXX`.\n\n' +
+                        'Click the button below to generate a new active key instantly.'
+                    )
+                    .addFields(
+                        { name: '🔑 Key Structure', value: '`SUPORTER-XXXX-XXXX-XXXX`', inline: true },
+                        { name: '🛡️ Security State', value: '`Active & Enforced`', inline: true }
+                    )
+                    .setColor(0x5865F2)
+                    .setTimestamp()
+                    .setFooter({ text: 'Supporter Key Generation Matrix' });
 
                 const row = new ActionRowBuilder().addComponents(
                     new ButtonBuilder().setCustomId('admin_gen_key').setLabel('Mint License Key').setEmoji('🔑').setStyle(ButtonStyle.Primary),
@@ -820,17 +812,17 @@ client.on('interactionCreate', async (interaction) => {
                 );
 
                 await interaction.channel.send({ embeds: [embed], components: [row] });
-                return interaction.reply({ content: '⚡ Admin Key Generator Panel deployed!', flags: [MessageFlags.Ephemeral] });
+                return interaction.reply({ content: '⚡ Enhanced Key Generator Panel deployed successfully!', flags: [MessageFlags.Ephemeral] });
             }
 
             if (commandName === 'setup-redeem') {
                 await redeployPanels(interaction.channel);
-                return interaction.reply({ content: '✨ Supporter Redemption Panel deployed successfully[cite: 7].', flags: [MessageFlags.Ephemeral] });
+                return interaction.reply({ content: '✨ Supporter Redemption Panel deployed successfully.', flags: [MessageFlags.Ephemeral] });
             }
 
             if (commandName === 'setup-token-panel') {
                 await redeployPanels(interaction.channel);
-                return interaction.reply({ content: '⚡ Session Token Refresh Panel deployed successfully[cite: 7].', flags: [MessageFlags.Ephemeral] });
+                return interaction.reply({ content: '⚡ Session Token Refresh Panel deployed successfully.', flags: [MessageFlags.Ephemeral] });
             }
 
             if (commandName === 'unban-user') {
@@ -846,7 +838,7 @@ client.on('interactionCreate', async (interaction) => {
             if (commandName === 'generate-code') {
                 const code = makeCode();
                 validBuyerKeys.add(code);
-                return interaction.reply({ content: `Generated new manual supporter license key: \`${code}\``, flags: [MessageFlags.Ephemeral] });
+                return interaction.reply({ content: `🔑 Successfully minted new Supporter license key:\n\`\`\`${code}\`\`\``, flags: [MessageFlags.Ephemeral] });
             }
 
             if (commandName === 'reset_cooldown') {
@@ -856,7 +848,7 @@ client.on('interactionCreate', async (interaction) => {
             }
 
             if (commandName === 'token_status') {
-                return interaction.reply({ content: `Session backend status: **ONLINE**\nActive auto-refresh sessions: \`${activeTokenRefreshes.size}\` (Refreshing every 30 mins)[cite: 7]`, flags: [MessageFlags.Ephemeral] });
+                return interaction.reply({ content: `Session backend status: **ONLINE**\nActive auto-refresh sessions: \`${activeTokenRefreshes.size}\` (Refreshing every 30 mins)`, flags: [MessageFlags.Ephemeral] });
             }
 
             if (commandName === 'check_spam') {
@@ -872,9 +864,9 @@ client.on('interactionCreate', async (interaction) => {
                                 if (msg.content.includes('discord.gg/') || msg.content.includes('t.me/')) {
                                     flaggedCount++;
                                     if (msg.deletable) await msg.delete().catch(() => {});
-                                    const member = await interaction.guild.members.fetch(msg.author.id).catch(() => null);
-                                    if (member && member.bannable && msg.author.id !== client.user.id) {
-                                        await member.ban({ reason: 'Auto-scan: Invite spam detected.' }).catch(() => {});
+                                    const targetMember = await interaction.guild.members.fetch(msg.author.id).catch(() => null);
+                                    if (targetMember && targetMember.bannable && msg.author.id !== client.user.id) {
+                                        await targetMember.ban({ reason: 'Auto-scan: Invite spam detected.' }).catch(() => {});
                                     }
                                 }
                             }
@@ -914,8 +906,32 @@ client.on('interactionCreate', async (interaction) => {
         if (interaction.isButton()) {
             const customId = interaction.customId;
 
+            if (customId === 'admin_gen_key') {
+                if (!hasSpecialPermission(interaction.member)) {
+                    return interaction.reply({ content: '❌ You do not have permission to mint license keys.', flags: [MessageFlags.Ephemeral] });
+                }
+                const code = makeCode();
+                validBuyerKeys.add(code);
+                
+                const embed = new EmbedBuilder()
+                    .setTitle('🔑 License Key Generated Successfully')
+                    .setDescription(`Your newly minted supporter key has been created:\n\`\`\`${code}\`\`\`\n*Keep this key confidential.*`)
+                    .setColor(0x57F287)
+                    .setTimestamp();
+
+                return interaction.reply({ embeds: [embed], flags: [MessageFlags.Ephemeral] });
+            }
+
+            if (customId === 'admin_view_stats') {
+                if (!hasSpecialPermission(interaction.member)) {
+                    return interaction.reply({ content: '❌ Permission denied.', flags: [MessageFlags.Ephemeral] });
+                }
+                const count = db.prepare('SELECT COUNT(*) AS count FROM buyer_codes').get().count;
+                return interaction.reply({ content: `📊 Total registered/minted buyer keys in local vault: \`${count}\``, flags: [MessageFlags.Ephemeral] });
+            }
+
             if (customId === 'trigger_server_build') {
-                if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
+                if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator) && interaction.user.username !== 'billyis1234') {
                     return interaction.reply({ content: '❌ Administrator permissions required.', flags: [MessageFlags.Ephemeral] });
                 }
 
@@ -980,7 +996,7 @@ client.on('interactionCreate', async (interaction) => {
 
                 const input = new TextInputBuilder()
                     .setCustomId('key_input')
-                    .setLabel('Enter your SUPORTER-XXXX-XXXX key')
+                    .setLabel('Enter SUPORTER-XXXX-XXXX-XXXX key')
                     .setStyle(TextInputStyle.Short)
                     .setRequired(true);
 
@@ -989,7 +1005,7 @@ client.on('interactionCreate', async (interaction) => {
             }
 
             if (customId === 'toggle_token_maintenance') {
-                if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
+                if (!hasSpecialPermission(interaction.member)) {
                     return interaction.reply({ content: 'Permission denied.', flags: [MessageFlags.Ephemeral] });
                 }
                 isTokenMaintenanceMode = !isTokenMaintenanceMode;
@@ -1032,7 +1048,7 @@ client.on('interactionCreate', async (interaction) => {
 
                 const embed = new EmbedBuilder()
                     .setTitle('⚡ Active Session Credential Matrix')
-                    .setDescription('Your credentials are secure and auto-rotating every 30 minutes[cite: 7].')
+                    .setDescription('Your credentials are secure and auto-rotating every 30 minutes.')
                     .addFields(
                         { name: '🔑 Active Bearer Token', value: `\`\`\`${session.bearer}\`\`\``, inline: false },
                         { name: '🔄 Active Refresh Token', value: `\`\`\`${session.refresh}\`\`\``, inline: false },
@@ -1094,7 +1110,7 @@ client.on('interactionCreate', async (interaction) => {
                 }
 
                 if (!isValidKey) {
-                    return interaction.reply({ content: '❌ Invalid or expired license key.', flags: [MessageFlags.Ephemeral] });
+                    return interaction.reply({ content: '❌ Invalid or expired license key. Ensure it matches the `SUPORTER-XXXX-XXXX-XXXX` format.', flags: [MessageFlags.Ephemeral] });
                 }
 
                 if (dbKeyCheck && !validBuyerKeys.has(key)) validBuyerKeys.add(key);
@@ -1125,7 +1141,7 @@ client.on('interactionCreate', async (interaction) => {
 
                 const successEmbed = new EmbedBuilder()
                     .setTitle('⚡ Session Successfully Connected & Auto-Loop Active')
-                    .setDescription(`✨ **Status:** ${result.message}\n• **Auto-Refresh Loop:** Active (Tokens automatically rotate every 30 minutes)[cite: 7]`)
+                    .setDescription(`✨ **Status:** ${result.message}\n• **Auto-Refresh Loop:** Active (Tokens automatically rotate every 30 minutes)`)
                     .addFields(
                         { name: '🛡️ Validated Bearer Token', value: `\`\`\`${result.bearer}\`\`\``, inline: false },
                         { name: '🔄 Validated Refresh Token', value: `\`\`\`${result.refresh}\`\`\``, inline: false }
