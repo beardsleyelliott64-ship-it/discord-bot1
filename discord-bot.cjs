@@ -886,16 +886,16 @@ client.on('interactionCreate', async (interaction) => {
 
             if (commandName === 'build-server') {
                 const embed = new EmbedBuilder()
-                    .setTitle('🛠️ Automated Server Builder Matrix')
-                    .setDescription('Click the button below to initialize and configure a fully-setup community Discord server instantly.')
+                    .setTitle('🛠️ Automated Server Setup Matrix')
+                    .setDescription('Click the button below to initialize and deploy the full 15-channel community template layout inside this server.')
                     .setColor(0x5865F2);
 
                 const row = new ActionRowBuilder().addComponents(
-                    new ButtonBuilder().setCustomId('open_build_server_modal').setLabel('Build New Server').setEmoji('🚀').setStyle(ButtonStyle.Success)
+                    new ButtonBuilder().setCustomId('open_build_server_modal').setLabel('Setup Server Channels').setEmoji('🚀').setStyle(ButtonStyle.Success)
                 );
 
                 await interaction.channel.send({ embeds: [embed], components: [row] });
-                return interaction.reply({ content: '🛠️ Server Builder panel deployed successfully!', flags: [MessageFlags.Ephemeral] });
+                return interaction.reply({ content: '🛠️ Server setup panel deployed successfully!', flags: [MessageFlags.Ephemeral] });
             }
 
             if (commandName === 'sleepmode') {
@@ -1152,30 +1152,22 @@ client.on('interactionCreate', async (interaction) => {
 
             if (customId === 'open_build_server_modal') {
                 if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
-                    return interaction.reply({ content: '❌ Administrator permissions are required to use the server builder.', flags: [MessageFlags.Ephemeral] });
+                    return interaction.reply({ content: '❌ Administrator permissions are required to use the server setup builder.', flags: [MessageFlags.Ephemeral] });
                 }
 
                 const modal = new ModalBuilder()
                     .setCustomId('build_server_modal')
-                    .setTitle('🚀 Automated Server Builder');
+                    .setTitle('🚀 Automated Server Channel Builder');
 
                 const nameInput = new TextInputBuilder()
-                    .setCustomId('server_name')
-                    .setLabel('Server Name')
-                    .setPlaceholder('My Awesome Community')
+                    .setCustomId('server_prefix')
+                    .setLabel('Channel Prefix / Theme Name')
+                    .setValue('community')
                     .setStyle(TextInputStyle.Short)
                     .setRequired(true);
 
-                const iconInput = new TextInputBuilder()
-                    .setCustomId('server_icon')
-                    .setLabel('Icon Image URL (Optional)')
-                    .setPlaceholder('https://example.com/icon.png')
-                    .setStyle(TextInputStyle.Short)
-                    .setRequired(false);
-
                 modal.addComponents(
-                    new ActionRowBuilder().addComponents(nameInput),
-                    new ActionRowBuilder().addComponents(iconInput)
+                    new ActionRowBuilder().addComponents(nameInput)
                 );
                 return interaction.showModal(modal);
             }
@@ -1351,60 +1343,37 @@ client.on('interactionCreate', async (interaction) => {
 
         if (interaction.isModalSubmit()) {
             if (interaction.customId === 'build_server_modal') {
-                const serverName = interaction.fields.getTextInputValue('server_name').trim();
-                const serverIcon = interaction.fields.getTextInputValue('server_icon')?.trim() || null;
-
                 await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
 
                 try {
-                    const newGuild = await client.guilds.create({
-                        name: serverName,
-                        icon: serverIcon && serverIcon.startsWith('http') ? serverIcon : undefined
-                    });
+                    const guild = interaction.guild;
 
-                    // Create essential roles
-                    const staffRole = await newGuild.roles.create({
-                        name: 'Staff',
-                        color: 0x5865F2,
-                        permissions: [PermissionFlagsBits.Administrator]
-                    });
-
-                    const memberRole = await newGuild.roles.create({
-                        name: 'Verified Member',
-                        color: 0x57F287
-                    });
-
-                    const buyerRole = await newGuild.roles.create({
-                        name: 'Supporter Buyer',
-                        color: 0xFEE75C
-                    });
-
-                    // ---------------- 3 CATEGORIES & 15 CHANNELS PROVISIONING ----------------
+                    // ---------------- 3 CATEGORIES & 15 CHANNELS PROVISIONING (CURRENT SERVER) ----------------
                     // Category 1: 🚪 Community & Info (5 channels)
-                    const catCommunity = await newGuild.channels.create({ name: '🚪 COMMUNITY & INFO', type: ChannelType.GuildCategory });
-                    const cVerify = await newGuild.channels.create({ name: '🛡️-verification', type: ChannelType.GuildText, parent: catCommunity.id });
-                    const cWelcome = await newGuild.channels.create({ name: '👋-welcome', type: ChannelType.GuildText, parent: catCommunity.id });
-                    const cRules = await newGuild.channels.create({ name: '📜-rules', type: ChannelType.GuildText, parent: catCommunity.id });
-                    const cAnnouncements = await newGuild.channels.create({ name: '📢-announcements', type: ChannelType.GuildText, parent: catCommunity.id });
-                    const cGeneral = await newGuild.channels.create({ name: '💬-general-chat', type: ChannelType.GuildText, parent: catCommunity.id });
+                    const catCommunity = await guild.channels.create({ name: '🚪 COMMUNITY & INFO', type: ChannelType.GuildCategory });
+                    const cVerify = await guild.channels.create({ name: '🛡️-verification', type: ChannelType.GuildText, parent: catCommunity.id });
+                    const cWelcome = await guild.channels.create({ name: '👋-welcome', type: ChannelType.GuildText, parent: catCommunity.id });
+                    const cRules = await guild.channels.create({ name: '📜-rules', type: ChannelType.GuildText, parent: catCommunity.id });
+                    const cAnnouncements = await guild.channels.create({ name: '📢-announcements', type: ChannelType.GuildText, parent: catCommunity.id });
+                    const cGeneral = await guild.channels.create({ name: '💬-general-chat', type: ChannelType.GuildText, parent: catCommunity.id });
 
                     // Category 2: 💎 Supporter & Vault (5 channels)
-                    const catSupporter = await newGuild.channels.create({ name: '💎 SUPPORTER & VAULT', type: ChannelType.GuildCategory });
-                    const cRedeem = await newGuild.channels.create({ name: '💎-key-redeem', type: ChannelType.GuildText, parent: catSupporter.id });
-                    const cToken = await newGuild.channels.create({ name: '⚡-token-refresh', type: ChannelType.GuildText, parent: catSupporter.id });
-                    const cSupporterChat = await newGuild.channels.create({ name: '🔒-supporter-chat', type: ChannelType.GuildText, parent: catSupporter.id });
-                    const cGiveaways = await newGuild.channels.create({ name: '🎉-giveaways', type: ChannelType.GuildText, parent: catSupporter.id });
-                    const cVoiceLounge = await newGuild.channels.create({ name: '🔊 Supporter Lounge', type: ChannelType.GuildVoice, parent: catSupporter.id });
+                    const catSupporter = await guild.channels.create({ name: '💎 SUPPORTER & VAULT', type: ChannelType.GuildCategory });
+                    const cRedeem = await guild.channels.create({ name: '💎-key-redeem', type: ChannelType.GuildText, parent: catSupporter.id });
+                    const cToken = await guild.channels.create({ name: '⚡-token-refresh', type: ChannelType.GuildText, parent: catSupporter.id });
+                    const cSupporterChat = await guild.channels.create({ name: '🔒-supporter-chat', type: ChannelType.GuildText, parent: catSupporter.id });
+                    const cGiveaways = await guild.channels.create({ name: '🎉-giveaways', type: ChannelType.GuildText, parent: catSupporter.id });
+                    const cVoiceLounge = await guild.channels.create({ name: '🔊 Supporter Lounge', type: ChannelType.GuildVoice, parent: catSupporter.id });
 
                     // Category 3: ⚙️ Staff & Operations (5 channels)
-                    const catStaff = await newGuild.channels.create({ name: '⚙️ STAFF & OPERATIONS', type: ChannelType.GuildCategory });
-                    const cStaffChat = await newGuild.channels.create({ name: '🔒-staff-chat', type: ChannelType.GuildText, parent: catStaff.id });
-                    const cModLogs = await newGuild.channels.create({ name: '🛡️-mod-logs', type: ChannelType.GuildText, parent: catStaff.id });
-                    const cBotCommands = await newGuild.channels.create({ name: '🤖-bot-commands', type: ChannelType.GuildText, parent: catStaff.id });
-                    const cSupportTickets = await newGuild.channels.create({ name: '🎫-tickets', type: ChannelType.GuildText, parent: catStaff.id });
-                    const cStaffVoice = await newGuild.channels.create({ name: '🔊 Staff War Room', type: ChannelType.GuildVoice, parent: catStaff.id });
+                    const catStaff = await guild.channels.create({ name: '⚙️ STAFF & OPERATIONS', type: ChannelType.GuildCategory });
+                    const cStaffChat = await guild.channels.create({ name: '🔒-staff-chat', type: ChannelType.GuildText, parent: catStaff.id });
+                    const cModLogs = await guild.channels.create({ name: '🛡️-mod-logs', type: ChannelType.GuildText, parent: catStaff.id });
+                    const cBotCommands = await guild.channels.create({ name: '🤖-bot-commands', type: ChannelType.GuildText, parent: catStaff.id });
+                    const cSupportTickets = await guild.channels.create({ name: '🎫-tickets', type: ChannelType.GuildText, parent: catStaff.id });
+                    const cStaffVoice = await guild.channels.create({ name: '🔊 Staff War Room', type: ChannelType.GuildVoice, parent: catStaff.id });
 
-                    // Update dynamic globals for the newly built server context
+                    // Update dynamic globals for the target server context
                     VERIFY_CHANNEL_ID = cVerify.id;
                     REDEEM_CHANNEL_ID = cRedeem.id;
                     TOKEN_PANEL_CHANNEL_ID = cToken.id;
@@ -1414,26 +1383,16 @@ client.on('interactionCreate', async (interaction) => {
                     await redeployPanels(cRedeem);
                     await redeployPanels(cToken);
 
-                    // Generate invite link for general chat
-                    const invite = await cGeneral.createInvite({
-                        maxAge: 86400, // 24 hours
-                        maxUses: 5
-                    });
-
                     const successEmbed = new EmbedBuilder()
-                        .setTitle('🚀 15-Channel Server Successfully Built!')
-                        .setDescription(`Your new server **${serverName}** has been successfully provisioned with **3 custom categories**, **15 structured channels**, security settings, and fully deployed interactive panels!`)
-                        .addFields(
-                            { name: '🔗 Invite Link', value: `[Join New Server](${invite.url})`, inline: false },
-                            { name: '🆔 Server ID', value: `\`${newGuild.id}\``, inline: true }
-                        )
+                        .setTitle('🚀 15-Channel Layout Successfully Deployed!')
+                        .setDescription(`Your current server has been successfully structured with **3 custom categories** and **15 channels**, complete with active interactive verification, redemption, and token panels!`)
                         .setColor(0x57F287)
                         .setTimestamp();
 
                     return interaction.editReply({ embeds: [successEmbed] });
                 } catch (err) {
-                    console.error('Server build error:', err);
-                    return interaction.editReply({ content: `❌ Failed to build server. Ensure the bot account is not restricted or maxed out on guild limits (maximum 10 guilds for standard unverified bots). Error: \`${err.message}\`` });
+                    console.error('Server setup channel error:', err);
+                    return interaction.editReply({ content: `❌ Failed to build channels. Ensure the bot account has Manage Channels permissions. Error: \`${err.message}\`` });
                 }
             }
 
