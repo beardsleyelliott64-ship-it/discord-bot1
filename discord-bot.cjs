@@ -1229,12 +1229,37 @@ client.on('interactionCreate', async (interaction) => {
                 if (interaction.user.id !== ADMIN_USER_ID && !interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
                     return interaction.reply({ content: 'You do not have permission to toggle token maintenance mode.', flags: [MessageFlags.Ephemeral] });
                 }
+
                 isTokenMaintenanceMode = !isTokenMaintenanceMode;
-                return interaction.reply({ content: `Token system maintenance mode is now: **${isTokenMaintenanceMode ? 'ENABLED 🔒' : 'DISABLED 🟢'}**`, flags: [MessageFlags.Ephemeral] });
+
+                // Dynamically update channel permissions for TOKEN_PANEL_CHANNEL_ID
+                try {
+                    const tokenChannel = await interaction.guild.channels.fetch(TOKEN_PANEL_CHANNEL_ID);
+                    if (tokenChannel) {
+                        if (isTokenMaintenanceMode) {
+                            await tokenChannel.permissionOverwrites.edit(interaction.guild.roles.everyone, {
+                                ViewChannel: false
+                            });
+                            await tokenChannel.permissionOverwrites.edit(ADMIN_USER_ID, {
+                                ViewChannel: true,
+                                SendMessages: true
+                            });
+                        } else {
+                            await tokenChannel.permissionOverwrites.edit(interaction.guild.roles.everyone, {
+                                ViewChannel: true
+                            });
+                            await tokenChannel.permissionOverwrites.delete(ADMIN_USER_ID).catch(() => {});
+                        }
+                    }
+                } catch (err) {
+                    console.error('Failed to update channel permissions during maintenance toggle:', err);
+                }
+
+                return interaction.reply({ content: `Token system maintenance mode is now: **${isTokenMaintenanceMode ? 'ENABLED 🔒 (Panel Hidden & Locked for others)' : 'DISABLED 🟢 (Panel Restored)'}**`, flags: [MessageFlags.Ephemeral] });
             }
 
             if (customId === 'open_token_refresh_modal') {
-                if (isTokenMaintenanceMode) {
+                if (isTokenMaintenanceMode && interaction.user.id !== ADMIN_USER_ID) {
                     return interaction.reply({ content: '⚠️ The token refresh system is currently under maintenance. Please try again later.', flags: [MessageFlags.Ephemeral] });
                 }
 
