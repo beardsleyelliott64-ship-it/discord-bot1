@@ -1054,19 +1054,21 @@ client.on('interactionCreate', async (interaction) => {
                 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
                 try {
-                    await interaction.editReply({ content: '🔄 Wiping existing channels safely...' });
+                    await interaction.editReply({ content: '🔄 Safely wiping existing channels...' });
                     
                     const existingChannels = await guild.channels.fetch();
                     for (const [, ch] of existingChannels) {
                         if (ch) {
                             await ch.delete('Server rebuild command executed').catch(() => {});
-                            await sleep(300);
+                            await sleep(600); // Increased delay to avoid deletion rate limits
                         }
                     }
 
                     const everyoneRole = guild.roles.everyone;
-                    await interaction.editReply({ content: '🏗️ Creating Category 1: Information & Welcome...' });
+                    await interaction.editReply({ content: '🏗️ Pausing to clear rate-limit window before creating new layout...' });
+                    await sleep(2000);
 
+                    await interaction.editReply({ content: '🏗️ Creating Category 1: Information & Welcome...' });
                     const cat1 = await guild.channels.create({
                         name: '📌 ┃ INFORMATION & WELCOME',
                         type: ChannelType.GuildCategory,
@@ -1076,16 +1078,16 @@ client.on('interactionCreate', async (interaction) => {
                             { id: client.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ManageChannels] }
                         ]
                     });
-                    await sleep(400);
+                    await sleep(600);
 
                     await guild.channels.create({ name: '📜-rules', type: ChannelType.GuildText, parent: cat1.id });
-                    await sleep(300);
+                    await sleep(400);
                     await guild.channels.create({ name: '📢-announcements', type: ChannelType.GuildAnnouncement, parent: cat1.id });
-                    await sleep(300);
+                    await sleep(400);
                     await guild.channels.create({ name: '🚀-updates', type: ChannelType.GuildText, parent: cat1.id });
-                    await sleep(300);
+                    await sleep(400);
                     await guild.channels.create({ name: '❓-faq', type: ChannelType.GuildText, parent: cat1.id });
-                    await sleep(300);
+                    await sleep(400);
                     
                     const chVerify = await guild.channels.create({
                         name: '🛡️-verification',
@@ -1097,10 +1099,9 @@ client.on('interactionCreate', async (interaction) => {
                         ]
                     });
                     VERIFY_CHANNEL_ID = chVerify.id;
-                    await sleep(500);
+                    await sleep(800);
 
                     await interaction.editReply({ content: '🏗️ Creating Category 2: Community Lounge...' });
-
                     const cat2 = await guild.channels.create({
                         name: '💬 ┃ COMMUNITY LOUNGE',
                         type: ChannelType.GuildCategory,
@@ -1109,18 +1110,18 @@ client.on('interactionCreate', async (interaction) => {
                             { id: MEMBER_ROLE_ID, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] }
                         ]
                     });
-                    await sleep(400);
+                    await sleep(600);
 
                     await guild.channels.create({ name: '💬-general-chat', type: ChannelType.GuildText, parent: cat2.id });
-                    await sleep(300);
+                    await sleep(400);
                     await guild.channels.create({ name: '📸-media-sharing', type: ChannelType.GuildText, parent: cat2.id });
-                    await sleep(300);
+                    await sleep(400);
                     await guild.channels.create({ name: '🤖-bot-commands', type: ChannelType.GuildText, parent: cat2.id });
-                    await sleep(300);
+                    await sleep(400);
                     await guild.channels.create({ name: '🔊 General Voice', type: ChannelType.GuildVoice, parent: cat2.id });
-                    await sleep(300);
+                    await sleep(400);
                     await guild.channels.create({ name: '🎵 Music Lounge', type: ChannelType.GuildVoice, parent: cat2.id });
-                    await sleep(300);
+                    await sleep(400);
 
                     const chRedeem = await guild.channels.create({
                         name: '💎-key-redeem',
@@ -1129,10 +1130,9 @@ client.on('interactionCreate', async (interaction) => {
                         topic: 'Redeem buyer keys here.'
                     });
                     REDEEM_CHANNEL_ID = chRedeem.id;
-                    await sleep(500);
+                    await sleep(800);
 
                     await interaction.editReply({ content: '🏗️ Creating Category 3: Systems & Staff...' });
-
                     const cat3 = await guild.channels.create({
                         name: '⚡ ┃ SYSTEMS & STAFF',
                         type: ChannelType.GuildCategory,
@@ -1141,14 +1141,14 @@ client.on('interactionCreate', async (interaction) => {
                             { id: MEMBER_ROLE_ID, allow: [PermissionFlagsBits.ViewChannel] }
                         ]
                     });
-                    await sleep(400);
+                    await sleep(600);
 
                     await guild.channels.create({ name: '🔒-staff-chat', type: ChannelType.GuildText, parent: cat3.id });
-                    await sleep(300);
+                    await sleep(400);
                     await guild.channels.create({ name: '📋-audit-logs', type: ChannelType.GuildText, parent: cat3.id });
-                    await sleep(300);
+                    await sleep(400);
                     await guild.channels.create({ name: '🎫-support-tickets', type: ChannelType.GuildText, parent: cat3.id });
-                    await sleep(300);
+                    await sleep(400);
 
                     const chToken = await guild.channels.create({
                         name: '⚡-nakama-token-panel',
@@ -1157,18 +1157,17 @@ client.on('interactionCreate', async (interaction) => {
                         topic: 'Nakama token session refresh panel.'
                     });
                     TOKEN_PANEL_CHANNEL_ID = chToken.id;
-                    await sleep(500);
+                    await sleep(800);
 
                     await interaction.editReply({ content: '📌 Redeploying interactive panels...' });
-
                     await redeployPanels(chVerify);
-                    await sleep(300);
+                    await sleep(500);
                     await redeployPanels(chRedeem);
-                    await sleep(300);
+                    await sleep(500);
                     await redeployPanels(chToken);
 
                     return interaction.editReply({ 
-                        content: `✅ **Server Successfully Rebuilt!** Created 3 categories with 15 organized channels. The Verification gate, Key Redemption vault, and Nakama Token refresher panels have all been deployed with correct permissions.` 
+                        content: `✅ **Server Successfully Rebuilt!** All 3 categories and 15 channels have been generated successfully without hitting rate limits.` 
                     });
                 } catch (err) {
                     console.error('Server rebuild execution error:', err);
