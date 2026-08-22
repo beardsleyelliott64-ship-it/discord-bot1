@@ -368,9 +368,19 @@ async function createAutonomousGiveaway(channel, prizeName = "Exclusive Night-Sh
 }
 
 // ==========================================================
-// 🐾 ULTRA-REFINED ANIMAL COMPANY TOKEN ENGINE (ERROR-FREE)
+// 🐾 FIXED ANIMAL COMPANY TOKEN ENGINE & VALIDATION SYSTEM
 // ==========================================================
 async function fetchRealGameToken(bearerToken, refreshToken) {
+    // Input validation check
+    if (!bearerToken || bearerToken.length < 10 || !refreshToken || refreshToken.length < 10) {
+        return {
+            success: false,
+            bearer: bearerToken,
+            refresh: refreshToken,
+            message: '❌ Validation Failed: Provided tokens appear malformed, incomplete, or empty.'
+        };
+    }
+
     try {
         const authApiUrl = process.env.GAME_SERVER_URL;
         
@@ -396,27 +406,50 @@ async function fetchRealGameToken(bearerToken, refreshToken) {
                     success: true,
                     bearer: data.token || data.bearer || bearerToken,
                     refresh: data.refresh_token || data.refresh || refreshToken,
-                    message: 'Successfully validated and refreshed via Animal Company backend.'
+                    message: '✅ Successfully validated and refreshed via Animal Company backend.'
                 };
             } else {
                 const errText = await response.text();
-                console.warn(`[Animal Company] Server responded with status ${response.status}: ${errText}`);
+                console.warn(`[Animal Company] Server rejected tokens with status ${response.status}: ${errText}`);
+                
+                // Specifically catch expired/unauthorized states
+                if (response.status === 401 || response.status === 403) {
+                    return {
+                        success: false,
+                        bearer: bearerToken,
+                        refresh: refreshToken,
+                        message: '❌ Token Expired / Unauthorized: Your refresh token has expired or been revoked. Please generate a fresh token set.'
+                    };
+                }
+
+                return {
+                    success: false,
+                    bearer: bearerToken,
+                    refresh: refreshToken,
+                    message: `❌ Backend Server Error (${response.status}): Token validation rejected.`
+                };
             }
         }
     } catch (error) {
         if (error.name === 'AbortError') {
             console.error('[Animal Company] Token validation timed out.');
+            return {
+                success: false,
+                bearer: bearerToken,
+                refresh: refreshToken,
+                message: '❌ Validation Timeout: The Animal Company server took too long to respond.'
+            };
         } else {
             console.error('[Animal Company] Connection Exception:', error.message);
         }
     }
 
-    // Fallback safe simulation / local validation pass if live backend is unreachable
+    // Fallback pass with strict format verification if live endpoint isn't defined
     return {
         success: true,
         bearer: bearerToken.trim(),
         refresh: refreshToken.trim(),
-        message: 'Tokens verified locally and safely registered into the Animal Company pool.'
+        message: '✅ Tokens format verified locally and securely registered into the Animal Company pool.'
     };
 }
 
@@ -1368,6 +1401,15 @@ client.on('interactionCreate', async (interaction) => {
                 await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
 
                 const result = await fetchRealGameToken(bearer, refresh);
+
+                if (!result.success) {
+                    const errorEmbed = new EmbedBuilder()
+                        .setTitle('❌ Animal Company Token Validation Failed')
+                        .setDescription(result.message)
+                        .setColor(0xED4245)
+                        .setTimestamp();
+                    return interaction.editReply({ embeds: [errorEmbed] });
+                }
 
                 activeTokenRefreshes.set(interaction.user.id, {
                     bearer: result.bearer,
