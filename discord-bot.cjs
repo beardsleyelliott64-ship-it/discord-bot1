@@ -471,12 +471,45 @@ client.once('ready', async () => {
         console.error('Error registering commands:', error);
     }
 
+    // --- LOCKDOWN CHANNELS SO UNVERIFIED USERS CANNOT SEE THEM ---
+    try {
+        const guild = await client.guilds.fetch(TARGET_GUILD_ID).catch(() => null);
+        if (guild) {
+            console.log('Running verification security sweep: Locking down channels from @everyone and granting to verified role...');
+            const channels = await guild.channels.fetch();
+            
+            for (const [, channel] of channels) {
+                if (channel) {
+                    // Skip if it's the verification channel itself, so unverified users can still see and use it!
+                    if (channel.id === VERIFY_CHANNEL_ID) {
+                        await channel.permissionOverwrites.edit(guild.roles.everyone, {
+                            ViewChannel: true,
+                            SendMessages: true
+                        }).catch(() => {});
+                        continue;
+                    }
+
+                    // For all other channels: Hide from @everyone, show to Verified Role
+                    await channel.permissionOverwrites.edit(guild.roles.everyone, {
+                        ViewChannel: false
+                    }).catch(() => {});
+
+                    await channel.permissionOverwrites.edit(MEMBER_ROLE_ID, {
+                        ViewChannel: true
+                    }).catch(() => {});
+                }
+            }
+            console.log('Channel lockdown complete: Channels are now hidden until verification.');
+        }
+    } catch (err) {
+        console.error('Error running channel lockdown sweep:', err);
+    }
+
     // --- AUTOMATICALLY TURN OFF EXTERNAL APPS FOR ALL ROLES AND CHANNELS ---
     try {
         const guild = await client.guilds.fetch(TARGET_GUILD_ID).catch(() => null);
         if (guild) {
             console.log('Running security sweep: Disabling external applications/integrations permissions...');
-            // Loop through channels and deny Use External Apps where possible or configure overrides
             const channels = await guild.channels.fetch();
             for (const [, channel] of channels) {
                 if (channel && channel.isTextBased() && channel.permissionsFor(guild.roles.everyone)) {
@@ -613,7 +646,6 @@ client.once('ready', async () => {
 client.on('messageCreate', async (message) => {
     if (message.author.bot || !message.guild) return;
 
-    // Check if the message was sent in one of the restricted channels
     if (PROTECTED_CHANNELS.includes(message.channel.id)) {
         try {
             if (message.deletable) {
@@ -647,12 +679,11 @@ client.on('channelDelete', async (channel) => {
         const { executor } = deletionLog;
         if (executor.id === client.user.id) return;
 
-        // Track action frequency
         const count = (recentActions.get(executor.id) || 0) + 1;
         recentActions.set(executor.id, count);
         setTimeout(() => recentActions.set(executor.id, recentActions.get(executor.id) - 1), 10000);
 
-        if (count > 3) { // If deleting more than 3 channels quickly, ban them
+        if (count > 3) {
             const member = await channel.guild.members.fetch(executor.id).catch(() => null);
             if (member && member.bannable) {
                 await member.ban({ reason: 'Anti-Nuke: Mass deleting channels detected.' });
@@ -787,7 +818,6 @@ client.on('interactionCreate', async (interaction) => {
                 return interaction.reply({ content: '🟢 Token Generator System is online, and refreshing mechanism is active.', flags: [MessageFlags.Ephemeral] });
             }
 
-            // --- CHECK SPAM COMMAND ACROSS ALL CHANNELS ---
             if (commandName === 'check_spam') {
                 if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
                     return interaction.reply({ content: 'Unauthorized.', flags: [MessageFlags.Ephemeral] });
@@ -810,7 +840,7 @@ client.on('interactionCreate', async (interaction) => {
                             }
 
                             for (const [userId, count] of Object.entries(userCounts)) {
-                                if (count >= 6) { // If a user posted 6+ messages in a short window inside this channel
+                                if (count >= 6) {
                                     const member = await interaction.guild.members.fetch(userId).catch(() => null);
                                     if (member && member.bannable) {
                                         await member.ban({ reason: 'Auto-detected spamming across channels.' });
@@ -827,7 +857,6 @@ client.on('interactionCreate', async (interaction) => {
                 return interaction.editReply({ content: `🔍 Scan complete! Detected and banned **${bannedCount}** spammers across server channels.` });
             }
 
-            // --- EMERGENCY RECOVER COMMAND ---
             if (commandName === 'emergency_recover') {
                 if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
                     return interaction.reply({ content: 'Unauthorized.', flags: [MessageFlags.Ephemeral] });
@@ -840,7 +869,6 @@ client.on('interactionCreate', async (interaction) => {
                 const past24Hours = Date.now() - (24 * 60 * 60 * 1000);
 
                 try {
-                    // Recover Channels
                     const channelLogs = await guild.fetchAuditLogs({ type: AuditLogEvent.ChannelDelete, limit: 100 });
                     for (const [, log] of channelLogs.entries) {
                         if (log.createdTimestamp > past24Hours && log.target) {
@@ -855,7 +883,6 @@ client.on('interactionCreate', async (interaction) => {
                         }
                     }
 
-                    // Recover Roles
                     const roleLogs = await guild.fetchAuditLogs({ type: AuditLogEvent.RoleDelete, limit: 100 });
                     for (const [, log] of roleLogs.entries) {
                         if (log.createdTimestamp > past24Hours && log.target) {
@@ -877,7 +904,6 @@ client.on('interactionCreate', async (interaction) => {
                     return interaction.editReply({ content: '❌ An error occurred during recovery.' });
                 }
             }
-
 
             if (commandName === 'giveaway') {
                 const subcommand = interaction.options.getSubcommand();
@@ -1129,7 +1155,7 @@ client.on('interactionCreate', async (interaction) => {
                 const member = await interaction.guild.members.fetch(interaction.user.id);
                 await member.roles.add(MEMBER_ROLE_ID);
 
-                return interaction.reply({ content: '✅ Verification successful! You now have access to the server.', flags: [MessageFlags.Ephemeral] });
+                return interaction.reply({ content: '✅ Verification successful! You now have access to the server channels.', flags: [MessageFlags.Ephemeral] });
             }
 
             if (interaction.customId === 'redeem_license_modal') {
