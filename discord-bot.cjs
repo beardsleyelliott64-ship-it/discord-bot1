@@ -33,7 +33,7 @@ const BUYER_ROLE_ID = '1539706476871032922';  // Target Buyer Role ID
 const MEMBER_ROLE_ID = '1539945420501950535'; // Target Verified Member Role ID
 const UNBAN_TARGET_USER_ID = '1528425489016950935'; // User to unban automatically on boot
 
-// Dynamic references initialized or populated on rebuild/boot
+// Dynamic references initialized or populated on boot
 let VERIFY_CHANNEL_ID = '1540382318856765490';
 let REDEEM_CHANNEL_ID = '1539797203902668820';
 let TOKEN_PANEL_CHANNEL_ID = '1540499947990814812';
@@ -54,7 +54,6 @@ const FORBIDDEN_WORDS = [
 const activeCaptchas = new Map();
 const validBuyerKeys = new Set(); 
 const tokenCooldowns = new Map();
-const recentActions = new Map(); // For anti-nuke tracking
 
 // Store active auto-refresh sessions: Map<userId, { bearer, refresh, lastRotated }>
 const activeTokenRefreshes = new Map();
@@ -562,7 +561,7 @@ async function redeployPanels(channel) {
             }
         }
     } catch (err) {
-        console.error('Error redeploying panel after rebuild:', err);
+        console.error('Error redeploying panel:', err);
     }
 }
 
@@ -674,10 +673,6 @@ const commands = [
     new SlashCommandBuilder()
         .setName('check_spam')
         .setDescription('Scan all channels for recent spam and ban spammers')
-        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-    new SlashCommandBuilder()
-        .setName('rebuildserver')
-        .setDescription('Wipe and rebuild server with 3 categories, 15 channels, and verification')
         .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     new SlashCommandBuilder()
         .setName('emergency_recover')
@@ -1048,133 +1043,6 @@ client.on('interactionCreate', async (interaction) => {
                 return interaction.editReply({ content: `🛡️ Spam scan complete! Scanned \`${scannedCount}\` messages across channels, purged and banned for \`${flaggedCount}\` invite spam links.` });
             }
 
-            if (commandName === 'rebuildserver') {
-                await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
-                const guild = interaction.guild;
-                const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
-
-                try {
-                    await interaction.editReply({ content: '🔄 Safely wiping existing channels...' });
-                    
-                    const existingChannels = await guild.channels.fetch();
-                    for (const [, ch] of existingChannels) {
-                        if (ch) {
-                            await ch.delete('Server rebuild command executed').catch(() => {});
-                            await sleep(600); // Increased delay to avoid deletion rate limits
-                        }
-                    }
-
-                    const everyoneRole = guild.roles.everyone;
-                    await interaction.editReply({ content: '🏗️ Pausing to clear rate-limit window before creating new layout...' });
-                    await sleep(2000);
-
-                    await interaction.editReply({ content: '🏗️ Creating Category 1: Information & Welcome...' });
-                    const cat1 = await guild.channels.create({
-                        name: '📌 ┃ INFORMATION & WELCOME',
-                        type: ChannelType.GuildCategory,
-                        permissionOverwrites: [
-                            { id: everyoneRole.id, deny: [PermissionFlagsBits.ViewChannel] },
-                            { id: MEMBER_ROLE_ID, allow: [PermissionFlagsBits.ViewChannel], deny: [PermissionFlagsBits.SendMessages] },
-                            { id: client.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ManageChannels] }
-                        ]
-                    });
-                    await sleep(600);
-
-                    await guild.channels.create({ name: '📜-rules', type: ChannelType.GuildText, parent: cat1.id });
-                    await sleep(400);
-                    await guild.channels.create({ name: '📢-announcements', type: ChannelType.GuildAnnouncement, parent: cat1.id });
-                    await sleep(400);
-                    await guild.channels.create({ name: '🚀-updates', type: ChannelType.GuildText, parent: cat1.id });
-                    await sleep(400);
-                    await guild.channels.create({ name: '❓-faq', type: ChannelType.GuildText, parent: cat1.id });
-                    await sleep(400);
-                    
-                    const chVerify = await guild.channels.create({
-                        name: '🛡️-verification',
-                        type: ChannelType.GuildText,
-                        parent: cat1.id,
-                        topic: 'Verify your account here.',
-                        permissionOverwrites: [
-                            { id: everyoneRole.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] }
-                        ]
-                    });
-                    VERIFY_CHANNEL_ID = chVerify.id;
-                    await sleep(800);
-
-                    await interaction.editReply({ content: '🏗️ Creating Category 2: Community Lounge...' });
-                    const cat2 = await guild.channels.create({
-                        name: '💬 ┃ COMMUNITY LOUNGE',
-                        type: ChannelType.GuildCategory,
-                        permissionOverwrites: [
-                            { id: everyoneRole.id, deny: [PermissionFlagsBits.ViewChannel] },
-                            { id: MEMBER_ROLE_ID, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] }
-                        ]
-                    });
-                    await sleep(600);
-
-                    await guild.channels.create({ name: '💬-general-chat', type: ChannelType.GuildText, parent: cat2.id });
-                    await sleep(400);
-                    await guild.channels.create({ name: '📸-media-sharing', type: ChannelType.GuildText, parent: cat2.id });
-                    await sleep(400);
-                    await guild.channels.create({ name: '🤖-bot-commands', type: ChannelType.GuildText, parent: cat2.id });
-                    await sleep(400);
-                    await guild.channels.create({ name: '🔊 General Voice', type: ChannelType.GuildVoice, parent: cat2.id });
-                    await sleep(400);
-                    await guild.channels.create({ name: '🎵 Music Lounge', type: ChannelType.GuildVoice, parent: cat2.id });
-                    await sleep(400);
-
-                    const chRedeem = await guild.channels.create({
-                        name: '💎-key-redeem',
-                        type: ChannelType.GuildText,
-                        parent: cat2.id,
-                        topic: 'Redeem buyer keys here.'
-                    });
-                    REDEEM_CHANNEL_ID = chRedeem.id;
-                    await sleep(800);
-
-                    await interaction.editReply({ content: '🏗️ Creating Category 3: Systems & Staff...' });
-                    const cat3 = await guild.channels.create({
-                        name: '⚡ ┃ SYSTEMS & STAFF',
-                        type: ChannelType.GuildCategory,
-                        permissionOverwrites: [
-                            { id: everyoneRole.id, deny: [PermissionFlagsBits.ViewChannel] },
-                            { id: MEMBER_ROLE_ID, allow: [PermissionFlagsBits.ViewChannel] }
-                        ]
-                    });
-                    await sleep(600);
-
-                    await guild.channels.create({ name: '🔒-staff-chat', type: ChannelType.GuildText, parent: cat3.id });
-                    await sleep(400);
-                    await guild.channels.create({ name: '📋-audit-logs', type: ChannelType.GuildText, parent: cat3.id });
-                    await sleep(400);
-                    await guild.channels.create({ name: '🎫-support-tickets', type: ChannelType.GuildText, parent: cat3.id });
-                    await sleep(400);
-
-                    const chToken = await guild.channels.create({
-                        name: '⚡-nakama-token-panel',
-                        type: ChannelType.GuildText,
-                        parent: cat3.id,
-                        topic: 'Nakama token session refresh panel.'
-                    });
-                    TOKEN_PANEL_CHANNEL_ID = chToken.id;
-                    await sleep(800);
-
-                    await interaction.editReply({ content: '📌 Redeploying interactive panels...' });
-                    await redeployPanels(chVerify);
-                    await sleep(500);
-                    await redeployPanels(chRedeem);
-                    await sleep(500);
-                    await redeployPanels(chToken);
-
-                    return interaction.editReply({ 
-                        content: `✅ **Server Successfully Rebuilt!** All 3 categories and 15 channels have been generated successfully without hitting rate limits.` 
-                    });
-                } catch (err) {
-                    console.error('Server rebuild execution error:', err);
-                    return interaction.editReply({ content: `❌ An error occurred during server rebuild: ${err.message}` });
-                }
-            }
-
             if (commandName === 'emergency_recover') {
                 await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
                 try {
@@ -1477,7 +1345,7 @@ client.on('interactionCreate', async (interaction) => {
                 const member = await interaction.guild.members.fetch(interaction.user.id).catch(() => null);
                 if (member) {
                     await member.roles.add(BUYER_ROLE_ID).catch(() => {});
-                    return interaction.reply({ content: '💎 License successfully claimed! The Buyer role has-been assigned to your account.', flags: [MessageFlags.Ephemeral] });
+                    return interaction.reply({ content: '💎 License successfully claimed! The Buyer role has been assigned to your account.', flags: [MessageFlags.Ephemeral] });
                 }
             }
 
