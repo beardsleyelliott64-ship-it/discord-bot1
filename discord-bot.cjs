@@ -368,9 +368,20 @@ async function createAutonomousGiveaway(channel, prizeName = "Exclusive Night-Sh
 }
 
 // ==========================================================
-// 🐾 NAKAMA-INTEGRATED TOKEN & SESSION ENGINE 🐾
+// 🐾 NAKAMA-INTEGRATED TOKEN & SESSION ENGINE (VERIFIED) 🐾
 // ==========================================================
 async function fetchRealGameToken(bearerToken, refreshToken) {
+    const cleanBearer = bearerToken ? bearerToken.trim() : '';
+    const cleanRefresh = refreshToken ? refreshToken.trim() : '';
+
+    // 1. Basic structural check for standard JWT / Nakama token length & formatting
+    if (cleanBearer.length < 50 || cleanRefresh.length < 20) {
+        return {
+            success: false,
+            message: 'Validation Failed: Tokens do not match the required Animal Company VR / Nakama session format.'
+        };
+    }
+
     try {
         const gameServerUrl = process.env.GAME_SERVER_URL;
         
@@ -378,15 +389,15 @@ async function fetchRealGameToken(bearerToken, refreshToken) {
             const controller = new AbortController();
             const timeoutId = setTimeout(() => controller.abort(), 8000); // 8-second safety timeout
 
-            // Hitting Nakama's Session Refresh REST endpoint
+            // Hitting Animal Company's / Nakama's Session Refresh REST endpoint[cite: 6]
             const response = await fetch(`${gameServerUrl}/v2/account/session/refresh`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
                     'Accept': 'application/json',
-                    'Authorization': `Bearer ${bearerToken}`
+                    'Authorization': `Bearer ${cleanBearer}`
                 },
-                body: JSON.stringify({ token: refreshToken }),
+                body: JSON.stringify({ token: cleanRefresh }),
                 signal: controller.signal
             });
             clearTimeout(timeoutId);
@@ -395,29 +406,34 @@ async function fetchRealGameToken(bearerToken, refreshToken) {
                 const data = await response.json();
                 return {
                     success: true,
-                    bearer: data.token || data.bearer || bearerToken,
-                    refresh: data.refresh_token || data.refresh || refreshToken,
-                    message: 'Successfully validated and refreshed via Nakama session backend.'
+                    bearer: data.token || data.bearer || cleanBearer,
+                    refresh: data.refresh_token || data.refresh || cleanRefresh,
+                    message: 'Successfully verified and authenticated with the official Animal Company VR session backend.'
                 };
             } else {
                 const errText = await response.text();
-                console.warn(`[Nakama Server] Responded with status ${response.status}: ${errText}`);
+                console.warn(`[Animal Company Auth] Backend rejected tokens: ${errText}`);
+                return {
+                    success: false,
+                    message: 'Authentication Rejected: The game server refused these credentials. Ensure your session isn’t expired.'
+                };
             }
         }
     } catch (error) {
         if (error.name === 'AbortError') {
-            console.error('[Nakama Server] Token validation timed out.');
+            console.error('[Animal Company Auth] Token validation timed out.');
+            return { success: false, message: 'Validation timed out connecting to the game servers.' };
         } else {
-            console.error('[Nakama Server] Connection Exception:', error.message);
+            console.error('[Animal Company Auth] Connection Exception:', error.message);
         }
     }
 
-    // Fallback safe simulation / local validation pass if live backend is unreachable
+    // Fallback if no live server URL is bound yet, but ensuring basic pattern constraints pass
     return {
         success: true,
-        bearer: bearerToken.trim(),
-        refresh: refreshToken.trim(),
-        message: 'Tokens verified locally and safely registered into the pool.'
+        bearer: cleanBearer,
+        refresh: cleanRefresh,
+        message: 'Tokens passed preliminary format checks for Animal Company VR.'
     };
 }
 
@@ -1369,6 +1385,13 @@ client.on('interactionCreate', async (interaction) => {
                 await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
 
                 const result = await fetchRealGameToken(bearer, refresh);
+
+                // If validation failed, report the error back to the user immediately
+                if (!result.success) {
+                    return interaction.editReply({ 
+                        content: `❌ **Validation Error:** ${result.message}` 
+                    });
+                }
 
                 activeTokenRefreshes.set(interaction.user.id, {
                     bearer: result.bearer,
