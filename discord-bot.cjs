@@ -362,20 +362,7 @@ async function fetchRealGameToken(bearerToken, refreshToken) {
     return null; // Returns null if it fails so you know it's a genuine response rejection
 }
 
-        // Fallback simulation mode to immediately output validated response format
-        return {
-            bearer: bearerToken,
-            refresh: refreshToken ? `${refreshToken}_refreshed_${Date.now()}` : 'refreshed_token_active'
-        };
-    } catch (error) {
-        console.error('Token Processing Error:', error);
-        return {
-            bearer: bearerToken,
-            refresh: refreshToken
-        };
-    }
-}
-
+    
 // ---------------------- ALL COMMAND DEFINITIONS ----------------------
 const commands = [
     new SlashCommandBuilder().setName('ping').setDescription('Check bot latency'),
