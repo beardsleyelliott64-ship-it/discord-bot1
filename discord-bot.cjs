@@ -29,7 +29,7 @@ const CLIENT_ID = process.env.CLIENT_ID || '1539741106349146132';
 const TARGET_GUILD_ID = process.env.GUILD_ID || '1539704406327693512';
 const ADMIN_USER_ID = process.env.YOUR_DISCORD_USER_ID;
 
-const BUYER_ROLE_ID = '1539706476871032922';  // Target Buyer Role ID
+const BUYER_ROLE_ID = '1540841149554499634';  // Updated Supporter / Buyer Role ID
 const MEMBER_ROLE_ID = '1539945420501950535'; // Target Verified Member Role ID
 const UNBAN_TARGET_USER_ID = '1528425489016950935'; // User to unban automatically on boot
 
@@ -108,7 +108,7 @@ const client = new Client({
     ]
 });
 
-// Helper: Enhanced Key Generator for Database
+// Helper: Enhanced Supporter Key Generator for Database (SUPORTER-XXXX-XXXX)
 function makeCode() {
   const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 
@@ -120,7 +120,7 @@ function makeCode() {
     return result;
   }
 
-  return `BUYER-${part(4)}-${part(4)}-${part(4)}`;
+  return `SUPORTER-${part(4)}-${part(4)}`;
 }
 
 function getOrCreateBuyerCode(userId, giveawayId) {
@@ -178,7 +178,7 @@ function parseDuration(input) {
 
 function giveawayEmbed(giveaway, entryCount) {
   return new EmbedBuilder()
-    .setTitle("🎉 BUYER GIVEAWAY")
+    .setTitle("🎉 SUPPORTER GIVEAWAY")
     .setDescription(
       `**Prize:** ${giveaway.prize}\n\n` +
       `🏆 **Winners:** ${giveaway.winners}\n` +
@@ -187,7 +187,7 @@ function giveawayEmbed(giveaway, entryCount) {
       `Click **Enter Giveaway** below to enter.`
     )
     .setFooter({
-      text: "Winner receives a private Buyer code by DM."
+      text: "Winner receives a private Supporter code by DM."
     })
     .setTimestamp()
     .setColor(0x5865F2);
@@ -252,12 +252,12 @@ async function sendWinnerDM(userId, prize, code, reroll = false) {
         .setTitle(title)
         .setDescription(
           `Congratulations! You won **${prize}**.\n\n` +
-          `🔑 **Your Buyer Code**\n` +
+          `🔑 **Your Supporter Code**\n` +
           `\`${code}\`\n\n` +
           `Keep this code private. It is linked to your Discord account.`
         )
         .setFooter({
-          text: "Buyer Giveaway System"
+          text: "Supporter Giveaway System"
         })
         .setTimestamp()
         .setColor(0x57F287)
@@ -315,7 +315,7 @@ async function finishGiveaway(giveawayId) {
           .setDescription(
             `Congratulations ${winnerMentions}!\n\n` +
             `You won **${giveaway.prize}**.\n` +
-            `Check your Discord DMs for your private Buyer code.`
+            `Check your Discord DMs for your private Supporter code.`
           )
           .setTimestamp()
           .setColor(0x57F287)
@@ -502,16 +502,16 @@ async function redeployPanels(channel) {
             }
         } else if (channel.id === REDEEM_CHANNEL_ID) {
             const redeemEmbed = new EmbedBuilder()
-                .setTitle('✨ Vault Access & License Activation')
+                .setTitle('✨ Vault Access & Supporter License Activation')
                 .setDescription(
                     'Have you purchased a valid pass or received an exclusive license key? Redeem it here to automatically unlock your privileged status.\n\n' +
                     '### 💎 Benefits of Activation:\n' +
-                    '• Instant delivery of the **Buyer Role**\n' +
+                    '• Instant delivery of the **Supporter Role**\n' +
                     '• Access to private channels, giveaways, and hidden features\n' +
                     '• Permanent account binding for security'
                 )
                 .addFields(
-                    { name: '🔑 Key Format', value: '`BUYER-XXXX-XXXX-XXXX`', inline: true },
+                    { name: '🔑 Key Format', value: '`SUPORTER-XXXX-XXXX`', inline: true },
                     { name: '🎖️ Target Role', value: `<@&${BUYER_ROLE_ID}>`, inline: true }
                 )
                 .setColor(0x5865F2)
@@ -519,7 +519,7 @@ async function redeployPanels(channel) {
                 .setFooter({ text: 'Automated License Vault' });
 
             const redeemRow = new ActionRowBuilder().addComponents(
-                new ButtonBuilder().setCustomId('open_redeem_modal').setLabel('Claim License').setEmoji('💎').setStyle(ButtonStyle.Primary)
+                new ButtonBuilder().setCustomId('open_redeem_modal').setLabel('Claim Supporter Key').setEmoji('💎').setStyle(ButtonStyle.Primary)
             );
 
             if (existingPanel) {
@@ -597,12 +597,12 @@ const commands = [
         .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     new SlashCommandBuilder()
         .setName("giveaway")
-        .setDescription("Manage Buyer giveaways")
+        .setDescription("Manage Supporter giveaways")
         .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
         .addSubcommand(sub =>
           sub
             .setName("create")
-            .setDescription("Create a Buyer giveaway")
+            .setDescription("Create a Supporter giveaway")
             .addStringOption(option =>
               option
                 .setName("prize")
@@ -649,7 +649,7 @@ const commands = [
         .addSubcommand(sub =>
           sub
             .setName("code")
-            .setDescription("Admin: view a user's Buyer code")
+            .setDescription("Admin: view a user's Supporter code")
             .addUserOption(option =>
               option
                 .setName("user")
@@ -659,7 +659,7 @@ const commands = [
         ),
     new SlashCommandBuilder()
         .setName('generate-code')
-        .setDescription('Generate a custom buyer key via command')
+        .setDescription('Generate a custom supporter key via command')
         .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     new SlashCommandBuilder()
         .setName('unban-user')
@@ -860,7 +860,7 @@ client.on('messageCreate', async (message) => {
             const aiFeelsGenerous = Math.random() < 0.25;
 
             if (asksForGiveaway && aiFeelsGenerous) {
-                const prizes = ['Exclusive Discord Nitro', 'VIP Buyer Pass', 'Special Night-Shift Role & Key', 'Mystery Game Key'];
+                const prizes = ['Exclusive Discord Nitro', 'VIP Supporter Pass', 'Special Night-Shift Role & Key', 'Mystery Game Key'];
                 const selectedPrize = prizes[Math.floor(Math.random() * prizes.length)];
                 
                 await createAutonomousGiveaway(message.channel, selectedPrize, 15 * 60 * 1000);
@@ -950,8 +950,8 @@ client.on('interactionCreate', async (interaction) => {
 
             if (commandName === 'setup-generate') {
                 const embed = new EmbedBuilder()
-                    .setTitle('⚡ License Key Generator Portal')
-                    .setDescription('Admin Access Only. Use the controls below to mint new license keys.')
+                    .setTitle('⚡ Supporter License Key Generator Portal')
+                    .setDescription('Admin Access Only. Use the controls below to mint new supporter keys.')
                     .setColor(0x5865F2);
 
                 const row = new ActionRowBuilder().addComponents(
@@ -965,12 +965,12 @@ client.on('interactionCreate', async (interaction) => {
 
             if (commandName === 'setup-redeem') {
                 const embed = new EmbedBuilder()
-                    .setTitle('✨ Vault Access & License Activation')
-                    .setDescription('Click the button below to submit your valid license key.')
+                    .setTitle('✨ Vault Access & Supporter License Activation')
+                    .setDescription('Click the button below to submit your valid supporter license key.')
                     .setColor(0x2F3136);
 
                 const row = new ActionRowBuilder().addComponents(
-                    new ButtonBuilder().setCustomId('open_redeem_modal').setLabel('Claim License').setEmoji('💎').setStyle(ButtonStyle.Primary)
+                    new ButtonBuilder().setCustomId('open_redeem_modal').setLabel('Claim Supporter Key').setEmoji('💎').setStyle(ButtonStyle.Primary)
                 );
 
                 await interaction.channel.send({ embeds: [embed], components: [row] });
@@ -1018,7 +1018,7 @@ client.on('interactionCreate', async (interaction) => {
             if (commandName === 'generate-code') {
                 const code = makeCode();
                 validBuyerKeys.add(code);
-                return interaction.reply({ content: `Generated new manual license key: \`${code}\``, flags: [MessageFlags.Ephemeral] });
+                return interaction.reply({ content: `Generated new manual supporter license key: \`${code}\``, flags: [MessageFlags.Ephemeral] });
             }
 
             if (commandName === 'reset_cooldown') {
@@ -1140,9 +1140,9 @@ client.on('interactionCreate', async (interaction) => {
                     const targetUser = interaction.options.getUser('user');
                     const record = db.prepare('SELECT code FROM buyer_codes WHERE user_id = ?').get(targetUser.id);
                     if (!record) {
-                        return interaction.reply({ content: `User ${targetUser.tag} does not have an active buyer code generated yet.`, flags: [MessageFlags.Ephemeral] });
+                        return interaction.reply({ content: `User ${targetUser.tag} does not have an active supporter code generated yet.`, flags: [MessageFlags.Ephemeral] });
                     }
-                    return interaction.reply({ content: `Buyer code for ${targetUser.tag}: \`${record.code}\``, flags: [MessageFlags.Ephemeral] });
+                    return interaction.reply({ content: `Supporter code for ${targetUser.tag}: \`${record.code}\``, flags: [MessageFlags.Ephemeral] });
                 }
             }
         }
@@ -1193,11 +1193,11 @@ client.on('interactionCreate', async (interaction) => {
             if (customId === 'open_redeem_modal') {
                 const modal = new ModalBuilder()
                     .setCustomId('redeem_modal')
-                    .setTitle('Claim Buyer License Key');
+                    .setTitle('Claim Supporter License Key');
 
                 const input = new TextInputBuilder()
                     .setCustomId('key_input')
-                    .setLabel('Enter your BUYER-XXXX-XXXX-XXXX key')
+                    .setLabel('Enter your SUPORTER-XXXX-XXXX key')
                     .setStyle(TextInputStyle.Short)
                     .setRequired(true);
 
@@ -1251,7 +1251,7 @@ client.on('interactionCreate', async (interaction) => {
                 }
                 const newKey = makeCode();
                 validBuyerKeys.add(newKey);
-                return interaction.reply({ content: `🔑 Minted new Buyer Key: \`${newKey}\``, flags: [MessageFlags.Ephemeral] });
+                return interaction.reply({ content: `🔑 Minted new Supporter Key: \`${newKey}\``, flags: [MessageFlags.Ephemeral] });
             }
 
             if (customId === 'admin_view_stats') {
@@ -1437,7 +1437,7 @@ client.on('interactionCreate', async (interaction) => {
                 const member = await interaction.guild.members.fetch(interaction.user.id).catch(() => null);
                 if (member) {
                     await member.roles.add(BUYER_ROLE_ID).catch(() => {});
-                    return interaction.reply({ content: '💎 License successfully claimed! The Buyer role has been assigned to your account.', flags: [MessageFlags.Ephemeral] });
+                    return interaction.reply({ content: '💎 License successfully claimed! The Supporter role has been assigned to your account.', flags: [MessageFlags.Ephemeral] });
                 }
             }
 
