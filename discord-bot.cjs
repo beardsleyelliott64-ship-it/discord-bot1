@@ -46,6 +46,7 @@ const PROTECTED_CHANNELS = [
 const activeCaptchas = new Map();
 const validBuyerKeys = new Set(); 
 const tokenCooldowns = new Map();
+const recentActions = new Map(); // For anti-nuke tracking
 
 // Setup SQLite Database for Giveaways & Buyer Codes
 const db = new Database("./giveaways.sqlite");
@@ -80,12 +81,13 @@ CREATE TABLE IF NOT EXISTS buyer_codes (
 const genAI = new GoogleGenerativeAI(GEMINI_KEY);
 const aiModel = genAI.getGenerativeModel({ model: 'gemini-3.7-flash' });
 
-// Setup Discord Client (Needs MessageContent intent to read messages)
+// Setup Discord Client (Needs extra intents for tracking anti-nuke & message content)
 const client = new Client({
     intents: [
         GatewayIntentBits.Guilds,
         GatewayIntentBits.GuildMessages,
         GatewayIntentBits.MessageContent,
+        GatewayIntentBits.GuildModeration,
     ]
 });
 
@@ -443,6 +445,10 @@ const commands = [
         .setName('token_status')
         .setDescription('Check status of token generator system'),
     new SlashCommandBuilder()
+        .setName('check_spam')
+        .setDescription('Scan all channels for recent spam and ban spammers')
+        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    new SlashCommandBuilder()
         .setName('nuke')
         .setDescription('Nuke and rebuild the current channel')
         .setDefaultMemberPermissions(PermissionFlagsBits.ManageChannels)
@@ -459,6 +465,27 @@ client.once('ready', async () => {
         console.log('Successfully registered active guild commands.');
     } catch (error) {
         console.error('Error registering commands:', error);
+    }
+
+    // --- AUTOMATICALLY TURN OFF EXTERNAL APPS FOR ALL ROLES AND CHANNELS ---
+    try {
+        const guild = await client.guilds.fetch(TARGET_GUILD_ID).catch(() => null);
+        if (guild) {
+            console.log('Running security sweep: Disabling external applications/integrations permissions...');
+            // Loop through channels and deny Use External Apps where possible or configure overrides
+            const channels = await guild.channels.fetch();
+            for (const [, channel] of channels) {
+                if (channel && channel.isTextBased() && channel.permissionsFor(guild.roles.everyone)) {
+                    await channel.permissionOverwrites.edit(guild.roles.everyone, {
+                        UseExternalApps: false,
+                        UseExternalEmojis: false
+                    }).catch(() => {});
+                }
+            }
+            console.log('Security sweep complete: External app permissions tightened.');
+        }
+    } catch (err) {
+        console.error('Error running permission security sweep:', err);
     }
 
     const overdue = db
@@ -578,32 +605,58 @@ client.once('ready', async () => {
     }
 });
 
-// ---------------------- MESSAGE PROTECT (AUTO-MUTE CHANNELS) ----------------------
+// ---------------------- MESSAGE PROTECT & ANTI-NUKE MONITOR ----------------------
 client.on('messageCreate', async (message) => {
-    // Ignore bot messages or direct messages
     if (message.author.bot || !message.guild) return;
 
     // Check if the message was sent in one of the restricted channels
     if (PROTECTED_CHANNELS.includes(message.channel.id)) {
         try {
-            // Delete the message
             if (message.deletable) {
                 await message.delete().catch(() => {});
             }
 
-            // Mute (Timeout) the user for 15 minutes
             const member = await message.guild.members.fetch(message.author.id).catch(() => null);
             if (member && member.moderatable) {
                 const fifteenMinutesMs = 15 * 60 * 1000;
                 await member.timeout(fifteenMinutesMs, 'Talking in a restricted system/verification channel.');
                 
-                // Optional: Send a heads up warning in chat or DM
                 const warningMsg = await message.channel.send(`<@${message.author.id}>, you cannot chat in this channel! You have been muted for 15 minutes.`);
-                setTimeout(() => warningMsg.delete().catch(() => {}), 5000); // Delete notice after 5 seconds
+                setTimeout(() => warningMsg.delete().catch(() => {}), 5000);
             }
         } catch (err) {
             console.error('Error handling restricted channel message:', err);
         }
+    }
+});
+
+// Anti-Nuke: Track Channel Deletions
+client.on('channelDelete', async (channel) => {
+    try {
+        const fetchedLogs = await channel.guild.fetchAuditLogs({
+            limit: 1,
+            type: 12, // CHANNEL_DELETE
+        });
+        const deletionLog = fetchedLogs.entries.first();
+        if (!deletionLog) return;
+
+        const { executor } = deletionLog;
+        if (executor.id === client.user.id) return;
+
+        // Track action frequency
+        const count = (recentActions.get(executor.id) || 0) + 1;
+        recentActions.set(executor.id, count);
+        setTimeout(() => recentActions.set(executor.id, recentActions.get(executor.id) - 1), 10000);
+
+        if (count > 3) { // If deleting more than 3 channels quickly, ban them
+            const member = await channel.guild.members.fetch(executor.id).catch(() => null);
+            if (member && member.bannable) {
+                await member.ban({ reason: 'Anti-Nuke: Mass deleting channels detected.' });
+                console.log(`[ANTI-NUKE] Banned ${executor.tag} for mass deleting channels.`);
+            }
+        }
+    } catch (err) {
+        console.error('Anti-nuke channel delete error:', err);
     }
 });
 
@@ -691,7 +744,7 @@ client.on('interactionCreate', async (interaction) => {
             if (commandName === 'token') {
                 const userId = interaction.user.id;
                 const now = Date.now();
-                const cooldownTime = 20 * 60 * 1000; // 20 minutes
+                const cooldownTime = 20 * 60 * 1000;
 
                 if (tokenCooldowns.has(userId)) {
                     const expiration = tokenCooldowns.get(userId);
@@ -728,6 +781,46 @@ client.on('interactionCreate', async (interaction) => {
 
             if (commandName === 'token_status') {
                 return interaction.reply({ content: '🟢 Token Generator System is online, and refreshing mechanism is active.', flags: [MessageFlags.Ephemeral] });
+            }
+
+            // --- CHECK SPAM COMMAND ACROSS ALL CHANNELS ---
+            if (commandName === 'check_spam') {
+                if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
+                    return interaction.reply({ content: 'Unauthorized.', flags: [MessageFlags.Ephemeral] });
+                }
+
+                await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
+                const channels = await interaction.guild.channels.fetch();
+                let bannedCount = 0;
+
+                for (const [, channel] of channels) {
+                    if (channel && channel.isTextBased()) {
+                        try {
+                            const messages = await channel.messages.fetch({ limit: 25 }).catch(() => null);
+                            if (!messages) continue;
+
+                            const userCounts = {};
+                            for (const [, msg] of messages) {
+                                if (msg.author.bot) continue;
+                                userCounts[msg.author.id] = (userCounts[msg.author.id] || 0) + 1;
+                            }
+
+                            for (const [userId, count] of Object.entries(userCounts)) {
+                                if (count >= 6) { // If a user posted 6+ messages in a short window inside this channel
+                                    const member = await interaction.guild.members.fetch(userId).catch(() => null);
+                                    if (member && member.bannable) {
+                                        await member.ban({ reason: 'Auto-detected spamming across channels.' });
+                                        bannedCount++;
+                                    }
+                                }
+                            }
+                        } catch (err) {
+                            console.error(`Error scanning channel ${channel.name}:`, err);
+                        }
+                    }
+                }
+
+                return interaction.editReply({ content: `🔍 Scan complete! Detected and banned **${bannedCount}** spammers across server channels.` });
             }
 
             if (commandName === 'giveaway') {
