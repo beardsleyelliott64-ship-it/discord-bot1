@@ -1,11 +1,11 @@
 const http = require('http');
 
-// Web server to satisfy Render's port check
+// Web server to satisfy Render's port check using dynamic port assignment and 0.0.0.0 binding
 const port = process.env.PORT || 3000;
 http.createServer((req, res) => {
     res.writeHead(200, { 'Content-Type': 'text/plain' });
     res.end('Discord bot is alive!');
-}).listen(port, () => {
+}).listen(port, '0.0.0.0', () => {
     console.log(`Web server listening on port ${port}`);
 });
 
@@ -841,7 +841,7 @@ client.on('messageCreate', async (message) => {
             const asksForGiveaway = contentLower.includes('giveaway') || contentLower.includes('host a giveaway') || contentLower.includes('free stuff');
             const aiFeelsGenerous = Math.random() < 0.25; // 25% chance when asked if the AI "feels like it"
 
-            if (asksForGenerosity = (asksForGiveaway && aiFeelsGenerous)) {
+            if (asksForGiveaway && aiFeelsGenerous) {
                 const prizes = ['Exclusive Discord Nitro', 'VIP Buyer Pass', 'Special Night-Shift Role & Key', 'Mystery Game Key'];
                 const selectedPrize = prizes[Math.floor(Math.random() * prizes.length)];
                 
@@ -1372,9 +1372,6 @@ client.on('interactionCreate', async (interaction) => {
     } catch (err) {
         console.error('Interaction error:', err);
     }
-});
-
-client.login(TOKEN);
 });
 
 client.login(TOKEN);
