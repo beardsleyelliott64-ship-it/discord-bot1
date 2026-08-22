@@ -35,6 +35,13 @@ const VERIFY_CHANNEL_ID = '1540382318856765490'; // Target Verification Channel 
 const REDEEM_CHANNEL_ID = '1539797203902668820'; // Target Auto-Redeem Channel ID
 const TOKEN_PANEL_CHANNEL_ID = '1540499947990814812'; // Target Token Panel Channel ID
 
+// Channels where users get deleted and muted for 15 mins if they chat
+const PROTECTED_CHANNELS = [
+    '1539797203902668820', 
+    '1540382318856765490', 
+    '1540499947990814812'
+];
+
 // Temporary storage for other features
 const activeCaptchas = new Map();
 const validBuyerKeys = new Set(); 
@@ -73,7 +80,7 @@ CREATE TABLE IF NOT EXISTS buyer_codes (
 const genAI = new GoogleGenerativeAI(GEMINI_KEY);
 const aiModel = genAI.getGenerativeModel({ model: 'gemini-3.7-flash' });
 
-// Setup Discord Client
+// Setup Discord Client (Needs MessageContent intent to read messages)
 const client = new Client({
     intents: [
         GatewayIntentBits.Guilds,
@@ -571,6 +578,35 @@ client.once('ready', async () => {
     }
 });
 
+// ---------------------- MESSAGE PROTECT (AUTO-MUTE CHANNELS) ----------------------
+client.on('messageCreate', async (message) => {
+    // Ignore bot messages or direct messages
+    if (message.author.bot || !message.guild) return;
+
+    // Check if the message was sent in one of the restricted channels
+    if (PROTECTED_CHANNELS.includes(message.channel.id)) {
+        try {
+            // Delete the message
+            if (message.deletable) {
+                await message.delete().catch(() => {});
+            }
+
+            // Mute (Timeout) the user for 15 minutes
+            const member = await message.guild.members.fetch(message.author.id).catch(() => null);
+            if (member && member.moderatable) {
+                const fifteenMinutesMs = 15 * 60 * 1000;
+                await member.timeout(fifteenMinutesMs, 'Talking in a restricted system/verification channel.');
+                
+                // Optional: Send a heads up warning in chat or DM
+                const warningMsg = await message.channel.send(`<@${message.author.id}>, you cannot chat in this channel! You have been muted for 15 minutes.`);
+                setTimeout(() => warningMsg.delete().catch(() => {}), 5000); // Delete notice after 5 seconds
+            }
+        } catch (err) {
+            console.error('Error handling restricted channel message:', err);
+        }
+    }
+});
+
 // ---------------------- INTERACTION HANDLER ----------------------
 client.on('interactionCreate', async (interaction) => {
     try {
@@ -854,7 +890,6 @@ client.on('interactionCreate', async (interaction) => {
                 return interaction.reply({ embeds: [embed], flags: [MessageFlags.Ephemeral] });
             }
 
-            // --- FIXED: OPEN REDEEM MODAL BUTTON HANDLER ---
             if (interaction.customId === 'open_redeem_modal') {
                 const modal = new ModalBuilder()
                     .setCustomId('redeem_license_modal')
@@ -948,11 +983,9 @@ client.on('interactionCreate', async (interaction) => {
                 return interaction.reply({ content: '✅ Verification successful! You now have access to the server.', flags: [MessageFlags.Ephemeral] });
             }
 
-            // --- FIXED: REDEEM MODAL SUBMISSION HANDLER ---
             if (interaction.customId === 'redeem_license_modal') {
                 const inputKey = interaction.fields.getTextInputValue('license_key_input').trim();
 
-                // Check in giveaway DB first
                 const dbKey = db.prepare("SELECT * FROM buyer_codes WHERE code = ?").get(inputKey);
                 const isValidMemory = validBuyerKeys.has(inputKey);
 
@@ -964,7 +997,6 @@ client.on('interactionCreate', async (interaction) => {
                     const member = await interaction.guild.members.fetch(interaction.user.id);
                     await member.roles.add(BUYER_ROLE_ID);
 
-                    // Remove key from memory/database so it cannot be reused
                     validBuyerKeys.delete(inputKey);
                     db.prepare("DELETE FROM buyer_codes WHERE code = ?").run(inputKey);
 
