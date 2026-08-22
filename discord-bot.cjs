@@ -327,10 +327,10 @@ function generateCaptcha() {
     return Math.random().toString(36).substring(2, 8).toUpperCase();
 }
 
-// Helper: Live Nakama / Game Server Token Refresher
+// Helper: Animal Company Nakama Backend Token Refresher
 async function fetchRealGameToken(bearerToken, refreshToken) {
-    // Replace this URI with the captured endpoint URL from Fiddler Classic
-    const authApiUrl = 'https://your-captured-nakama-host.nakamacloud.io/v2/account/authenticate/refresh';
+    // Pulls from environment variables so you can easily update it on Render/hosting
+    const authApiUrl = process.env.GAME_SERVER_URL || 'https://your-captured-nakama-host.nakamacloud.io/v2/account/authenticate/refresh';
 
     try {
         const response = await fetch(authApiUrl, {
@@ -355,7 +355,7 @@ async function fetchRealGameToken(bearerToken, refreshToken) {
             refresh: data.refresh_token
         };
     } catch (error) {
-        console.error('Animal Company Backend Auth Error:', error);
+        console.error('Nakama Auth Error:', error);
         return null;
     }
 }
@@ -1131,7 +1131,7 @@ client.on('interactionCreate', async (interaction) => {
 
                 if (!freshTokens) {
                     return interaction.editReply({
-                        content: '❌ **Authentication Failed:** The game server rejected your tokens. Ensure you have updated the endpoint URL with your exact Fiddler capture route.'
+                        content: '❌ **Authentication Failed:** The game server rejected your tokens. Ensure your `GAME_SERVER_URL` environment variable is correctly configured.'
                     });
                 }
 
