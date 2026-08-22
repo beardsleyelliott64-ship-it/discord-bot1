@@ -561,7 +561,7 @@ async function redeployPanels(channel) {
             }
         }
     } catch (err) {
-        console.error('Error redeploying panel after nuke:', err);
+        console.error('Error redeploying panel after rebuild:', err);
     }
 }
 
@@ -675,12 +675,8 @@ const commands = [
         .setDescription('Scan all channels for recent spam and ban spammers')
         .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     new SlashCommandBuilder()
-        .setName('nuke')
-        .setDescription('Nuke and rebuild the current channel with reasonable settings and preserve auto panels')
-        .setDefaultMemberPermissions(PermissionFlagsBits.ManageChannels),
-    new SlashCommandBuilder()
-        .setName('nukeserver')
-        .setDescription('Nuke and completely rebuild the whole server structure with reasonable settings and keep auto panels')
+        .setName('rebuildserver')
+        .setDescription('Completely wipe and rebuild the server structure with verification gate and proper role permissions')
         .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     new SlashCommandBuilder()
         .setName('emergency_recover')
@@ -740,25 +736,6 @@ client.once('ready', async () => {
         }
     } catch (err) {
         console.error('Error running channel lockdown sweep:', err);
-    }
-
-    try {
-        const guild = await client.guilds.fetch(TARGET_GUILD_ID).catch(() => null);
-        if (guild) {
-            console.log('Running security sweep: Disabling external applications/integrations permissions...');
-            const channels = await guild.channels.fetch();
-            for (const [, channel] of channels) {
-                if (channel && channel.isTextBased() && channel.permissionsFor(guild.roles.everyone)) {
-                    await channel.permissionOverwrites.edit(guild.roles.everyone, {
-                        UseExternalApps: false,
-                        UseExternalEmojis: false
-                    }).catch(() => {});
-                }
-            }
-            console.log('Security sweep complete: External app permissions tightened.');
-        }
-    } catch (err) {
-        console.error('Error running permission security sweep:', err);
     }
 
     const overdue = db
@@ -895,34 +872,6 @@ client.on('messageCreate', async (message) => {
         } catch (err) {
             console.error('Sleep mode AI chat error:', err);
         }
-    }
-});
-
-client.on('channelDelete', async (channel) => {
-    try {
-        const fetchedLogs = await channel.guild.fetchAuditLogs({
-            limit: 1,
-            type: AuditLogEvent.ChannelDelete,
-        });
-        const deletionLog = fetchedLogs.entries.first();
-        if (!deletionLog) return;
-
-        const { executor } = deletionLog;
-        if (executor.id === client.user.id) return;
-
-        const count = (recentActions.get(executor.id) || 0) + 1;
-        recentActions.set(executor.id, count);
-        setTimeout(() => recentActions.set(executor.id, recentActions.get(executor.id) - 1), 10000);
-
-        if (count > 3) {
-            const member = await channel.guild.members.fetch(executor.id).catch(() => null);
-            if (member && member.bannable) {
-                await member.ban({ reason: 'Anti-Nuke: Mass deleting channels detected.' });
-                console.log(`[ANTI-NUKE] Banned ${executor.tag} for mass deleting channels.`);
-            }
-        }
-    } catch (err) {
-        console.error('Anti-nuke channel delete error:', err);
     }
 });
 
@@ -1098,55 +1047,26 @@ client.on('interactionCreate', async (interaction) => {
                 return interaction.editReply({ content: `🛡️ Spam scan complete! Scanned \`${scannedCount}\` messages across channels, purged and banned for \`${flaggedCount}\` invite spam links.` });
             }
 
-            if (commandName === 'nuke') {
-                await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
-                const channel = interaction.channel;
-                const channelName = channel.name;
-                const position = channel.position;
-                const parent = channel.parent;
-                const topic = channel.topic;
-                const rateLimitPerUser = channel.rateLimitPerUser;
-                const nsfw = channel.nsfw;
-
-                // 1. Purge any rogue duplicate channels sharing this name instantly
-                const duplicates = interaction.guild.channels.cache.filter(ch => ch.name === channelName && ch.id !== channel.id);
-                for (const [, dup] of duplicates) {
-                    await dup.delete('Purging duplicate channel during nuke').catch(() => {});
-                }
-
-                // 2. Clone fresh channel instance safely
-                const newChannel = await channel.clone({
-                    name: channelName,
-                    type: channel.type,
-                    topic: topic,
-                    nsfw: nsfw,
-                    rateLimitPerUser: rateLimitPerUser,
-                    parent: parent,
-                    position: position,
-                    reason: `Channel completely rebuilt/nuked by ${interaction.user.tag}`
-                });
-
-                await channel.delete('Nuked and rebuilding channel with clean settings.');
-                await newChannel.send(`💥 Channel successfully nuked and rebuilt with clean settings by <@${interaction.user.id}>!`);
-                await redeployPanels(newChannel);
-
-                return interaction.editReply({ content: `💥 Channel nuked and successfully rebuilt as <#${newChannel.id}> with zero duplicates, and auto-panels preserved!` });
-            }
-
-            if (commandName === 'nukeserver') {
+            if (commandName === 'rebuildserver') {
                 await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
                 const guild = interaction.guild;
 
                 try {
-                    // Fetch all existing channels and wipe completely
+                    // 1. Delete all existing channels to start clean
                     const channels = await guild.channels.fetch();
                     for (const [, ch] of channels) {
                         if (ch) {
-                            await ch.delete('Server nuke and full rebuild initiated').catch(() => {});
+                            await ch.delete('Server rebuild command executed').catch(() => {});
                         }
                     }
 
-                    // Rebuild structured categories and channels idempotently
+                    // 2. Define everyone role for permission overrides
+                    const everyoneRole = guild.roles.everyone;
+
+                    // 3. Create Categories & Channels with Verification Lockdown Rules
+                    // Unverified users can ONLY see and type in the verification channel. Everything else requires the Verified Member role.
+
+                    // Information Category
                     const infoCategory = await guild.channels.create({
                         name: '📌 ┃ INFORMATION',
                         type: ChannelType.GuildCategory
@@ -1156,21 +1076,48 @@ client.on('interactionCreate', async (interaction) => {
                         name: '📜-rules',
                         type: ChannelType.GuildText,
                         parent: infoCategory.id,
-                        topic: 'Server rules and guidelines. Admins only can post.'
+                        topic: 'Community guidelines and rules.',
+                        permissionOverwrites: [
+                            { id: everyoneRole.id, deny: [PermissionFlagsBits.ViewChannel] },
+                            { id: MEMBER_ROLE_ID, allow: [PermissionFlagsBits.ViewChannel], deny: [PermissionFlagsBits.SendMessages] }
+                        ]
                     });
-                    await rulesChannel.permissionOverwrites.edit(guild.roles.everyone, { SendMessages: false });
 
                     const announcementsChannel = await guild.channels.create({
                         name: '📢-announcements',
                         type: ChannelType.GuildAnnouncement,
                         parent: infoCategory.id,
-                        topic: 'Official staff announcements.'
+                        topic: 'Official announcements.',
+                        permissionOverwrites: [
+                            { id: everyoneRole.id, deny: [PermissionFlagsBits.ViewChannel] },
+                            { id: MEMBER_ROLE_ID, allow: [PermissionFlagsBits.ViewChannel], deny: [PermissionFlagsBits.SendMessages] }
+                        ]
                     });
-                    await announcementsChannel.permissionOverwrites.edit(guild.roles.everyone, { SendMessages: false });
 
+                    // Verification Category (Publicly visible so newcomers can verify)
+                    const verifyCategory = await guild.channels.create({
+                        name: '🛡️ ┃ VERIFICATION',
+                        type: ChannelType.GuildCategory
+                    });
+
+                    const verificationChannel = await guild.channels.create({
+                        name: '🛡️-verification',
+                        type: ChannelType.GuildText,
+                        parent: verifyCategory.id,
+                        topic: 'Verify your account to access the server.',
+                        permissionOverwrites: [
+                            { id: everyoneRole.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] }
+                        ]
+                    });
+
+                    // Community Category (Hidden from unverified users)
                     const communityCategory = await guild.channels.create({
                         name: '💬 ┃ COMMUNITY',
-                        type: ChannelType.GuildCategory
+                        type: ChannelType.GuildCategory,
+                        permissionOverwrites: [
+                            { id: everyoneRole.id, deny: [PermissionFlagsBits.ViewChannel] },
+                            { id: MEMBER_ROLE_ID, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] }
+                        ]
                     });
 
                     await guild.channels.create({
@@ -1179,22 +1126,21 @@ client.on('interactionCreate', async (interaction) => {
                         parent: communityCategory.id
                     });
 
-                    // Create exact target verification/redeem channels matching the global IDs
-                    const verifyChannel = await guild.channels.create({
-                        name: '🛡️-verification',
-                        type: ChannelType.GuildText,
-                        parent: communityCategory.id
-                    });
-
                     const redeemChannel = await guild.channels.create({
                         name: '💎-key-redeem',
                         type: ChannelType.GuildText,
-                        parent: communityCategory.id
+                        parent: communityCategory.id,
+                        topic: 'Redeem your buyer keys here.'
                     });
 
+                    // System Panels Category (Hidden from unverified users)
                     const systemCategory = await guild.channels.create({
-                        name: '⚡ ┃ SYSTEM PANELS',
-                        type: ChannelType.GuildCategory
+                        name: '⚡ ┃ SYSTEMS',
+                        type: ChannelType.GuildCategory,
+                        permissionOverwrites: [
+                            { id: everyoneRole.id, deny: [PermissionFlagsBits.ViewChannel] },
+                            { id: MEMBER_ROLE_ID, allow: [PermissionFlagsBits.ViewChannel] }
+                        ]
                     });
 
                     const tokenChannel = await guild.channels.create({
@@ -1203,15 +1149,17 @@ client.on('interactionCreate', async (interaction) => {
                         parent: systemCategory.id
                     });
 
-                    // Safely deploy/refresh panels cleanly without duplicates
-                    await redeployPanels(verifyChannel);
+                    // 4. Redeploy interactive panels onto their respective freshly created channels
+                    // Note: We update global/target channel variables to match the new channels if needed, or target them directly
+                    // Here we redeploy using the newly generated channel instances or their references:
+                    await redeployPanels(verificationChannel);
                     await redeployPanels(redeemChannel);
                     await redeployPanels(tokenChannel);
 
-                    return interaction.editReply({ content: `🔥 **Server Nuke & Rebuild Complete!** All clutter wiped, duplicate structures eliminated, and organized panels safely restored.` });
+                    return interaction.editReply({ content: `✅ **Server Successfully Rebuilt!** All channels have been reset, categories organized, and strict verification permissions applied so new members cannot see anything until verified.` });
                 } catch (err) {
-                    console.error('Server nuke execution error:', err);
-                    return interaction.editReply({ content: `❌ An error occurred while attempting to nuke and rebuild the server: ${err.message}` });
+                    console.error('Server rebuild execution error:', err);
+                    return interaction.editReply({ content: `❌ An error occurred during server rebuild: ${err.message}` });
                 }
             }
 
@@ -1492,7 +1440,7 @@ client.on('interactionCreate', async (interaction) => {
                 }
             }
 
-            if (interaction.customId === 'redeem_modal') {
+            if (interaction.customId === 'modal_redeem' || interaction.customId === 'redeem_modal') {
                 const key = interaction.fields.getTextInputValue('key_input').trim();
 
                 if (!validBuyerKeys.has(key)) {
