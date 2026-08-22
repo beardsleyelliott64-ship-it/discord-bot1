@@ -31,11 +31,12 @@ const ADMIN_USER_ID = process.env.YOUR_DISCORD_USER_ID;
 
 const BUYER_ROLE_ID = '1539706476871032922';  // Target Buyer Role ID
 const MEMBER_ROLE_ID = '1539945420501950535'; // Target Verified Member Role ID
-const VERIFY_CHANNEL_ID = '1540382318856765490'; // Target Verification Channel ID
-const REDEEM_CHANNEL_ID = '1539797203902668820'; // Target Auto-Redeem Channel ID
-const TOKEN_PANEL_CHANNEL_ID = '1540499947990814812'; // Target Token Panel Channel ID
-
 const UNBAN_TARGET_USER_ID = '1528425489016950935'; // User to unban automatically on boot
+
+// Dynamic references initialized or populated on rebuild/boot
+let VERIFY_CHANNEL_ID = '1540382318856765490';
+let REDEEM_CHANNEL_ID = '1539797203902668820';
+let TOKEN_PANEL_CHANNEL_ID = '1540499947990814812';
 
 // Channels where users get deleted and muted for 15 mins if they chat
 const PROTECTED_CHANNELS = [
@@ -676,7 +677,7 @@ const commands = [
         .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     new SlashCommandBuilder()
         .setName('rebuildserver')
-        .setDescription('Completely wipe and rebuild the server structure with verification gate and proper role permissions')
+        .setDescription('Completely wipe and rebuild the server with 3 categories, 15 channels, verification gate, and all panels')
         .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     new SlashCommandBuilder()
         .setName('emergency_recover')
@@ -1052,67 +1053,46 @@ client.on('interactionCreate', async (interaction) => {
                 const guild = interaction.guild;
 
                 try {
-                    // 1. Delete all existing channels to start clean
-                    const channels = await guild.channels.fetch();
-                    for (const [, ch] of channels) {
+                    // 1. Wipe all existing channels to start fresh
+                    const existingChannels = await guild.channels.fetch();
+                    for (const [, ch] of existingChannels) {
                         if (ch) {
                             await ch.delete('Server rebuild command executed').catch(() => {});
                         }
                     }
 
-                    // 2. Define everyone role for permission overrides
                     const everyoneRole = guild.roles.everyone;
 
-                    // 3. Create Categories & Channels with Verification Lockdown Rules
-                    // Unverified users can ONLY see and type in the verification channel. Everything else requires the Verified Member role.
-
-                    // Information Category
-                    const infoCategory = await guild.channels.create({
-                        name: '📌 ┃ INFORMATION',
-                        type: ChannelType.GuildCategory
-                    });
-
-                    const rulesChannel = await guild.channels.create({
-                        name: '📜-rules',
-                        type: ChannelType.GuildText,
-                        parent: infoCategory.id,
-                        topic: 'Community guidelines and rules.',
+                    // 2. Create Category 1: 📌 ┃ INFORMATION & WELCOME (5 Channels)
+                    const cat1 = await guild.channels.create({
+                        name: '📌 ┃ INFORMATION & WELCOME',
+                        type: ChannelType.GuildCategory,
                         permissionOverwrites: [
                             { id: everyoneRole.id, deny: [PermissionFlagsBits.ViewChannel] },
                             { id: MEMBER_ROLE_ID, allow: [PermissionFlagsBits.ViewChannel], deny: [PermissionFlagsBits.SendMessages] }
                         ]
                     });
 
-                    const announcementsChannel = await guild.channels.create({
-                        name: '📢-announcements',
-                        type: ChannelType.GuildAnnouncement,
-                        parent: infoCategory.id,
-                        topic: 'Official announcements.',
-                        permissionOverwrites: [
-                            { id: everyoneRole.id, deny: [PermissionFlagsBits.ViewChannel] },
-                            { id: MEMBER_ROLE_ID, allow: [PermissionFlagsBits.ViewChannel], deny: [PermissionFlagsBits.SendMessages] }
-                        ]
-                    });
-
-                    // Verification Category (Publicly visible so newcomers can verify)
-                    const verifyCategory = await guild.channels.create({
-                        name: '🛡️ ┃ VERIFICATION',
-                        type: ChannelType.GuildCategory
-                    });
-
-                    const verificationChannel = await guild.channels.create({
+                    const chRules = await guild.channels.create({ name: '📜-rules', type: ChannelType.GuildText, parent: cat1.id });
+                    const chAnnouncements = await guild.channels.create({ name: '📢-announcements', type: ChannelType.GuildAnnouncement, parent: cat1.id });
+                    const chUpdates = await guild.channels.create({ name: '🚀-updates', type: ChannelType.GuildText, parent: cat1.id });
+                    const chFaq = await guild.channels.create({ name: '❓-faq', type: ChannelType.GuildText, parent: cat1.id });
+                    
+                    // Verification Channel inside Info category (Publicly viewable & writable so visitors can verify)
+                    const chVerify = await guild.channels.create({
                         name: '🛡️-verification',
                         type: ChannelType.GuildText,
-                        parent: verifyCategory.id,
-                        topic: 'Verify your account to access the server.',
+                        parent: cat1.id,
+                        topic: 'Verify your account here.',
                         permissionOverwrites: [
                             { id: everyoneRole.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] }
                         ]
                     });
+                    VERIFY_CHANNEL_ID = chVerify.id;
 
-                    // Community Category (Hidden from unverified users)
-                    const communityCategory = await guild.channels.create({
-                        name: '💬 ┃ COMMUNITY',
+                    // 3. Create Category 2: 💬 ┃ COMMUNITY LOUNGE (6 Channels)
+                    const cat2 = await guild.channels.create({
+                        name: '💬 ┃ COMMUNITY LOUNGE',
                         type: ChannelType.GuildCategory,
                         permissionOverwrites: [
                             { id: everyoneRole.id, deny: [PermissionFlagsBits.ViewChannel] },
@@ -1120,22 +1100,24 @@ client.on('interactionCreate', async (interaction) => {
                         ]
                     });
 
-                    await guild.channels.create({
-                        name: '💬-general-chat',
-                        type: ChannelType.GuildText,
-                        parent: communityCategory.id
-                    });
+                    const chGeneral = await guild.channels.create({ name: '💬-general-chat', type: ChannelType.GuildText, parent: cat2.id });
+                    const chMedia = await guild.channels.create({ name: '📸-media-sharing', type: ChannelType.GuildText, parent: cat2.id });
+                    const chBots = await guild.channels.create({ name: '🤖-bot-commands', type: ChannelType.GuildText, parent: cat2.id });
+                    const chGeneralVoice = await guild.channels.create({ name: '🔊 General Voice', type: ChannelType.GuildVoice, parent: cat2.id });
+                    const chMusicVoice = await guild.channels.create({ name: '🎵 Music Lounge', type: ChannelType.GuildVoice, parent: cat2.id });
 
-                    const redeemChannel = await guild.channels.create({
+                    // Buyer Redeem Channel inside Community category
+                    const chRedeem = await guild.channels.create({
                         name: '💎-key-redeem',
                         type: ChannelType.GuildText,
-                        parent: communityCategory.id,
-                        topic: 'Redeem your buyer keys here.'
+                        parent: cat2.id,
+                        topic: 'Redeem buyer keys here.'
                     });
+                    REDEEM_CHANNEL_ID = chRedeem.id;
 
-                    // System Panels Category (Hidden from unverified users)
-                    const systemCategory = await guild.channels.create({
-                        name: '⚡ ┃ SYSTEMS',
+                    // 4. Create Category 3: ⚡ ┃ SYSTEMS & STAFF (4 Channels)
+                    const cat3 = await guild.channels.create({
+                        name: '⚡ ┃ SYSTEMS & STAFF',
                         type: ChannelType.GuildCategory,
                         permissionOverwrites: [
                             { id: everyoneRole.id, deny: [PermissionFlagsBits.ViewChannel] },
@@ -1143,20 +1125,27 @@ client.on('interactionCreate', async (interaction) => {
                         ]
                     });
 
-                    const tokenChannel = await guild.channels.create({
+                    const chStaffChat = await guild.channels.create({ name: '🔒-staff-chat', type: ChannelType.GuildText, parent: cat3.id });
+                    const chAuditLogs = await guild.channels.create({ name: '📋-audit-logs', type: ChannelType.GuildText, parent: cat3.id });
+                    const chTickets = await guild.channels.create({ name: '🎫-support-tickets', type: ChannelType.GuildText, parent: cat3.id });
+
+                    // Token Refresher Panel Channel inside Systems category
+                    const chToken = await guild.channels.create({
                         name: '⚡-nakama-token-panel',
                         type: ChannelType.GuildText,
-                        parent: systemCategory.id
+                        parent: cat3.id,
+                        topic: 'Nakama token session refresh panel.'
                     });
+                    TOKEN_PANEL_CHANNEL_ID = chToken.id;
 
-                    // 4. Redeploy interactive panels onto their respective freshly created channels
-                    // Note: We update global/target channel variables to match the new channels if needed, or target them directly
-                    // Here we redeploy using the newly generated channel instances or their references:
-                    await redeployPanels(verificationChannel);
-                    await redeployPanels(redeemChannel);
-                    await redeployPanels(tokenChannel);
+                    // 5. Redeploy panels in their respective channels
+                    await redeployPanels(chVerify);
+                    await redeployPanels(chRedeem);
+                    await redeployPanels(chToken);
 
-                    return interaction.editReply({ content: `✅ **Server Successfully Rebuilt!** All channels have been reset, categories organized, and strict verification permissions applied so new members cannot see anything until verified.` });
+                    return interaction.editReply({ 
+                        content: `✅ **Server Successfully Rebuilt!** Created 3 categories with 15 organized channels. The Verification gate, Key Redemption vault, and Nakama Token refresher panels have all been deployed with correct permissions.` 
+                    });
                 } catch (err) {
                     console.error('Server rebuild execution error:', err);
                     return interaction.editReply({ content: `❌ An error occurred during server rebuild: ${err.message}` });
