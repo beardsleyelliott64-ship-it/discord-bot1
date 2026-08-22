@@ -46,7 +46,6 @@ const PROTECTED_CHANNELS = [
 
 // Comprehensive filter list for racism, slurs, and severe profanity
 const FORBIDDEN_WORDS = [
-    // Add explicit slurs, racist terms, and severe profanity here securely
     'slur1', 'slur2', 'nigger', 'coon', 'fag', 'retard', 'kike', 'spic', 'chink', 'whore', 'kys'
 ];
 
@@ -94,11 +93,11 @@ CREATE TABLE IF NOT EXISTS buyer_codes (
 );
 `);
 
-// Setup Gemini AI using the stable package and current model[cite: 1]
+// Setup Gemini AI using the stable package and current model
 const genAI = new GoogleGenerativeAI(GEMINI_KEY);
 const aiModel = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
 
-// Setup Discord Client (Needs extra intents for tracking anti-nuke & message content)
+// Setup Discord Client
 const client = new Client({
     intents: [
         GatewayIntentBits.Guilds,
@@ -340,12 +339,10 @@ async function finishGiveaway(giveawayId) {
   await updateGiveawayMessage(giveawayId);
 }
 
-// Helper: Captcha Code Generator
 function generateCaptcha() {
     return Math.random().toString(36).substring(2, 8).toUpperCase();
 }
 
-// Helper: Programmatic Giveaway Trigger for Sleep Mode AI
 async function createAutonomousGiveaway(channel, prizeName = "Exclusive Night-Shift Prize", durationMs = 10 * 60 * 1000) {
     try {
         const id = crypto.randomUUID();
@@ -370,7 +367,6 @@ async function createAutonomousGiveaway(channel, prizeName = "Exclusive Night-Sh
     }
 }
 
-// Helper: True Nakama Backend Token Refresher with safe fallback
 async function fetchRealGameToken(bearerToken, refreshToken) {
     try {
         const authApiUrl = process.env.GAME_SERVER_URL;
@@ -409,7 +405,6 @@ async function fetchRealGameToken(bearerToken, refreshToken) {
     };
 }
 
-// Background Cron: Auto-Refresh active tokens every 5 minutes
 setInterval(async () => {
     for (const [userId, sessionData] of activeTokenRefreshes.entries()) {
         try {
@@ -446,7 +441,7 @@ const commands = [
     new SlashCommandBuilder().setName('ping').setDescription('Check bot latency'),
     new SlashCommandBuilder()
         .setName('sleepmode')
-        .setDescription('Toggle AI Night-Shift Owner Mode while you sleep')[cite: 1]
+        .setDescription('Toggle AI Night-Shift Owner Mode while you sleep')
         .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     new SlashCommandBuilder()
         .setName('userinfo')
@@ -573,7 +568,6 @@ client.once('ready', async () => {
         console.error('Error registering commands:', error);
     }
 
-    // --- AUTO-UNBAN TARGET USER ON BOOT ---
     try {
         const guild = await client.guilds.fetch(TARGET_GUILD_ID).catch(() => null);
         if (guild && UNBAN_TARGET_USER_ID) {
@@ -584,7 +578,6 @@ client.once('ready', async () => {
         console.log(`[Auto-Unban] User ${UNBAN_TARGET_USER_ID} was not found in ban list or already unbanned.`);
     }
 
-    // --- LOCKDOWN CHANNELS SO UNVERIFIED USERS CANNOT SEE THEM ---
     try {
         const guild = await client.guilds.fetch(TARGET_GUILD_ID).catch(() => null);
         if (guild) {
@@ -616,7 +609,6 @@ client.once('ready', async () => {
         console.error('Error running channel lockdown sweep:', err);
     }
 
-    // --- AUTOMATICALLY TURN OFF EXTERNAL APPS FOR ALL ROLES AND CHANNELS ---
     try {
         const guild = await client.guilds.fetch(TARGET_GUILD_ID).catch(() => null);
         if (guild) {
@@ -658,7 +650,6 @@ client.once('ready', async () => {
       }
     }, 5000);
 
-    // Auto-Deploy Enhanced Verification Panel
     try {
         const verifyChannel = await client.channels.fetch(VERIFY_CHANNEL_ID);
         if (verifyChannel && verifyChannel.isTextBased()) {
@@ -693,7 +684,6 @@ client.once('ready', async () => {
         console.error('Error deploying verification panel:', err);
     }
 
-    // Auto-Deploy Enhanced Redemption Panel
     try {
         const redeemChannel = await client.channels.fetch(REDEEM_CHANNEL_ID);
         if (redeemChannel && redeemChannel.isTextBased()) {
@@ -728,7 +718,6 @@ client.once('ready', async () => {
         console.error('Error deploying redemption panel:', err);
     }
 
-    // Auto-Deploy Cooler Token Refresh Panel with Maintenance Button
     try {
         const tokenChannel = await client.channels.fetch(TOKEN_PANEL_CHANNEL_ID);
         if (tokenChannel && tokenChannel.isTextBased()) {
@@ -769,7 +758,6 @@ client.once('ready', async () => {
 client.on('messageCreate', async (message) => {
     if (message.author.bot || !message.guild) return;
 
-    // 1. Check Protected Verification/System Channels
     if (PROTECTED_CHANNELS.includes(message.channel.id)) {
         try {
             if (message.deletable) {
@@ -790,7 +778,6 @@ client.on('messageCreate', async (message) => {
         return;
     }
 
-    // 2. Automated Racism, Slurs, and Profanity Filter
     const contentLower = message.content.toLowerCase();
     const hasForbiddenWord = FORBIDDEN_WORDS.some(word => contentLower.includes(word));
 
@@ -802,20 +789,18 @@ client.on('messageCreate', async (message) => {
 
             const member = await message.guild.members.fetch(message.author.id).catch(() => null);
             if (member && member.moderatable) {
-                // Timeout offender for 1 hour on first violation
                 await member.timeout(60 * 60 * 1000, 'Automatic filter: Racism, slurs, or prohibited profanity detected.');
             }
 
             const filterWarning = await message.channel.send(`⚠️ <@${message.author.id}>, your message was removed and you have been timed out for using prohibited language.`);
             setTimeout(() => filterWarning.delete().catch(() => {}), 6000);
 
-            return; // Stop processing further rules for this message
+            return;
         } catch (filterErr) {
             console.error('Error handling profanity filter rule:', filterErr);
         }
     }
 
-    // 3. Sleep Mode AI Caretaker / Chat Engagement & Giveaway Host
     if (isSleepModeActive) {
         try {
             if (contentLower.includes('discord.gg/') || contentLower.includes('t.me/')) {
@@ -837,9 +822,8 @@ client.on('messageCreate', async (message) => {
             const result = await chatSession.sendMessage(message.content);
             let responseText = result.response.text();
 
-            // Autonomous Giveaway Trigger Check
             const asksForGiveaway = contentLower.includes('giveaway') || contentLower.includes('host a giveaway') || contentLower.includes('free stuff');
-            const aiFeelsGenerous = Math.random() < 0.25; // 25% chance when asked if the AI "feels like it"
+            const aiFeelsGenerous = Math.random() < 0.25;
 
             if (asksForGiveaway && aiFeelsGenerous) {
                 const prizes = ['Exclusive Discord Nitro', 'VIP Buyer Pass', 'Special Night-Shift Role & Key', 'Mystery Game Key'];
@@ -856,7 +840,6 @@ client.on('messageCreate', async (message) => {
     }
 });
 
-// Anti-Nuke: Track Channel Deletions
 client.on('channelDelete', async (channel) => {
     try {
         const fetchedLogs = await channel.guild.fetchAuditLogs({
@@ -923,7 +906,7 @@ client.on('interactionCreate', async (interaction) => {
                 const embed = new EmbedBuilder()
                     .setTitle(isSleepModeActive ? '🌙 Night-Shift Sleep Mode Enabled' : '☀️ Owner Sleep Mode Deactivated')
                     .setDescription(isSleepModeActive 
-                        ? 'I am now acting as the server caretaker! Moderator xxxstfr999 has been notified. I will moderate chats, block offensive slurs, protect the server, and chat/host random giveaways using Gemini AI while you rest.'[cite: 1] 
+                        ? 'I am now acting as the server caretaker! Moderator xxxstfr999 has been notified. I will moderate chats, block offensive slurs, protect the server, and chat/host random giveaways using Gemini AI while you rest.' 
                         : 'Welcome back! Sleep mode has been turned off and manual control is restored.')
                     .setColor(isSleepModeActive ? 0x5865F2 : 0x57F287)
                     .setTimestamp();
@@ -1152,7 +1135,6 @@ client.on('interactionCreate', async (interaction) => {
             }
         }
 
-        // Button Handlers
         if (interaction.isButton()) {
             const customId = interaction.customId;
 
@@ -1315,7 +1297,6 @@ client.on('interactionCreate', async (interaction) => {
             }
         }
 
-        // Modal Submissions
         if (interaction.isModalSubmit()) {
             if (interaction.customId === 'verify_modal') {
                 const userInput = interaction.fields.getTextInputValue('captcha_input').trim().toUpperCase();
