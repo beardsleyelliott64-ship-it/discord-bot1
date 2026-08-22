@@ -677,7 +677,7 @@ const commands = [
         .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     new SlashCommandBuilder()
         .setName('rebuildserver')
-        .setDescription('Completely wipe and rebuild the server with 3 categories, 15 channels, verification gate, and all panels')
+        .setDescription('Wipe and rebuild server with 3 categories, 15 channels, and verification')
         .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     new SlashCommandBuilder()
         .setName('emergency_recover')
