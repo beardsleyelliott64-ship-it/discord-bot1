@@ -33,7 +33,7 @@ const BUYER_ROLE_ID = '1539706476871032922';  // Target Buyer Role ID
 const MEMBER_ROLE_ID = '1539945420501950535'; // Target Verified Member Role ID
 const VERIFY_CHANNEL_ID = '1540382318856765490'; // Target Verification Channel ID
 const REDEEM_CHANNEL_ID = '1539797203902668820'; // Target Auto-Redeem Channel ID
-const TOKEN_CHANNEL_ID = '1540382318856765491';  // Target Token Channel ID
+const TOKEN_PANEL_CHANNEL_ID = '1540499947990814812'; // Target Token Panel Channel ID
 
 // Temporary storage for other features
 const activeCaptchas = new Map();
@@ -544,6 +544,30 @@ client.once('ready', async () => {
         }
     } catch (err) {
         console.error('Error deploying redemption panel:', err);
+    }
+
+    // Auto-Deploy Token Panel with Duplicate Cleanup
+    try {
+        const tokenChannel = await client.channels.fetch(TOKEN_PANEL_CHANNEL_ID);
+        if (tokenChannel && tokenChannel.isTextBased()) {
+            const messages = await tokenChannel.messages.fetch({ limit: 10 });
+            const botMessages = messages.filter(m => m.author.id === client.user.id);
+            if (botMessages.size > 0) await tokenChannel.bulkDelete(botMessages);
+
+            const tokenEmbed = new EmbedBuilder()
+                .setTitle('🛠️ TOKEN GENERATOR PANEL')
+                .setDescription('Click the button below to generate and refresh your session token details securely.')
+                .setColor(0x5865F2);
+
+            const tokenRow = new ActionRowBuilder().addComponents(
+                new ButtonBuilder().setCustomId('generate_token_action').setLabel('Generate & Refresh Token').setEmoji('⚡').setStyle(ButtonStyle.Success)
+            );
+
+            await tokenChannel.send({ embeds: [tokenEmbed], components: [tokenRow] });
+            console.log('Successfully deployed auto-refresh token panel.');
+        }
+    } catch (err) {
+        console.error('Error deploying auto-refresh token panel:', err);
     }
 });
 
