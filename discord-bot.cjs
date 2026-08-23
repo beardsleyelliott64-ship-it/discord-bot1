@@ -859,7 +859,7 @@ client.on('interactionCreate', async (interaction) => {
                     .setDescription(
                         'Welcome to the upgraded Supporter Key Minting Control Center.\n\n' +
                         '### 🔐 Access Privileges:\n' +
-                        '• Authorized role holders, administrators, and verified supervisors can mint new keys.\n' +
+                        '• Authorized role holders, administrators, and supervisors can mint new keys.\n' +
                         '• Formatted securely as: `SUPORTER-XXXX-XXXX-XXXX`.\n\n' +
                         'Click the button below to generate a new active key instantly.'
                     )
