@@ -207,6 +207,40 @@ function parseJwtExpiration(token) {
     }
 }
 
+// Automated function to lock down the entire server for unverified users except the Verification Channel
+async function applyVerificationLockdown(guild) {
+    try {
+        const channels = await guild.channels.fetch();
+        for (const [, channel] of channels) {
+            if (!channel) continue;
+
+            // Keep verification channel visible to everyone so new members can see it
+            if (channel.id === VERIFY_CHANNEL_ID) {
+                await channel.permissionOverwrites.edit(guild.roles.everyone, {
+                    ViewChannel: true,
+                    SendMessages: true
+                }).catch(() => {});
+                continue;
+            }
+
+            // Hide all other channels from @everyone until verified
+            await channel.permissionOverwrites.edit(guild.roles.everyone, {
+                ViewChannel: false
+            }).catch(() => {});
+
+            // Explicitly grant view access to the verified member role if it's not a staff-only channel
+            if (!PROTECTED_CHANNELS.includes(channel.id)) {
+                await channel.permissionOverwrites.edit(MEMBER_ROLE_ID, {
+                    ViewChannel: true
+                }).catch(() => {});
+            }
+        }
+        console.log('[Security Matrix] Successfully locked down server channels for unverified users.');
+    } catch (err) {
+        console.error('Error applying verification lockdown:', err);
+    }
+}
+
 function giveawayEmbed(giveaway, entryCount) {
   return new EmbedBuilder()
     .setTitle("🎉 SUPPORTER GIVEAWAY VAULT")
@@ -547,7 +581,7 @@ const commands = [
     new SlashCommandBuilder().setName('ping').setDescription('Check bot latency'),
     new SlashCommandBuilder()
         .setName('apply-channel-restrictions')
-        .setDescription('Apply read-only and strict channel restrictions to requested channel IDs'),
+        .setDescription('Apply automatic verification lockdown and read-only channel rules'),
     new SlashCommandBuilder()
         .setName('build-server')
         .setDescription('Open the server template builder setup panel (Administrator only)'),
@@ -615,12 +649,14 @@ client.once('ready', async () => {
     try {
         const guild = await client.guilds.fetch(TARGET_GUILD_ID).catch(() => null);
         if (guild) {
+            // Automatically execute verification lockdown on boot
+            await applyVerificationLockdown(guild);
+
             for (const channelId of READ_ONLY_CHANNELS) {
                 const channel = await guild.channels.fetch(channelId).catch(() => null);
                 if (channel) {
                     const isStrict = STRICT_LOCKED_CHANNELS.includes(channelId);
                     await channel.permissionOverwrites.edit(guild.roles.everyone, {
-                        ViewChannel: true,
                         SendMessages: false,
                         AddReactions: !isStrict
                     }).catch(() => {});
@@ -754,18 +790,20 @@ client.on('interactionCreate', async (interaction) => {
                 await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
                 const guild = interaction.guild;
 
+                // Automatically execute full verification lockdown
+                await applyVerificationLockdown(guild);
+
                 for (const channelId of READ_ONLY_CHANNELS) {
                     const channel = await guild.channels.fetch(channelId).catch(() => null);
                     if (channel) {
                         const isStrict = STRICT_LOCKED_CHANNELS.includes(channelId);
                         await channel.permissionOverwrites.edit(guild.roles.everyone, {
-                            ViewChannel: true,
                             SendMessages: false,
                             AddReactions: !isStrict
                         }).catch(() => {});
                     }
                 }
-                return interaction.editReply({ content: '🛡️ Successfully applied read-only viewing restrictions to the requested channels.' });
+                return interaction.editReply({ content: '🛡️ Successfully applied automatic verification lockdown and read-only channel restrictions.' });
             }
 
             if (commandName === 'build-server') {
@@ -1108,7 +1146,7 @@ client.on('interactionCreate', async (interaction) => {
                 const member = await interaction.guild.members.fetch(interaction.user.id).catch(() => null);
                 if (member) {
                     await member.roles.add(MEMBER_ROLE_ID).catch(() => {});
-                    return interaction.reply({ content: '✅ Verification successful! Verified Member role assigned.', flags: [MessageFlags.Ephemeral] });
+                    return interaction.reply({ content: '✅ Verification successful! Verified Member role assigned and channels unlocked.', flags: [MessageFlags.Ephemeral] });
                 }
             }
 
