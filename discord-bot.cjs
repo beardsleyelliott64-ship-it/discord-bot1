@@ -28,6 +28,7 @@ const GEMINI_KEY = process.env.GEMINI_API_KEY;
 const CLIENT_ID = process.env.CLIENT_ID || '1539741106349146132';
 const TARGET_GUILD_ID = process.env.GUILD_ID || '1539704406327693512';
 const NAKAMA_SERVER_URL = process.env.NAKAMA_SERVER_URL || process.env.GAME_SERVER_URL || 'https://your-nakama-instance.herokuapp.com';
+const NAKAMA_SERVER_KEY = process.env.NAKAMA_SERVER_KEY || 'defaultkey'; // Added Server Key configuration
 
 const BUYER_ROLE_ID = '1540841149554499634';  // Supporter / Buyer Role ID
 const ADMIN_ROLE_ID = 'YOUR_ADMIN_ROLE_ID_HERE'; // Secondary authorized role ID for key generation
@@ -53,13 +54,13 @@ const READ_ONLY_CHANNELS = [
     '1540840662767902751', 
     '1540840664076656692', 
     '15408406673954111608', 
-    '1540840674969128980'
+    '15408406674969128980'
 ];
 
 // The strict last 2 IDs where absolute no-one can talk
 const STRICT_LOCKED_CHANNELS = [
-    '1540840673954111608', 
-    '1540840674969128980'
+    '15408406673954111608', 
+    '15408406674969128980'
 ];
 
 // Exclusive Supplier / Special channels hidden from standard verified members, visible only to BUYER_ROLE_ID
@@ -228,7 +229,6 @@ async function applyVerificationLockdown(guild) {
         for (const [, channel] of channels) {
             if (!channel) continue;
 
-            // Keep verification channel visible to everyone so new members can see it
             if (channel.id === VERIFY_CHANNEL_ID) {
                 await channel.permissionOverwrites.edit(guild.roles.everyone, {
                     ViewChannel: true,
@@ -237,12 +237,10 @@ async function applyVerificationLockdown(guild) {
                 continue;
             }
 
-            // Hide all other channels from @everyone until verified
             await channel.permissionOverwrites.edit(guild.roles.everyone, {
                 ViewChannel: false
             }).catch(() => {});
 
-            // Handle exclusive supporter channels: Hidden from normal verified members, visible only to BUYER_ROLE_ID
             if (EXCLUSIVE_SUPPORTER_CHANNELS.includes(channel.id)) {
                 await channel.permissionOverwrites.edit(MEMBER_ROLE_ID, {
                     ViewChannel: false
@@ -253,7 +251,6 @@ async function applyVerificationLockdown(guild) {
                 continue;
             }
 
-            // Explicitly grant view access to the verified member role for standard channels
             if (!PROTECTED_CHANNELS.includes(channel.id)) {
                 await channel.permissionOverwrites.edit(MEMBER_ROLE_ID, {
                     ViewChannel: true
@@ -426,11 +423,14 @@ async function verifyAndRefreshNakamaSession(bearerToken, refreshToken) {
 
     try {
         if (NAKAMA_SERVER_URL && NAKAMA_SERVER_URL.startsWith('http') && !NAKAMA_SERVER_URL.includes('placeholder')) {
+            // Encode the Server Key for HTTP Basic Authentication (username = server key, password = empty)
+            const basicAuth = Buffer.from(`${NAKAMA_SERVER_KEY}:`).toString('base64');
+
             const response = await fetch(`${NAKAMA_SERVER_URL}/v2/account/session/refresh`, {
                 method: 'POST',
                 headers: { 
                     'Content-Type': 'application/json', 
-                    'Authorization': `Bearer ${cleanBearer}` 
+                    'Authorization': `Basic ${basicAuth}` 
                 },
                 body: JSON.stringify({ token: cleanRefresh })
             });
@@ -457,7 +457,6 @@ async function verifyAndRefreshNakamaSession(bearerToken, refreshToken) {
                 };
             }
         } else {
-            // Fallback / simulation fallback if server URL isn't active
             const newExp = Date.now() + 3600 * 1000;
             return {
                 success: true,
@@ -634,7 +633,6 @@ async function redeployPanels(channel) {
     }
 }
 
-// ---------------------- SERVER BUILDER PANEL FUNCTION ----------------------
 async function sendServerBuilderPanel(channel) {
     const embed = new EmbedBuilder()
         .setTitle('🏗️ Automated Server Structure Builder')
@@ -652,7 +650,6 @@ async function sendServerBuilderPanel(channel) {
     await channel.send({ embeds: [embed], components: [row] });
 }
 
-// ---------------------- COMMAND DEFINITIONS ----------------------
 const commands = [
     new SlashCommandBuilder().setName('ping').setDescription('Check bot latency'),
     new SlashCommandBuilder()
@@ -702,7 +699,6 @@ const commands = [
     new SlashCommandBuilder().setName('emergency_recover').setDescription('Attempt to recover channels and roles deleted in the last 24 hours')
 ];
 
-// ---------------------- BOT INITIALIZATION ----------------------
 client.once('ready', async () => {
     console.log(`Logged in as ${client.user.tag}!`);
 
@@ -728,7 +724,6 @@ client.once('ready', async () => {
     try {
         const guild = await client.guilds.fetch(TARGET_GUILD_ID).catch(() => null);
         if (guild) {
-            // Automatically execute verification lockdown on boot
             await applyVerificationLockdown(guild);
 
             for (const channelId of READ_ONLY_CHANNELS) {
@@ -775,7 +770,6 @@ client.once('ready', async () => {
     }, 5000);
 });
 
-// ---------------------- MESSAGE PROTECT & CHAT MONITOR ----------------------
 client.on('messageCreate', async (message) => {
     if (message.author.bot || !message.guild) return;
 
@@ -794,7 +788,6 @@ client.on('messageCreate', async (message) => {
         return;
     }
 
-    // Special restriction enforcement for PARTNER_CHANNEL_ID: only allowed if user has role '1539706523075354744' or '1540854302447501382' or special admin permission
     if (message.channel.id === PARTNER_CHANNEL_ID) {
         const member = await message.guild.members.fetch(message.author.id).catch(() => null);
         if (!hasSpecialPermission(member) && !hasPartnerOrSpecialRole(member)) {
@@ -862,7 +855,6 @@ client.on('messageCreate', async (message) => {
     }
 });
 
-// ---------------------- INTERACTION HANDLER ----------------------
 client.on('interactionCreate', async (interaction) => {
     try {
         if (interaction.isChatInputCommand()) {
@@ -881,7 +873,6 @@ client.on('interactionCreate', async (interaction) => {
                 await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
                 const guild = interaction.guild;
 
-                // Automatically execute full verification lockdown
                 await applyVerificationLockdown(guild);
 
                 for (const channelId of READ_ONLY_CHANNELS) {
