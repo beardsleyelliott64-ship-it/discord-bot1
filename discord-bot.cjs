@@ -1,12 +1,12 @@
 const http = require('http');
 
-// Web server to satisfy Render's port check using dynamic port assignment and 0.0.0.0 binding
+// Web server to satisfy Render's port check using dynamic port assignment and 0.0.0.0 binding[cite: 3]
 const port = process.env.PORT || 3000;
 http.createServer((req, res) => {
     res.writeHead(200, { 'Content-Type': 'text/plain' });
     res.end('Supporter Bot Core & Nakama Engine Operational.');
 }).listen(port, '0.0.0.0', () => {
-    console.log(`Web server listening on port ${port}[cite: 6]`);
+    console.log(`Web server listening on port ${port}[cite: 3]`);
 });
 
 require("dotenv").config();
@@ -24,29 +24,30 @@ const Database = require("better-sqlite3");
 const TOKEN = process.env.DISCORD_TOKEN;
 const GEMINI_KEY = process.env.GEMINI_API_KEY;
 
-// Hardcoded IDs to guarantee instant registration
+// Hardcoded IDs to guarantee instant registration[cite: 3]
 const CLIENT_ID = process.env.CLIENT_ID || '1539741106349146132';
 const TARGET_GUILD_ID = process.env.GUILD_ID || '1539704406327693512';
 const NAKAMA_SERVER_URL = process.env.NAKAMA_SERVER_URL || process.env.GAME_SERVER_URL || 'https://your-nakama-instance.herokuapp.com';
 
-const BUYER_ROLE_ID = '1540841149554499634';  // Supporter / Buyer Role ID
-const ADMIN_ROLE_ID = 'YOUR_ADMIN_ROLE_ID_HERE'; // Secondary authorized role ID for key generation
-const MEMBER_ROLE_ID = '1539945420501950535'; // Target Verified Member Role ID
-const UNBAN_TARGET_USER_ID = '1528425489016950935'; // User to unban automatically on boot
+const BUYER_ROLE_ID = '1540841149554499634';  // Supporter / Buyer Role ID[cite: 3]
+const ADMIN_ROLE_ID = 'YOUR_ADMIN_ROLE_ID_HERE'; // Secondary authorized role ID for key generation[cite: 3]
+const MEMBER_ROLE_ID = '1539945420501950535'; // Target Verified Member Role ID[cite: 3]
+const UNBAN_TARGET_USER_ID = '1528425489016950935'; // User to unban automatically on boot[cite: 3]
 
-// Dynamic references initialized with your requested specific channel IDs
+// Dynamic references initialized with your requested specific channel IDs[cite: 3]
 let VERIFY_CHANNEL_ID = '1540840661266210826';
 let REDEEM_CHANNEL_ID = '1540840667725570099';
 let TOKEN_PANEL_CHANNEL_ID = '1540840668614754304';
+let PARTNER_CHANNEL_ID = '1539706523075354744'; // Newly added partner welcome channel ID
 
-// Channels where users get deleted and muted for 15 mins if they chat
+// Channels where users get deleted and muted for 15 mins if they chat[cite: 3]
 const PROTECTED_CHANNELS = [
     '1540840667725570099', 
     '1540840668614754304', 
     '1540840661266210826'
 ];
 
-// Channels where people can see them but cannot talk (Read-only setup)
+// Channels where people can see them but cannot talk (Read-only setup)[cite: 3]
 const READ_ONLY_CHANNELS = [
     '1540840661740421322', 
     '1540840662767902751', 
@@ -55,39 +56,39 @@ const READ_ONLY_CHANNELS = [
     '1540840674969128980'
 ];
 
-// The strict last 2 IDs where absolute no-one can talk
+// The strict last 2 IDs where absolute no-one can talk[cite: 3]
 const STRICT_LOCKED_CHANNELS = [
     '1540840673954111608', 
     '1540840674969128980'
 ];
 
-// Exclusive Supplier / Special channels hidden from standard verified members, visible only to BUYER_ROLE_ID
+// Exclusive Supplier / Special channels hidden from standard verified members, visible only to BUYER_ROLE_ID[cite: 3]
 const EXCLUSIVE_SUPPORTER_CHANNELS = [
     '1540840669495566376',
     '1540848279267581994',
     '1540847733353488526'
 ];
 
-// Comprehensive filter list for racism, slurs, and severe profanity
+// Comprehensive filter list for racism, slurs, and severe profanity[cite: 3]
 const FORBIDDEN_WORDS = [
     'slur1', 'slur2', 'nigger', 'coon', 'fag', 'retard', 'kike', 'spic', 'chink', 'whore', 'kys'
 ];
 
-// Temporary storage for other features
+// Temporary storage for other features[cite: 3]
 const activeCaptchas = new Map();
 const validBuyerKeys = new Set(); 
 const tokenCooldowns = new Map();
 
-// Store active auto-refresh sessions in memory mapping + SQLite backend
+// Store active auto-refresh sessions in memory mapping + SQLite backend[cite: 3]
 const activeTokenRefreshes = new Map();
 
-// Maintenance state toggle for the token panel
+// Maintenance state toggle for the token panel[cite: 3]
 let isTokenMaintenanceMode = false;
 
-// Sleep Mode State Toggle
+// Sleep Mode State Toggle[cite: 3]
 let isSleepModeActive = false;
 
-// Setup SQLite Database for Giveaways, Buyer Codes, & Persistent Nakama Sessions
+// Setup SQLite Database for Giveaways, Buyer Codes, & Persistent Nakama Sessions[cite: 3]
 const db = new Database("./giveaways.sqlite");
 db.pragma("journal_mode = WAL");
 
@@ -124,11 +125,11 @@ CREATE TABLE IF NOT EXISTS nakama_sessions (
 );
 `);
 
-// Setup Gemini AI using the stable package and current model
+// Setup Gemini AI using the stable package and current model[cite: 3]
 const genAI = new GoogleGenerativeAI(GEMINI_KEY);
 const aiModel = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
 
-// Setup Discord Client
+// Setup Discord Client[cite: 3]
 const client = new Client({
     intents: [
         GatewayIntentBits.Guilds,
@@ -139,7 +140,7 @@ const client = new Client({
     ]
 });
 
-// Helper: Upgraded Supporter Key Generator (SUPORTER-XXXX-XXXX-XXXX)
+// Helper: Upgraded Supporter Key Generator (SUPORTER-XXXX-XXXX-XXXX)[cite: 3]
 function makeCode() {
   const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
   function part(length) {
@@ -152,16 +153,20 @@ function makeCode() {
   return `SUPORTER-${part(4)}-${part(4)}-${part(4)}`;
 }
 
-// Helper: Check if user has permission to generate keys or run special commands (billyis1234 or required roles)
+// Helper: Strictly restrict bot administrative commands/panels to owner ID (1363240484818128926) and username (billyis1234)[cite: 3]
 function hasSpecialPermission(member) {
     if (!member) return false;
-    if (member.user.username === 'billyis1234') return true;
-    if (member.permissions.has(PermissionFlagsBits.Administrator)) return true;
-    if (member.roles.cache.has(BUYER_ROLE_ID) || member.roles.cache.has(ADMIN_ROLE_ID)) return true;
+    if (member.id === '1363240484818128926' || member.user.username === 'billyis1234') return true;
     return false;
 }
 
-// Helper: Mint and save a fresh key directly to the database so it can be redeemed via the panel
+// Helper: Check if member has one of the specified role IDs ('1539706523075354744' or '1540854302447501382')
+function hasPartnerOrSpecialRole(member) {
+    if (!member || !member.roles) return false;
+    return member.roles.cache.has('1539706523075354744') || member.roles.cache.has('1540854302447501382');
+}
+
+// Helper: Mint and save a fresh key directly to the database so it can be redeemed via the panel[cite: 3]
 function mintAndSaveKey(userId = null, giveawayId = 'MANUAL_MINT') {
   let code;
   do {
@@ -214,14 +219,14 @@ function parseJwtExpiration(token) {
     }
 }
 
-// Automated function to lock down the entire server for unverified users except the Verification Channel
+// Automated function to lock down the entire server for unverified users except the Verification Channel[cite: 3]
 async function applyVerificationLockdown(guild) {
     try {
         const channels = await guild.channels.fetch();
         for (const [, channel] of channels) {
             if (!channel) continue;
 
-            // Keep verification channel visible to everyone so new members can see it
+            // Keep verification channel visible to everyone so new members can see it[cite: 3]
             if (channel.id === VERIFY_CHANNEL_ID) {
                 await channel.permissionOverwrites.edit(guild.roles.everyone, {
                     ViewChannel: true,
@@ -230,12 +235,12 @@ async function applyVerificationLockdown(guild) {
                 continue;
             }
 
-            // Hide all other channels from @everyone until verified
+            // Hide all other channels from @everyone until verified[cite: 3]
             await channel.permissionOverwrites.edit(guild.roles.everyone, {
                 ViewChannel: false
             }).catch(() => {});
 
-            // Handle exclusive supporter channels: Hidden from normal verified members, visible only to BUYER_ROLE_ID
+            // Handle exclusive supporter channels: Hidden from normal verified members, visible only to BUYER_ROLE_ID[cite: 3]
             if (EXCLUSIVE_SUPPORTER_CHANNELS.includes(channel.id)) {
                 await channel.permissionOverwrites.edit(MEMBER_ROLE_ID, {
                     ViewChannel: false
@@ -246,14 +251,14 @@ async function applyVerificationLockdown(guild) {
                 continue;
             }
 
-            // Explicitly grant view access to the verified member role for standard channels
+            // Explicitly grant view access to the verified member role for standard channels[cite: 3]
             if (!PROTECTED_CHANNELS.includes(channel.id)) {
                 await channel.permissionOverwrites.edit(MEMBER_ROLE_ID, {
                     ViewChannel: true
                 }).catch(() => {});
             }
         }
-        console.log('[Security Matrix] Successfully locked down server channels and configured exclusive buyer channels.');
+        console.log('[Security Matrix] Successfully locked down server channels and configured exclusive buyer channels.[cite: 3]');
     } catch (err) {
         console.error('Error applying verification lockdown:', err);
     }
@@ -465,7 +470,7 @@ async function verifyAndRefreshNakamaSession(bearerToken, refreshToken) {
     };
 }
 
-// Background auto-refresher checking Nakama JWT expirations & updating SQLite database
+// Background auto-refresher checking Nakama JWT expirations & updating SQLite database[cite: 3]
 setInterval(async () => {
     const now = Date.now();
     const activeSessions = db.prepare("SELECT * FROM nakama_sessions").all();
@@ -482,7 +487,7 @@ setInterval(async () => {
     }
 }, 60 * 1000);
 
-// Panel UI Deployer with Duplicate Deletion & Cleanup
+// Panel UI Deployer with Duplicate Deletion & Cleanup[cite: 3]
 async function redeployPanels(channel) {
     try {
         const botId = channel.client.user.id;
@@ -570,6 +575,29 @@ async function redeployPanels(channel) {
             );
 
             await channel.send({ embeds: [tokenEmbed], components: [tokenRow] });
+        } else if (channel.id === PARTNER_CHANNEL_ID) {
+            const partnerEmbed = new EmbedBuilder()
+                .setTitle('🤝 PARTNER & ALLIANCE HUB')
+                .setDescription(
+                    'Welcome to the official Partner and Alliance headquarters! This channel welcomes our esteemed community partners.\n\n' +
+                    '### 🌟 Partner Perks & Details:\n' +
+                    '• Exclusive recognition across our network.\n' +
+                    '• Direct communication channels with staff and collaborators.\n' +
+                    '• Special privileges reserved for trusted allies.'
+                )
+                .addFields(
+                    { name: '🛡️ Status', value: '`Active Partnership Hub`', inline: true },
+                    { name: '🎖️ Required Roles', value: '<@&1539706523075354744> / <@&1540854302447501382>', inline: true }
+                )
+                .setColor(0xFEE75C)
+                .setTimestamp()
+                .setFooter({ text: 'Community Partner Relations Matrix' });
+
+            const partnerRow = new ActionRowBuilder().addComponents(
+                new ButtonBuilder().setCustomId('partner_info').setLabel('Partner Guidelines').setEmoji('📜').setStyle(ButtonStyle.Secondary)
+            );
+
+            await channel.send({ embeds: [partnerEmbed], components: [partnerRow] });
         }
     } catch (err) {
         console.error('Error redeploying panel:', err);
@@ -602,7 +630,7 @@ const commands = [
         .setDescription('Apply automatic verification lockdown and read-only channel rules'),
     new SlashCommandBuilder()
         .setName('build-server')
-        .setDescription('Open the server template builder setup panel (Administrator only)'),
+        .setDescription('Open the server template builder setup panel (Owner only)'),
     new SlashCommandBuilder()
         .setName('sleepmode')
         .setDescription('Toggle AI Night-Shift Owner Mode while you sleep'),
@@ -619,6 +647,9 @@ const commands = [
     new SlashCommandBuilder()
         .setName('setup-token-panel')
         .setDescription('Post the Session Token Refresh Panel'),
+    new SlashCommandBuilder()
+        .setName('setup-partner-panel')
+        .setDescription('Post the Partner Welcome Panel'),
     new SlashCommandBuilder()
         .setName("giveaway")
         .setDescription("Manage Supporter giveaways")
@@ -643,13 +674,13 @@ const commands = [
 
 // ---------------------- BOT INITIALIZATION ----------------------
 client.once('ready', async () => {
-    console.log(`Logged in as ${client.user.tag}!`);
+    console.log(`Logged in as ${client.user.tag}![cite: 3]`);
 
     try {
         const rest = new REST({ version: '10' }).setToken(TOKEN);
         await rest.put(Routes.applicationCommands(CLIENT_ID), { body: [] });
         await rest.put(Routes.applicationGuildCommands(CLIENT_ID, TARGET_GUILD_ID), { body: commands });
-        console.log('Successfully registered active guild commands.');
+        console.log('Successfully registered active guild commands.[cite: 3]');
     } catch (error) {
         console.error('Error registering commands:', error);
     }
@@ -658,16 +689,16 @@ client.once('ready', async () => {
         const guild = await client.guilds.fetch(TARGET_GUILD_ID).catch(() => null);
         if (guild && UNBAN_TARGET_USER_ID) {
             await guild.members.unban(UNBAN_TARGET_USER_ID, 'Automated unban requested by administrator.');
-            console.log(`[Auto-Unban] Successfully unbanned user ID: ${UNBAN_TARGET_USER_ID}`);
+            console.log(`[Auto-Unban] Successfully unbanned user ID: ${UNBAN_TARGET_USER_ID}[cite: 3]`);
         }
     } catch (err) {
-        console.log(`[Auto-Unban] User ${UNBAN_TARGET_USER_ID} was not found in ban list or already unbanned.`);
+        console.log(`[Auto-Unban] User ${UNBAN_TARGET_USER_ID} was not found in ban list or already unbanned.[cite: 3]`);
     }
 
     try {
         const guild = await client.guilds.fetch(TARGET_GUILD_ID).catch(() => null);
         if (guild) {
-            // Automatically execute verification lockdown on boot
+            // Automatically execute verification lockdown on boot[cite: 3]
             await applyVerificationLockdown(guild);
 
             for (const channelId of READ_ONLY_CHANNELS) {
@@ -694,6 +725,9 @@ client.once('ready', async () => {
 
         const tokenChannel = await client.channels.fetch(TOKEN_PANEL_CHANNEL_ID).catch(() => null);
         if (tokenChannel && tokenChannel.isTextBased()) await redeployPanels(tokenChannel);
+
+        const partnerChannel = await client.channels.fetch(PARTNER_CHANNEL_ID).catch(() => null);
+        if (partnerChannel && partnerChannel.isTextBased()) await redeployPanels(partnerChannel);
     } catch (err) {
         console.error('Error deploying panels:', err);
     }
@@ -728,6 +762,21 @@ client.on('messageCreate', async (message) => {
             console.error('Error handling restricted channel timeout:', err);
         }
         return;
+    }
+
+    // Special restriction enforcement for PARTNER_CHANNEL_ID: only allowed if user has role '1539706523075354744' or '1540854302447501382' or special admin permission
+    if (message.channel.id === PARTNER_CHANNEL_ID) {
+        const member = await message.guild.members.fetch(message.author.id).catch(() => null);
+        if (!hasSpecialPermission(member) && !hasPartnerOrSpecialRole(member)) {
+            try {
+                if (message.deletable) await message.delete().catch(() => {});
+                const warningMsg = await message.channel.send(`⚠️ <@${message.author.id}>, chatting in the partner channel is restricted to holders of partner or authorized roles.`);
+                setTimeout(() => warningMsg.delete().catch(() => {}), 5000);
+            } catch (err) {
+                console.error('Error enforcing partner channel restrictions:', err);
+            }
+            return;
+        }
     }
 
     const contentLower = message.content.toLowerCase();
@@ -790,14 +839,8 @@ client.on('interactionCreate', async (interaction) => {
             const { commandName } = interaction;
             const member = interaction.member;
 
-            if (commandName === 'build-server') {
-                if (!member.permissions.has(PermissionFlagsBits.Administrator) && member.user.username !== 'billyis1234') {
-                    return interaction.reply({ content: '❌ Administrator permissions are required to run `/build-server`.', flags: [MessageFlags.Ephemeral] });
-                }
-            } else {
-                if (!hasSpecialPermission(member)) {
-                    return interaction.reply({ content: '❌ You do not have the required permissions or role to execute this command.', flags: [MessageFlags.Ephemeral] });
-                }
+            if (!hasSpecialPermission(member)) {
+                return interaction.reply({ content: '❌ You do not have permission to execute this command. This command is restricted to the server owner.', flags: [MessageFlags.Ephemeral] });
             }
 
             if (commandName === 'ping') {
@@ -808,7 +851,7 @@ client.on('interactionCreate', async (interaction) => {
                 await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
                 const guild = interaction.guild;
 
-                // Automatically execute full verification lockdown
+                // Automatically execute full verification lockdown[cite: 3]
                 await applyVerificationLockdown(guild);
 
                 for (const channelId of READ_ONLY_CHANNELS) {
@@ -888,6 +931,11 @@ client.on('interactionCreate', async (interaction) => {
             if (commandName === 'setup-token-panel') {
                 await redeployPanels(interaction.channel);
                 return interaction.reply({ content: '⚡ Session Token Refresh Panel deployed successfully.', flags: [MessageFlags.Ephemeral] });
+            }
+
+            if (commandName === 'setup-partner-panel') {
+                await redeployPanels(interaction.channel);
+                return interaction.reply({ content: '🤝 Partner Welcome Panel deployed successfully.', flags: [MessageFlags.Ephemeral] });
             }
 
             if (commandName === 'unban-user') {
@@ -971,6 +1019,10 @@ client.on('interactionCreate', async (interaction) => {
         if (interaction.isButton()) {
             const customId = interaction.customId;
 
+            if (customId === 'partner_info') {
+                return interaction.reply({ content: '📜 **Partner Guidelines:** Maintain professionalism, promote community engagement, and adhere to all server policies.', flags: [MessageFlags.Ephemeral] });
+            }
+
             if (customId === 'admin_gen_key') {
                 if (!hasSpecialPermission(interaction.member)) {
                     return interaction.reply({ content: '❌ You do not have permission to mint license keys.', flags: [MessageFlags.Ephemeral] });
@@ -995,8 +1047,8 @@ client.on('interactionCreate', async (interaction) => {
             }
 
             if (customId === 'trigger_server_build') {
-                if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator) && interaction.user.username !== 'billyis1234') {
-                    return interaction.reply({ content: '❌ Administrator permissions required.', flags: [MessageFlags.Ephemeral] });
+                if (!hasSpecialPermission(interaction.member)) {
+                    return interaction.reply({ content: '❌ Permission denied.', flags: [MessageFlags.Ephemeral] });
                 }
 
                 await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
