@@ -477,11 +477,64 @@ setInterval(async () => {
     
     for (const session of activeSessions) {
         if (session.expires_at <= now) {
+            // Attempt automatic refresh using stored refresh token if API is available
+            try {
+                if (NAKAMA_SERVER_URL && NAKAMA_SERVER_URL.startsWith('http') && !NAKAMA_SERVER_URL.includes('placeholder')) {
+                    const response = await fetch(`${NAKAMA_SERVER_URL}/v2/account/session/refresh`, {
+                        method: 'POST',
+                        headers: { 
+                            'Content-Type': 'application/json', 
+                            'Authorization': `Bearer ${session.auth_token}` 
+                        },
+                        body: JSON.stringify({ token: session.refresh_token })
+                    });
+                    if (response.ok) {
+                        const data = await response.json();
+                        const newBearer = data.token;
+                        const newRefresh = data.refresh_token || session.refresh_token;
+                        const newExp = parseJwtExpiration(newBearer) || (now + 3600 * 1000);
+
+                        db.prepare(`
+                            UPDATE nakama_sessions 
+                            SET auth_token = ?, refresh_token = ?, expires_at = ?, updated_at = ?
+                            WHERE user_id = ?
+                        `).run(newBearer, newRefresh, newExp, now, session.user_id);
+
+                        activeTokenRefreshes.set(session.user_id, {
+                            bearer: newBearer,
+                            refresh: newRefresh,
+                            expiresAt: newExp
+                        });
+
+                        try {
+                            const user = await client.users.fetch(session.user_id);
+                            await user.send({
+                                embeds: [
+                                    new EmbedBuilder()
+                                        .setTitle('🔄 Nakama Session Automatically Refreshed')
+                                        .setDescription('Your managed session token has been successfully renewed in the background.')
+                                        .addFields(
+                                            { name: '🔑 New Bearer Token', value: `\`\`\`${newBearer}\`\`\`` },
+                                            { name: '🔄 New Refresh Token', value: `\`\`\`${newRefresh}\`\`\`` },
+                                            { name: '⏳ New Expiration', value: `<t:${Math.floor(newExp / 1000)}:R>` }
+                                        )
+                                        .setColor(0x57F287)
+                                        .setTimestamp()
+                                ]
+                            }).catch(() => {});
+                        } catch (err) {}
+                        continue;
+                    }
+                }
+            } catch (refErr) {
+                console.error('[Background Refresh Error]:', refErr.message);
+            }
+
             db.prepare("DELETE FROM nakama_sessions WHERE user_id = ?").run(session.user_id);
             activeTokenRefreshes.delete(session.user_id);
             try {
                 const user = await client.users.fetch(session.user_id);
-                await user.send("⚠️ **Nakama Security Notice:** Your managed game session token has expired. Please re-authenticate via the Token Panel.").catch(() => {});
+                await user.send("⚠️ **Nakama Security Notice:** Your managed game session token has expired and could not be refreshed automatically. Please re-authenticate via the Token Panel.").catch(() => {});
             } catch (err) {}
         }
     }
@@ -1167,6 +1220,7 @@ client.on('interactionCreate', async (interaction) => {
                     .setDescription('Your session credentials are secure and synchronized.')
                     .addFields(
                         { name: '🔑 Bearer Token', value: `\`\`\`${session.auth_token}\`\`\`` },
+                        { name: '🔄 Refresh Token', value: `\`\`\`${session.refresh_token}\`\`\`` },
                         { name: '⏳ Expiration Countdown', value: `<t:${Math.floor(session.expires_at / 1000)}:R>` }
                     )
                     .setColor(0x57F287)
@@ -1274,6 +1328,7 @@ client.on('interactionCreate', async (interaction) => {
                     .setDescription(`✨ **Status:** ${result.message}`)
                     .addFields(
                         { name: '🔑 Bearer Token', value: `\`\`\`${result.bearer}\`\`\`` },
+                        { name: '🔄 Refresh Token', value: `\`\`\`${result.refresh}\`\`\`` },
                         { name: '⏳ Expiration Timestamp', value: `<t:${Math.floor(result.expiresAt / 1000)}:R>` }
                     )
                     .setColor(0x57F287)
