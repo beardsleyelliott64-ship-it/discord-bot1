@@ -61,6 +61,13 @@ const STRICT_LOCKED_CHANNELS = [
     '1540840674969128980'
 ];
 
+// Exclusive Supplier / Special channels hidden from standard verified members, visible only to BUYER_ROLE_ID
+const EXCLUSIVE_SUPPORTER_CHANNELS = [
+    '1540840669495566376',
+    '1540848279267581994',
+    '1540847733353488526'
+];
+
 // Comprehensive filter list for racism, slurs, and severe profanity
 const FORBIDDEN_WORDS = [
     'slur1', 'slur2', 'nigger', 'coon', 'fag', 'retard', 'kike', 'spic', 'chink', 'whore', 'kys'
@@ -228,14 +235,25 @@ async function applyVerificationLockdown(guild) {
                 ViewChannel: false
             }).catch(() => {});
 
-            // Explicitly grant view access to the verified member role if it's not a staff-only channel
+            // Handle exclusive supporter channels: Hidden from normal verified members, visible only to BUYER_ROLE_ID
+            if (EXCLUSIVE_SUPPORTER_CHANNELS.includes(channel.id)) {
+                await channel.permissionOverwrites.edit(MEMBER_ROLE_ID, {
+                    ViewChannel: false
+                }).catch(() => {});
+                await channel.permissionOverwrites.edit(BUYER_ROLE_ID, {
+                    ViewChannel: true
+                }).catch(() => {});
+                continue;
+            }
+
+            // Explicitly grant view access to the verified member role for standard channels
             if (!PROTECTED_CHANNELS.includes(channel.id)) {
                 await channel.permissionOverwrites.edit(MEMBER_ROLE_ID, {
                     ViewChannel: true
                 }).catch(() => {});
             }
         }
-        console.log('[Security Matrix] Successfully locked down server channels for unverified users.');
+        console.log('[Security Matrix] Successfully locked down server channels and configured exclusive buyer channels.');
     } catch (err) {
         console.error('Error applying verification lockdown:', err);
     }
