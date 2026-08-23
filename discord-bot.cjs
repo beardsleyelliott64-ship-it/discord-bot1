@@ -1,4 +1,4 @@
-onst http = require('http');
+const http = require('http');
 
 // Web server to satisfy Render's port check using dynamic port assignment and 0.0.0.0 binding
 const port = process.env.PORT || 3000;
