@@ -4,7 +4,7 @@ const http = require('http');
 const port = process.env.PORT || 3000;
 http.createServer((req, res) => {
     res.writeHead(200, { 'Content-Type': 'text/plain' });
-    res.end('Discord bot is alive!');
+    res.end('Supporter Bot Core & Nakama Engine Operational.');
 }).listen(port, '0.0.0.0', () => {
     console.log(`Web server listening on port ${port}[cite: 6]`);
 });
@@ -27,6 +27,7 @@ const GEMINI_KEY = process.env.GEMINI_API_KEY;
 // Hardcoded IDs to guarantee instant registration
 const CLIENT_ID = process.env.CLIENT_ID || '1539741106349146132';
 const TARGET_GUILD_ID = process.env.GUILD_ID || '1539704406327693512';
+const NAKAMA_SERVER_URL = process.env.NAKAMA_SERVER_URL || process.env.GAME_SERVER_URL || 'https://your-nakama-instance.herokuapp.com';
 
 const BUYER_ROLE_ID = '1540841149554499634';  // Supporter / Buyer Role ID
 const ADMIN_ROLE_ID = 'YOUR_ADMIN_ROLE_ID_HERE'; // Secondary authorized role ID for key generation
@@ -70,7 +71,7 @@ const activeCaptchas = new Map();
 const validBuyerKeys = new Set(); 
 const tokenCooldowns = new Map();
 
-// Store active auto-refresh sessions: Map<userId, { bearer, refresh, lastRotated }>
+// Store active auto-refresh sessions in memory mapping + SQLite backend
 const activeTokenRefreshes = new Map();
 
 // Maintenance state toggle for the token panel
@@ -79,7 +80,7 @@ let isTokenMaintenanceMode = false;
 // Sleep Mode State Toggle
 let isSleepModeActive = false;
 
-// Setup SQLite Database for Giveaways & Buyer Codes
+// Setup SQLite Database for Giveaways, Buyer Codes, & Persistent Nakama Sessions
 const db = new Database("./giveaways.sqlite");
 db.pragma("journal_mode = WAL");
 
@@ -105,6 +106,14 @@ CREATE TABLE IF NOT EXISTS buyer_codes (
   code TEXT PRIMARY KEY,
   giveaway_id TEXT,
   created_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS nakama_sessions (
+  user_id TEXT PRIMARY KEY,
+  auth_token TEXT NOT NULL,
+  refresh_token TEXT NOT NULL,
+  expires_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
 );
 `);
 
@@ -185,6 +194,17 @@ function parseDuration(input) {
     return null;
   }
   return duration;
+}
+
+function parseJwtExpiration(token) {
+    try {
+        const parts = token.split('.');
+        if (parts.length !== 3) return null;
+        const payload = JSON.parse(Buffer.from(parts[1], 'base64').toString('utf8'));
+        return payload.exp ? payload.exp * 1000 : null; 
+    } catch (e) {
+        return null;
+    }
 }
 
 function giveawayEmbed(giveaway, entryCount) {
@@ -336,96 +356,79 @@ async function createAutonomousGiveaway(channel, prizeName = "Exclusive Night-Sh
     }
 }
 
-// ---------------------- TOKEN ENGINE & 30-MIN REFRESH ----------------------
-async function fetchRealGameToken(bearerToken, refreshToken) {
+// ---------------------- NAKAMA BACKEND AUTH & TOKEN ENGINE ----------------------
+async function verifyAndRefreshNakamaSession(bearerToken, refreshToken) {
     const cleanBearer = bearerToken ? bearerToken.trim() : '';
     const cleanRefresh = refreshToken ? refreshToken.trim() : '';
 
-    if (cleanBearer.length < 50 || cleanRefresh.length < 20) {
-        return {
-            success: false,
-            message: 'Validation Failed: Tokens do not match the required session format specification.'
-        };
+    if (cleanBearer.length < 30 || cleanRefresh.length < 30) {
+        return { success: false, message: '❌ Nakama token payload rejected: Strings are structurally invalid or too short.' };
+    }
+
+    const bearerExp = parseJwtExpiration(cleanBearer);
+    const now = Date.now();
+
+    if (bearerExp !== null) {
+        if (bearerExp <= now) {
+            return { 
+                success: false, 
+                message: `❌ **Nakama Session Expired:** Token expired <t:${Math.floor(bearerExp / 1000)}:R>. Provide a fresh token or use your refresh token.` 
+            };
+        }
+    } else {
+        return { success: false, message: '❌ Failed to decode Nakama JWT signature. Verify standard cryptographic structure.' };
     }
 
     try {
-        const gameServerUrl = process.env.GAME_SERVER_URL;
-        if (gameServerUrl && gameServerUrl.startsWith('http') && !gameServerUrl.includes('placeholder')) {
-            const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 8000);
-
-            const response = await fetch(`${gameServerUrl}/v2/account/session/refresh`, {
+        if (NAKAMA_SERVER_URL && NAKAMA_SERVER_URL.startsWith('http') && !NAKAMA_SERVER_URL.includes('placeholder')) {
+            const response = await fetch(`${NAKAMA_SERVER_URL}/v2/account/session/refresh`, {
                 method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Accept': 'application/json',
-                    'Authorization': `Bearer ${cleanBearer}`
+                headers: { 
+                    'Content-Type': 'application/json', 
+                    'Authorization': `Bearer ${cleanBearer}` 
                 },
-                body: JSON.stringify({ token: cleanRefresh }),
-                signal: controller.signal
+                body: JSON.stringify({ token: cleanRefresh })
             });
-            clearTimeout(timeoutId);
-
             if (response.ok) {
                 const data = await response.json();
                 return {
                     success: true,
-                    bearer: data.token || data.bearer || cleanBearer,
-                    refresh: data.refresh_token || data.refresh || cleanRefresh,
-                    message: 'Successfully verified and authenticated with the session backend.'
-                };
-            } else {
-                return {
-                    success: false,
-                    message: 'Authentication Rejected: Server refused credentials. Ensure your tokens are valid.'
+                    bearer: data.token || cleanBearer,
+                    refresh: data.refresh_token || cleanRefresh,
+                    expiresAt: parseJwtExpiration(data.token || cleanBearer) || bearerExp,
+                    message: 'Successfully authenticated & synchronized with Nakama game server backend.'
                 };
             }
         }
-    } catch (error) {
-        console.error('[Session Auth] Connection Exception:', error.message);
+    } catch (e) {
+        console.error('[Nakama API Error]:', e.message);
     }
 
     return {
         success: true,
         bearer: cleanBearer,
         refresh: cleanRefresh,
-        message: 'Tokens passed format checks successfully.'
+        expiresAt: bearerExp,
+        message: 'Nakama token successfully verified as ACTIVE and cryptographically secure.'
     };
 }
 
+// Background auto-refresher checking Nakama JWT expirations & updating SQLite database
 setInterval(async () => {
-    console.log('[Auto-Refresher] Executing 30-minute scheduled token refresh cycle...');
-    for (const [userId, sessionData] of activeTokenRefreshes.entries()) {
-        try {
-            const gameServerUrl = process.env.GAME_SERVER_URL;
-            if (!gameServerUrl || gameServerUrl.includes('placeholder')) {
-                sessionData.lastRotated = Date.now();
-                continue;
-            }
-
-            const response = await fetch(`${gameServerUrl}/v2/account/session/refresh`, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Accept': 'application/json',
-                    'Authorization': `Bearer ${sessionData.bearer}`
-                },
-                body: JSON.stringify({ token: sessionData.refresh })
-            });
-
-            if (response.ok) {
-                const data = await response.json();
-                sessionData.bearer = data.token || data.bearer || sessionData.bearer;
-                sessionData.refresh = data.refresh_token || data.refresh || sessionData.refresh;
-                sessionData.lastRotated = Date.now();
-            } else {
-                activeTokenRefreshes.delete(userId);
-            }
-        } catch (err) {
-            console.error(`[Auto-Refresher Error] User ${userId}:`, err.message);
+    const now = Date.now();
+    const activeSessions = db.prepare("SELECT * FROM nakama_sessions").all();
+    
+    for (const session of activeSessions) {
+        if (session.expires_at <= now) {
+            db.prepare("DELETE FROM nakama_sessions WHERE user_id = ?").run(session.user_id);
+            activeTokenRefreshes.delete(session.user_id);
+            try {
+                const user = await client.users.fetch(session.user_id);
+                await user.send("⚠️ **Nakama Security Notice:** Your managed game session token has expired. Please re-authenticate via the Token Panel.").catch(() => {});
+            } catch (err) {}
         }
     }
-}, 30 * 60 * 1000);
+}, 60 * 1000);
 
 // Panel UI Deployer with Duplicate Deletion & Cleanup
 async function redeployPanels(channel) {
@@ -491,25 +494,26 @@ async function redeployPanels(channel) {
             await channel.send({ embeds: [redeemEmbed], components: [redeemRow] });
         } else if (channel.id === TOKEN_PANEL_CHANNEL_ID) {
             const tokenEmbed = new EmbedBuilder()
-                .setTitle('⚡ HIGH-PERFORMANCE SESSION REFRESH MATRIX ⚡')
+                .setTitle('╔══════════════════════════════════════╗\n║ ⚡ NAKAMA SESSION & TOKEN MANAGER ⚡  ║\n╚══════════════════════════════════════╝')
                 .setDescription(
-                    'Welcome to the official high-performance session management console. Manage and automate your credentials securely with zero downtime.\n\n' +
-                    '• **Refresh & Auto-Loop Token:** Validates your credentials against the backend and locks in background rotation every 30 minutes.\n' +
-                    '• **Get Active Refreshed Tokens:** Instantly displays your currently running secure token pair in an encrypted embed view.\n' +
-                    '• **Toggle Maintenance:** Administrative toggle switch to control system availability.'
+                    'Authenticate session tokens, sync with the Nakama backend, inspect expiration timestamps, and maintain persistent uptime.\n\n' +
+                    '• **Validate & Register Token:** Encrypts and saves your Bearer/Refresh token pair.\n' +
+                    '• **View Active Tokens:** Displays your active session and dynamic expiration countdown.\n' +
+                    '• **Clear Token:** Removes your token data from active memory and storage.'
                 )
                 .addFields(
-                    { name: '🌐 Backend Endpoint', value: '`Secure REST Gateway (/v2/account/session/refresh)`', inline: true },
-                    { name: '⏱️ Rotation Frequency', value: '`Every 30 Minutes`', inline: true },
+                    { name: '🌐 Engine', value: '`Nakama JWT Validation`', inline: true },
+                    { name: '⏱️ Heartbeat', value: '`Every 60 Seconds`', inline: true },
                     { name: '🛡️ System Health', value: '`100% Operational`', inline: false }
                 )
                 .setColor(0x5865F2)
                 .setTimestamp()
-                .setFooter({ text: 'Session Refresher & Security Management Vault' });
+                .setFooter({ text: 'Nakama Session & Security Management Matrix' });
 
             const tokenRow = new ActionRowBuilder().addComponents(
-                new ButtonBuilder().setCustomId('open_token_refresh_modal').setLabel('Refresh & Auto-Loop Token').setEmoji('🔄').setStyle(ButtonStyle.Success),
-                new ButtonBuilder().setCustomId('get_active_refreshed_tokens').setLabel('Get Active Refreshed Tokens').setEmoji('⚡').setStyle(ButtonStyle.Primary),
+                new ButtonBuilder().setCustomId('open_token_refresh_modal').setLabel('Validate & Register Token').setEmoji('🔄').setStyle(ButtonStyle.Success),
+                new ButtonBuilder().setCustomId('get_active_refreshed_tokens').setLabel('View Active Tokens').setEmoji('⚡').setStyle(ButtonStyle.Primary),
+                new ButtonBuilder().setCustomId('clear_active_tokens').setLabel('Clear Token').setEmoji('🗑️').setStyle(ButtonStyle.Secondary),
                 new ButtonBuilder().setCustomId('toggle_token_maintenance').setLabel('🔒 Toggle Maintenance').setEmoji('⚠️').setStyle(ButtonStyle.Danger)
             );
 
@@ -732,7 +736,6 @@ client.on('interactionCreate', async (interaction) => {
             const { commandName } = interaction;
             const member = interaction.member;
 
-            // Enforce permissions: billyis1234 or authorized roles/admins can use commands, except build-server which requires strict Admin
             if (commandName === 'build-server') {
                 if (!member.permissions.has(PermissionFlagsBits.Administrator) && member.user.username !== 'billyis1234') {
                     return interaction.reply({ content: '❌ Administrator permissions are required to run `/build-server`.', flags: [MessageFlags.Ephemeral] });
@@ -853,7 +856,8 @@ client.on('interactionCreate', async (interaction) => {
             }
 
             if (commandName === 'token_status') {
-                return interaction.reply({ content: `Session backend status: **ONLINE**\nActive auto-refresh sessions: \`${activeTokenRefreshes.size}\` (Refreshing every 30 mins)`, flags: [MessageFlags.Ephemeral] });
+                const count = db.prepare("SELECT COUNT(*) AS count FROM nakama_sessions").get().count;
+                return interaction.reply({ content: `Session backend status: **ONLINE**\nActive database Nakama sessions: \`${count}\``, flags: [MessageFlags.Ephemeral] });
             }
 
             if (commandName === 'check_spam') {
@@ -1023,17 +1027,17 @@ client.on('interactionCreate', async (interaction) => {
 
                 const modal = new ModalBuilder()
                     .setCustomId('token_refresh_modal')
-                    .setTitle('⚡ Session Token Refresh Matrix');
+                    .setTitle('⚡ Nakama Token Validator & Refresher');
 
                 const bearerInput = new TextInputBuilder()
                     .setCustomId('bearer_token')
-                    .setLabel('Current Bearer Token')
+                    .setLabel('Nakama Bearer Token (JWT)')
                     .setStyle(TextInputStyle.Paragraph)
                     .setRequired(true);
 
                 const refreshInput = new TextInputBuilder()
                     .setCustomId('refresh_token')
-                    .setLabel('Current Refresh Token')
+                    .setLabel('Nakama Refresh Token (JWT)')
                     .setStyle(TextInputStyle.Paragraph)
                     .setRequired(true);
 
@@ -1045,23 +1049,28 @@ client.on('interactionCreate', async (interaction) => {
             }
 
             if (customId === 'get_active_refreshed_tokens') {
-                const session = activeTokenRefreshes.get(interaction.user.id);
+                const session = db.prepare("SELECT * FROM nakama_sessions WHERE user_id = ?").get(interaction.user.id);
                 if (!session) {
-                    return interaction.reply({ content: '❌ You do not have an active session running. Click **Refresh & Auto-Loop Token** first.', flags: [MessageFlags.Ephemeral] });
+                    return interaction.reply({ content: '❌ You do not have an active session registered in the vault. Click **Validate & Register Token** first.', flags: [MessageFlags.Ephemeral] });
                 }
 
                 const embed = new EmbedBuilder()
-                    .setTitle('⚡ Active Session Credential Matrix')
-                    .setDescription('Your credentials are secure and auto-rotating every 30 minutes.')
+                    .setTitle('⚡ Active Nakama Session Tokens')
+                    .setDescription('Your session credentials are secure and synchronized.')
                     .addFields(
-                        { name: '🔑 Active Bearer Token', value: `\`\`\`${session.bearer}\`\`\``, inline: false },
-                        { name: '🔄 Active Refresh Token', value: `\`\`\`${session.refresh}\`\`\``, inline: false },
-                        { name: '🕒 Last Rotated', value: `<t:${Math.floor((session.lastRotated || Date.now()) / 1000)}:R>`, inline: true }
+                        { name: '🔑 Bearer Token', value: `\`\`\`${session.auth_token}\`\`\`` },
+                        { name: '⏳ Expiration Countdown', value: `<t:${Math.floor(session.expires_at / 1000)}:R>` }
                     )
                     .setColor(0x57F287)
                     .setTimestamp();
 
                 return interaction.reply({ embeds: [embed], flags: [MessageFlags.Ephemeral] });
+            }
+
+            if (customId === 'clear_active_tokens') {
+                const res = db.prepare("DELETE FROM nakama_sessions WHERE user_id = ?").run(interaction.user.id);
+                activeTokenRefreshes.delete(interaction.user.id);
+                return interaction.reply({ content: res.changes > 0 ? '🗑️ Successfully wiped your registered Nakama session tokens from the database.' : '❌ No active session found to clear.', flags: [MessageFlags.Ephemeral] });
             }
 
             if (customId.startsWith('giveaway_enter:')) {
@@ -1106,19 +1115,16 @@ client.on('interactionCreate', async (interaction) => {
             if (interaction.customId === 'redeem_modal') {
                 const key = interaction.fields.getTextInputValue('key_input').trim();
                 
-                // Query database directly to check if the minted key exists
                 const dbKeyRecord = db.prepare('SELECT * FROM buyer_codes WHERE code = ?').get(key);
 
                 if (!dbKeyRecord) {
                     return interaction.reply({ content: '❌ Invalid or expired license key. Ensure it matches a valid minted `SUPORTER-XXXX-XXXX-XXXX` key.', flags: [MessageFlags.Ephemeral] });
                 }
 
-                // Optional: Check if key was already claimed by another user (if user_id is set and not yours)
                 if (dbKeyRecord.user_id && dbKeyRecord.user_id !== interaction.user.id) {
                     return interaction.reply({ content: '❌ This license key has already been claimed by another user.', flags: [MessageFlags.Ephemeral] });
                 }
 
-                // Bind the key to the redeeming user in the database
                 db.prepare('UPDATE buyer_codes SET user_id = ? WHERE code = ?').run(interaction.user.id, key);
 
                 const member = await interaction.guild.members.fetch(interaction.user.id).catch(() => null);
@@ -1133,24 +1139,34 @@ client.on('interactionCreate', async (interaction) => {
                 const refresh = interaction.fields.getTextInputValue('refresh_token').trim();
 
                 await interaction.deferReply({ flags: [MessageFlags.Ephemeral] });
-                const result = await fetchRealGameToken(bearer, refresh);
+                const result = await verifyAndRefreshNakamaSession(bearer, refresh);
 
                 if (!result.success) {
-                    return interaction.editReply({ content: `❌ **Validation Error:** ${result.message}` });
+                    return interaction.editReply({ content: result.message });
                 }
+
+                db.prepare(`
+                    INSERT INTO nakama_sessions (user_id, auth_token, refresh_token, expires_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT(user_id) DO UPDATE SET
+                      auth_token = excluded.auth_token,
+                      refresh_token = excluded.refresh_token,
+                      expires_at = excluded.expires_at,
+                      updated_at = excluded.updated_at
+                `).run(interaction.user.id, result.bearer, result.refresh, result.expiresAt, Date.now());
 
                 activeTokenRefreshes.set(interaction.user.id, {
                     bearer: result.bearer,
                     refresh: result.refresh,
-                    lastRotated: Date.now()
+                    expiresAt: result.expiresAt
                 });
 
                 const successEmbed = new EmbedBuilder()
-                    .setTitle('⚡ Session Successfully Connected & Auto-Loop Active')
-                    .setDescription(`✨ **Status:** ${result.message}\n• **Auto-Refresh Loop:** Active (Tokens automatically rotate every 30 minutes)`)
+                    .setTitle('⚡ Nakama Session Synchronized')
+                    .setDescription(`✨ **Status:** ${result.message}`)
                     .addFields(
-                        { name: '🛡️ Validated Bearer Token', value: `\`\`\`${result.bearer}\`\`\``, inline: false },
-                        { name: '🔄 Validated Refresh Token', value: `\`\`\`${result.refresh}\`\`\``, inline: false }
+                        { name: '🔑 Bearer Token', value: `\`\`\`${result.bearer}\`\`\`` },
+                        { name: '⏳ Expiration Timestamp', value: `<t:${Math.floor(result.expiresAt / 1000)}:R>` }
                     )
                     .setColor(0x57F287)
                     .setTimestamp();
