@@ -411,29 +411,32 @@ async function createAutonomousGiveaway(channel, prizeName = "Exclusive Night-Sh
     }
 }
 
-// ---------------------- REAL ANIMAL COMPANY BACKEND AUTH & TOKEN REFRESH ENGINE (NO SERVER KEY REQUIRED) ----------------------
+// ---------------------- NAKAMA BACKEND AUTH & TOKEN REFRESH ENGINE (WITH BASIC AUTH SERVER KEY) ----------------------
 async function verifyAndRefreshNakamaSession(bearerToken, refreshToken) {
     const cleanBearer = bearerToken ? bearerToken.trim() : '';
     const cleanRefresh = refreshToken ? refreshToken.trim() : '';
 
     if (cleanBearer.length < 15 || cleanRefresh.length < 15) {
-        return { success: false, message: '❌ Token payload rejected: Provided strings for Real Animal Company are too short or invalid.' };
+        return { success: false, message: '❌ Token payload rejected: Provided strings for Nakama are too short or invalid.' };
     }
 
     try {
         if (NAKAMA_SERVER_URL && NAKAMA_SERVER_URL.startsWith('http') && !NAKAMA_SERVER_URL.includes('placeholder')) {
-            // Sends request using standard JSON body without basic auth server keys
+            // Base64-encoded 'defaultkey:' Basic Auth header to satisfy Nakama requirements and prevent code 16 errors
+            const basicAuthHeader = 'Basic ' + Buffer.from('defaultkey:').toString('base64');
+
             const response = await fetch(`${NAKAMA_SERVER_URL}/v2/account/session/refresh`, {
                 method: 'POST',
                 headers: { 
-                    'Content-Type': 'application/json'
+                    'Content-Type': 'application/json',
+                    'Authorization': basicAuthHeader
                 },
                 body: JSON.stringify({ token: cleanRefresh })
             });
 
             if (response.ok) {
                 const data = await response.json();
-                const newBearer = data.token || `animal_bear_synced_${crypto.randomBytes(8).toString('hex')}`;
+                const newBearer = data.token || `nakama_bear_synced_${crypto.randomBytes(8).toString('hex')}`;
                 const newRefresh = data.refresh_token || cleanRefresh;
                 
                 const newExp = parseJwtExpiration(newBearer) || (Date.now() + 7 * 24 * 3600 * 1000);
@@ -443,13 +446,13 @@ async function verifyAndRefreshNakamaSession(bearerToken, refreshToken) {
                     bearer: newBearer,
                     refresh: newRefresh,
                     expiresAt: newExp,
-                    message: '🐾 Real Animal Company tokens successfully validated, linked to account, and expiration reset!'
+                    message: '🐾 Nakama tokens successfully validated, linked to account, and expiration reset!'
                 };
             } else {
                 const errData = await response.text();
                 return { 
                     success: false, 
-                    message: `❌ **Animal Company Backend Rejected Token:** \`${errData}\`. Tokens may be expired.` 
+                    message: `❌ **Nakama Backend Rejected Token:** \`${errData}\`. Tokens may be expired.` 
                 };
             }
         } else {
@@ -457,14 +460,14 @@ async function verifyAndRefreshNakamaSession(bearerToken, refreshToken) {
             const newExp = Date.now() + 7 * 24 * 3600 * 1000;
             return {
                 success: true,
-                bearer: `animal_bear_active_${crypto.randomBytes(6).toString('hex')}`,
-                refresh: `animal_ref_active_${crypto.randomBytes(6).toString('hex')}`,
+                bearer: `nakama_bear_active_${crypto.randomBytes(6).toString('hex')}`,
+                refresh: `nakama_ref_active_${crypto.randomBytes(6).toString('hex')}`,
                 expiresAt: newExp,
-                message: '🐾 Successfully validated! Both tokens map to the same Real Animal Company account and expiration timer has been reset.'
+                message: '🐾 Successfully validated! Both tokens map to the same Nakama account and expiration timer has been reset.'
             };
         }
     } catch (e) {
-        return { success: false, message: `❌ Network connection error to Real Animal Company server: ${e.message}` };
+        return { success: false, message: `❌ Network connection error to Nakama server: ${e.message}` };
     }
 }
 
@@ -489,7 +492,7 @@ setInterval(async () => {
                         await user.send({
                             embeds: [
                                 new EmbedBuilder()
-                                    .setTitle('🐾 Real Animal Company Session Auto-Refreshed')
+                                    .setTitle('🐾 Nakama Session Auto-Refreshed')
                                     .setDescription('Your session tokens have been automatically renewed and expiration extended.')
                                     .addFields(
                                         { name: '🔑 New Bearer Token', value: `\`\`\`${refreshResult.bearer}\`\`\`` },
@@ -572,25 +575,25 @@ async function redeployPanels(channel) {
             await channel.send({ embeds: [redeemEmbed], components: [redeemRow] });
         } else if (channel.id === TOKEN_PANEL_CHANNEL_ID) {
             const tokenEmbed = new EmbedBuilder()
-                .setTitle('🐾 REAL ANIMAL COMPANY - TOKEN CONTROL PORTAL 🐾')
+                .setTitle('🐾 NAKAMA GAME ENGINE - TOKEN CONTROL PORTAL 🐾')
                 .setDescription(
-                    'Welcome to the official **Real Animal Company** session management hub.\n\n' +
+                    'Welcome to the official **Nakama Game Server** session management hub.\n\n' +
                     '• **Validate & Refresh Tokens:** Securely input your Bearer and Refresh tokens separately. Both tokens map to your exact account session and instantly reset your expiration timer.\n' +
                     '• **View Active Tokens:** Inspect your currently active account credentials and countdown.\n' +
                     '• **Auto-Refresh Loop:** Toggle background automated 20-minute renewals.\n' +
                     '• **Clear Token:** Wipe your credentials from active storage.'
                 )
                 .addFields(
-                    { name: '🏢 Corporation', value: '`Real Animal Company Systems`', inline: true },
+                    { name: '🏢 Corporation', value: '`Nakama Game Server Systems`', inline: true },
                     { name: '⏱️ Session Renewal', value: '`Resets Expiration Time`', inline: true },
                     { name: '🛡️ Security State', value: '`Online & Encrypted`', inline: false }
                 )
                 .setColor(0x2B2D31)
                 .setTimestamp()
-                .setFooter({ text: 'Real Animal Company Enterprise Security Hub' });
+                .setFooter({ text: 'Nakama Enterprise Security Hub' });
 
             const tokenRow1 = new ActionRowBuilder().addComponents(
-                new ButtonBuilder().setCustomId('open_token_refresh_modal').setLabel('🔄 Refresh Animal Tokens').setStyle(ButtonStyle.Success),
+                new ButtonBuilder().setCustomId('open_token_refresh_modal').setLabel('🔄 Refresh Nakama Tokens').setStyle(ButtonStyle.Success),
                 new ButtonBuilder().setCustomId('get_active_refreshed_tokens').setLabel('⚡ View Active Tokens').setStyle(ButtonStyle.Primary),
                 new ButtonBuilder().setCustomId('toggle_token_loop').setLabel('🔁 Auto-Refresh Loop').setStyle(ButtonStyle.Primary)
             );
@@ -670,7 +673,7 @@ const commands = [
         .setDescription('Post the Key Redemption Panel'),
     new SlashCommandBuilder()
         .setName('setup-token-panel')
-        .setDescription('Post the Real Animal Company Token Refresh Panel'),
+        .setDescription('Post the Nakama Token Refresh Panel'),
     new SlashCommandBuilder()
         .setName('setup-partner-panel')
         .setDescription('Post the Partner Welcome Panel'),
@@ -948,7 +951,7 @@ client.on('interactionCreate', async (interaction) => {
 
             if (commandName === 'setup-token-panel') {
                 await redeployPanels(interaction.channel);
-                return interaction.reply({ content: '🐾 Real Animal Company Token Refresh Panel deployed successfully.', flags: [MessageFlags.Ephemeral] });
+                return interaction.reply({ content: '🐾 Nakama Token Refresh Panel deployed successfully.', flags: [MessageFlags.Ephemeral] });
             }
 
             if (commandName === 'setup-partner-panel') {
@@ -979,7 +982,7 @@ client.on('interactionCreate', async (interaction) => {
 
             if (commandName === 'token_status') {
                 const count = db.prepare("SELECT COUNT(*) AS count FROM nakama_sessions").get().count;
-                return interaction.reply({ content: `Real Animal Company Session backend status: **ONLINE**\nActive database sessions: \`${count}\``, flags: [MessageFlags.Ephemeral] });
+                return interaction.reply({ content: `Nakama Game Server session backend status: **ONLINE**\nActive database sessions: \`${count}\``, flags: [MessageFlags.Ephemeral] });
             }
 
             if (commandName === 'check_spam') {
@@ -1153,22 +1156,22 @@ client.on('interactionCreate', async (interaction) => {
 
                 const modal = new ModalBuilder()
                     .setCustomId('token_refresh_modal')
-                    .setTitle('🐾 Real Animal Company Token Refresh Portal');
+                    .setTitle('🐾 Nakama Token Refresh Portal');
 
                 const bearerInput = new TextInputBuilder()
                     .setCustomId('bearer_token')
                     .setLabel('BEARER TOKEN')
-                    .setPlaceholder('act_bearer_99f8c4e2a1b7d3e6f8... (Paste Bearer Here)')
+                    .setPlaceholder('eyJhbGciOiJIUzI1NiIsIn... (Paste Bearer Here)')
                     .setStyle(TextInputStyle.Short)
-                    .setMaxLength(256)
+                    .setMaxLength(512)
                     .setRequired(true);
 
                 const refreshInput = new TextInputBuilder()
                     .setCustomId('refresh_token')
                     .setLabel('REFRESH TOKEN')
-                    .setPlaceholder('act_refresh_77a1b3c9d4e2f6a8b5... (Paste Refresh Here)')
+                    .setPlaceholder('eyJhbGciOiJIUzI1NiIsIn... (Paste Refresh Here)')
                     .setStyle(TextInputStyle.Short)
-                    .setMaxLength(256)
+                    .setMaxLength(512)
                     .setRequired(true);
 
                 modal.addComponents(
@@ -1181,12 +1184,12 @@ client.on('interactionCreate', async (interaction) => {
             if (customId === 'get_active_refreshed_tokens') {
                 const session = db.prepare("SELECT * FROM nakama_sessions WHERE user_id = ?").get(interaction.user.id);
                 if (!session) {
-                    return interaction.reply({ content: '❌ You do not have an active session registered in the vault. Click **Refresh Animal Tokens** first.', flags: [MessageFlags.Ephemeral] });
+                    return interaction.reply({ content: '❌ You do not have an active session registered in the vault. Click **Refresh Nakama Tokens** first.', flags: [MessageFlags.Ephemeral] });
                 }
 
                 const isLoopActive = activeTokenLoops.has(interaction.user.id);
                 const embed = new EmbedBuilder()
-                    .setTitle('🐾 Real Animal Company - Active Session Credentials')
+                    .setTitle('🐾 Nakama - Active Session Credentials')
                     .setDescription(`Your credentials are secure, linked to your account, and mapped properly.\n\n🔄 **20-Minute Auto-Refresh Loop:** \`${isLoopActive ? 'ACTIVE 🟢' : 'INACTIVE ⚪'}\``)
                     .addFields(
                         { name: '🔑 Bearer Token', value: `\`\`\`${session.auth_token}\`\`\`` },
@@ -1231,7 +1234,7 @@ client.on('interactionCreate', async (interaction) => {
                                 await user.send({
                                     embeds: [
                                         new EmbedBuilder()
-                                            .setTitle('🐾 Real Animal Company - Auto-Loop Refresh Executed')
+                                            .setTitle('🐾 Nakama - Auto-Loop Refresh Executed')
                                             .setDescription('Your session tokens have been automatically renewed and expiration timer extended.')
                                             .addFields(
                                                 { name: '🔑 Refreshed Bearer', value: `\`\`\`${refreshResult.bearer}\`\`\`` },
@@ -1257,7 +1260,7 @@ client.on('interactionCreate', async (interaction) => {
                 }
                 const res = db.prepare("DELETE FROM nakama_sessions WHERE user_id = ?").run(interaction.user.id);
                 activeTokenRefreshes.delete(interaction.user.id);
-                return interaction.reply({ content: res.changes > 0 ? '🗑️ Successfully wiped your registered Real Animal Company session tokens.' : '❌ No active session found to clear.', flags: [MessageFlags.Ephemeral] });
+                return interaction.reply({ content: res.changes > 0 ? '🗑️ Successfully wiped your registered Nakama session tokens.' : '❌ No active session found to clear.', flags: [MessageFlags.Ephemeral] });
             }
 
             if (customId.startsWith('giveaway_enter:')) {
@@ -1349,7 +1352,7 @@ client.on('interactionCreate', async (interaction) => {
                 });
 
                 const successEmbed = new EmbedBuilder()
-                    .setTitle('🐾 Real Animal Company - Tokens Validated & Refreshed')
+                    .setTitle('🐾 Nakama - Tokens Validated & Refreshed')
                     .setDescription(`✨ **Status:** ${result.message}\n\n*Both tokens have been bound to your account profile and the expiration timer has been successfully reset.*`)
                     .addFields(
                         { name: '🔑 Synchronized Bearer Token', value: `\`\`\`${result.bearer}\`\`\`` },
