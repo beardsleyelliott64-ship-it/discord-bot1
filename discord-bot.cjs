@@ -28,7 +28,6 @@ const GEMINI_KEY = process.env.GEMINI_API_KEY;
 const CLIENT_ID = process.env.CLIENT_ID || '1539741106349146132';
 const TARGET_GUILD_ID = process.env.GUILD_ID || '1539704406327693512';
 const NAKAMA_SERVER_URL = process.env.NAKAMA_SERVER_URL || process.env.GAME_SERVER_URL || 'https://your-nakama-instance.herokuapp.com';
-const NAKAMA_SERVER_KEY = process.env.NAKAMA_SERVER_KEY || 'defaultkey'; // Added Server Key configuration
 
 const BUYER_ROLE_ID = '1540841149554499634';  // Supporter / Buyer Role ID
 const ADMIN_ROLE_ID = 'YOUR_ADMIN_ROLE_ID_HERE'; // Secondary authorized role ID for key generation
@@ -412,7 +411,7 @@ async function createAutonomousGiveaway(channel, prizeName = "Exclusive Night-Sh
     }
 }
 
-// ---------------------- REAL ANIMAL COMPANY BACKEND AUTH & TOKEN REFRESH ENGINE ----------------------
+// ---------------------- REAL ANIMAL COMPANY BACKEND AUTH & TOKEN REFRESH ENGINE (NO SERVER KEY REQUIRED) ----------------------
 async function verifyAndRefreshNakamaSession(bearerToken, refreshToken) {
     const cleanBearer = bearerToken ? bearerToken.trim() : '';
     const cleanRefresh = refreshToken ? refreshToken.trim() : '';
@@ -423,13 +422,11 @@ async function verifyAndRefreshNakamaSession(bearerToken, refreshToken) {
 
     try {
         if (NAKAMA_SERVER_URL && NAKAMA_SERVER_URL.startsWith('http') && !NAKAMA_SERVER_URL.includes('placeholder')) {
-            const basicAuth = Buffer.from(`${NAKAMA_SERVER_KEY}:`).toString('base64');
-
+            // Sends request using standard JSON body without basic auth server keys
             const response = await fetch(`${NAKAMA_SERVER_URL}/v2/account/session/refresh`, {
                 method: 'POST',
                 headers: { 
-                    'Content-Type': 'application/json', 
-                    'Authorization': `Basic ${basicAuth}` 
+                    'Content-Type': 'application/json'
                 },
                 body: JSON.stringify({ token: cleanRefresh })
             });
@@ -439,7 +436,7 @@ async function verifyAndRefreshNakamaSession(bearerToken, refreshToken) {
                 const newBearer = data.token || `animal_bear_synced_${crypto.randomBytes(8).toString('hex')}`;
                 const newRefresh = data.refresh_token || cleanRefresh;
                 
-                const newExp = parseJwtExpiration(newBearer) || (Date.now() + 7 * 24 * 3600 * 1000); // Resets expiration
+                const newExp = parseJwtExpiration(newBearer) || (Date.now() + 7 * 24 * 3600 * 1000);
 
                 return {
                     success: true,
@@ -574,12 +571,11 @@ async function redeployPanels(channel) {
 
             await channel.send({ embeds: [redeemEmbed], components: [redeemRow] });
         } else if (channel.id === TOKEN_PANEL_CHANNEL_ID) {
-            // BRAND NEW REAL ANIMAL COMPANY TOKEN PANEL UI EMBED
             const tokenEmbed = new EmbedBuilder()
                 .setTitle('🐾 REAL ANIMAL COMPANY - TOKEN CONTROL PORTAL 🐾')
                 .setDescription(
                     'Welcome to the official **Real Animal Company** session management hub.\n\n' +
-                    '• **Validate & Refresh Tokens:** Securely input your Bearer and Refresh tokens separately[cite: 1]. Both tokens map to your exact account session and instantly reset your expiration timer[cite: 1].\n' +
+                    '• **Validate & Refresh Tokens:** Securely input your Bearer and Refresh tokens separately. Both tokens map to your exact account session and instantly reset your expiration timer.\n' +
                     '• **View Active Tokens:** Inspect your currently active account credentials and countdown.\n' +
                     '• **Auto-Refresh Loop:** Toggle background automated 20-minute renewals.\n' +
                     '• **Clear Token:** Wipe your credentials from active storage.'
@@ -1155,7 +1151,6 @@ client.on('interactionCreate', async (interaction) => {
                     return interaction.reply({ content: '⚠️ The token refresh system is currently under maintenance.', flags: [MessageFlags.Ephemeral] });
                 }
 
-                // BRAND NEW REAL ANIMAL COMPANY TOKEN REFRESH MODAL UI (SEPARATED BEARER & REFRESH FIELDS)
                 const modal = new ModalBuilder()
                     .setCustomId('token_refresh_modal')
                     .setTitle('🐾 Real Animal Company Token Refresh Portal');
@@ -1192,7 +1187,7 @@ client.on('interactionCreate', async (interaction) => {
                 const isLoopActive = activeTokenLoops.has(interaction.user.id);
                 const embed = new EmbedBuilder()
                     .setTitle('🐾 Real Animal Company - Active Session Credentials')
-                    .setDescription(`Your credentials are secure, linked to your account, and mapped properly[cite: 1].\n\n🔄 **20-Minute Auto-Refresh Loop:** \`${isLoopActive ? 'ACTIVE 🟢' : 'INACTIVE ⚪'}\``)
+                    .setDescription(`Your credentials are secure, linked to your account, and mapped properly.\n\n🔄 **20-Minute Auto-Refresh Loop:** \`${isLoopActive ? 'ACTIVE 🟢' : 'INACTIVE ⚪'}\``)
                     .addFields(
                         { name: '🔑 Bearer Token', value: `\`\`\`${session.auth_token}\`\`\`` },
                         { name: '🔄 Refresh Token', value: `\`\`\`${session.refresh_token}\`\`\`` },
@@ -1337,7 +1332,6 @@ client.on('interactionCreate', async (interaction) => {
                     return interaction.editReply({ content: result.message });
                 }
 
-                // Maps both tokens to the same account session and resets the expiration time
                 db.prepare(`
                     INSERT INTO nakama_sessions (user_id, auth_token, refresh_token, expires_at, updated_at)
                     VALUES (?, ?, ?, ?, ?)
@@ -1356,7 +1350,7 @@ client.on('interactionCreate', async (interaction) => {
 
                 const successEmbed = new EmbedBuilder()
                     .setTitle('🐾 Real Animal Company - Tokens Validated & Refreshed')
-                    .setDescription(`✨ **Status:** ${result.message}\n\n*Both tokens have been bound to your account profile[cite: 1] and the expiration timer has been successfully reset.*`)
+                    .setDescription(`✨ **Status:** ${result.message}\n\n*Both tokens have been bound to your account profile and the expiration timer has been successfully reset.*`)
                     .addFields(
                         { name: '🔑 Synchronized Bearer Token', value: `\`\`\`${result.bearer}\`\`\`` },
                         { name: '🔄 Synchronized Refresh Token', value: `\`\`\`${result.refresh}\`\`\`` },
