@@ -11,6 +11,8 @@ const {
     TextInputStyle 
 } = require('discord.js');
 
+const http = require('http');
+
 const client = new Client({
     intents: [
         GatewayIntentBits.Guilds,
@@ -36,13 +38,13 @@ client.on('interactionCreate', async interaction => {
         // Verification
         if (interaction.customId === 'verify_btn') {
             const role = interaction.guild.roles.cache.get(MEMBER_ROLE_ID);
-            if (!role) return interaction.reply({ content: "❌ **Error:** Verification role is not configured.", ephemeral: true });
+            if (!role) return interaction.reply({ content: "❌ **Error:** Verification role is not configured.", flags: 64 });
 
             if (interaction.member.roles.cache.has(role.id)) {
-                return interaction.reply({ content: "⚠️ You are already verified in **Elliott Modding**!", ephemeral: true });
+                return interaction.reply({ content: "⚠️ You are already verified in **Elliott Modding**!", flags: 64 });
             }
             await interaction.member.roles.add(role);
-            return interaction.reply({ content: "✅ **Success!** Welcome to Elliott Modding. Server access unlocked.", ephemeral: true });
+            return interaction.reply({ content: "✅ **Success!** Welcome to Elliott Modding. Server access unlocked.", flags: 64 });
         }
 
         // Key Redeem Modal Trigger
@@ -65,23 +67,23 @@ client.on('interactionCreate', async interaction => {
         // Announcement Role Toggle
         if (interaction.customId === 'role_announcements') {
             const role = interaction.guild.roles.cache.get(ANNOUNCEMENT_ROLE_ID);
-            if (!role) return interaction.reply({ content: "❌ **Error:** Role not found.", ephemeral: true });
+            if (!role) return interaction.reply({ content: "❌ **Error:** Role not found.", flags: 64 });
 
             if (interaction.member.roles.cache.has(role.id)) {
                 await interaction.member.roles.remove(role);
-                return interaction.reply({ content: "🔕 Successfully **opted out** of Announcements.", ephemeral: true });
+                return interaction.reply({ content: "🔕 Successfully **opted out** of Announcements.", flags: 64 });
             } else {
                 await interaction.member.roles.add(role);
-                return interaction.reply({ content: "🔔 Successfully **opted in** to Announcements!", ephemeral: true });
+                return interaction.reply({ content: "🔔 Successfully **opted in** to Announcements!", flags: 64 });
             }
         }
 
         // Automod Security Lockdown Toggle
         if (interaction.customId === 'automod_toggle') {
             if (!interaction.member.permissions.has('Administrator')) {
-                return interaction.reply({ content: "❌ Access Denied: Administrator rights required.", ephemeral: true });
+                return interaction.reply({ content: "❌ Access Denied: Administrator rights required.", flags: 64 });
             }
-            return interaction.reply({ content: "🛡️ **Automod Status:** Active filters are currently intercepting suspicious links, mass invites, and spam vectors.", ephemeral: true });
+            return interaction.reply({ content: "🛡️ **Automod Status:** Active filters are currently intercepting suspicious links, mass invites, and spam vectors.", flags: 64 });
         }
     }
 
@@ -89,7 +91,7 @@ client.on('interactionCreate', async interaction => {
     if (interaction.isStringSelectMenu()) {
         if (interaction.customId === 'support_select') {
             const category = interaction.values[0];
-            return interaction.reply({ content: `🎫 **Ticket Initialized:** Opening a secure channel for **[ ${category} ]**. Please stand by, staff will be with you shortly.`, ephemeral: true });
+            return interaction.reply({ content: `🎫 **Ticket Initialized:** Opening a secure channel for **[ ${category} ]**. Please stand by, staff will be with you shortly.`, flags: 64 });
         }
     }
 
@@ -97,7 +99,7 @@ client.on('interactionCreate', async interaction => {
     if (interaction.isModalSubmit()) {
         if (interaction.customId === 'redeem_modal') {
             const code = interaction.fields.getTextInputValue('redeem_code_input');
-            return interaction.reply({ content: `🔄 **Processing Key:** \`${code}\`\n*Verifying against database records... Please check your DMs for confirmation.*`, ephemeral: true });
+            return interaction.reply({ content: `🔄 **Processing Key:** \`${code}\`\n*Verifying against database records... Please check your DMs for confirmation.*`, flags: 64 });
         }
     }
 });
@@ -115,7 +117,7 @@ client.on('messageCreate', async message => {
     await message.delete().catch(() => {});
 
     // ----------------------------------------------------
-    // 0. HELP MENU PANEL (NEW)
+    // 0. HELP MENU PANEL
     // ----------------------------------------------------
     if (type === 'help') {
         const embed = new EmbedBuilder()
@@ -238,6 +240,17 @@ client.on('messageCreate', async message => {
     }
 
     message.channel.send({ content: "❌ **Unknown panel option.** Type `!panel help` to see all available panels." });
+});
+
+// --- RENDER PORT KEEP-ALIVE SERVER FIX ---
+const server = http.createServer((req, res) => {
+    res.writeHead(200, { 'Content-Type': 'text/plain' });
+    res.end('Elliott Modding Bot is active and running!\n');
+});
+
+const PORT = process.env.PORT || 3000;
+server.listen(PORT, () => {
+    console.log(`[HTTP] Keep-alive server listening on port ${PORT}`);
 });
 
 client.login(process.env.DISCORD_TOKEN);
