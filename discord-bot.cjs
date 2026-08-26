@@ -47,7 +47,7 @@ const REQUIRED_ROLES = {
 // Temporary in-memory storage for generated codes, stock, and cooldowns
 const validCodes = new Set();
 const userWarnings = new Map(); // Simple mock warning system storage
-const tokenStock = []; // Array to hold loaded token strings
+const tokenStock = []; // Array to hold loaded token objects { bearer, refresh }
 const cooldowns = new Map(); // Tracks user cooldown timestamps per token type
 
 // --- REGISTER SLASH COMMAND DEFINITIONS ---
@@ -219,7 +219,7 @@ client.on('interactionCreate', async interaction => {
             return interaction.reply({ content: `You chose **${userChoice}**, Queen Bee chose **${botChoice}**. ${outcome}` });
         }
 
-        // --- UPDATED /BUILD COMMAND WITH ORGANIZED CATEGORIES ---
+        // --- /BUILD COMMAND WITH ORGANIZED CATEGORIES ---
         if (commandName === 'build') {
             const theme = options.getString('theme');
             await interaction.deferReply({ flags: 64 });
@@ -228,13 +228,11 @@ client.on('interactionCreate', async interaction => {
                 const guild = interaction.guild;
                 const formattedTheme = theme.toUpperCase();
 
-                // 1. WELCOME & VERIFICATION CATEGORY (Keeps verification, redeem, support at the top)
                 const welcomeCategory = await guild.channels.create({
                     name: `📌・${formattedTheme} - WELCOME`,
                     type: ChannelType.GuildCategory,
                 });
 
-                // #verification channel + panel
                 const verifyChannel = await guild.channels.create({
                     name: 'verification',
                     type: ChannelType.GuildText,
@@ -249,7 +247,6 @@ client.on('interactionCreate', async interaction => {
                 );
                 await verifyChannel.send({ embeds: [verifyEmbed], components: [verifyRow] });
 
-                // #redeem channel + panel
                 const redeemChannel = await guild.channels.create({
                     name: 'redeem',
                     type: ChannelType.GuildText,
@@ -264,7 +261,6 @@ client.on('interactionCreate', async interaction => {
                 );
                 await redeemChannel.send({ embeds: [redeemEmbed], components: [redeemRow] });
 
-                // #support channel + panel
                 const supportChannel = await guild.channels.create({
                     name: 'support',
                     type: ChannelType.GuildText,
@@ -285,8 +281,6 @@ client.on('interactionCreate', async interaction => {
                 );
                 await supportChannel.send({ embeds: [supportEmbed], components: [supportRow] });
 
-
-                // 2. STANDARD COMMUNITY CATEGORY
                 const communityCategory = await guild.channels.create({
                     name: `💬・${formattedTheme} - COMMUNITY`,
                     type: ChannelType.GuildCategory,
@@ -297,8 +291,6 @@ client.on('interactionCreate', async interaction => {
                 await guild.channels.create({ name: 'general', type: ChannelType.GuildText, parent: communityCategory.id });
                 await guild.channels.create({ name: 'media-share', type: ChannelType.GuildText, parent: communityCategory.id });
 
-
-                // 3. GAMING & LOUNGE CATEGORY
                 const gamingCategory = await guild.channels.create({
                     name: `🎮・${formattedTheme} - GAMING`,
                     type: ChannelType.GuildCategory,
@@ -308,8 +300,6 @@ client.on('interactionCreate', async interaction => {
                 await guild.channels.create({ name: 'General Lounge', type: ChannelType.GuildVoice, parent: gamingCategory.id });
                 await guild.channels.create({ name: 'Squad Voice', type: ChannelType.GuildVoice, parent: gamingCategory.id });
 
-
-                // 4. BOT COMMANDS CATEGORY
                 const botCategory = await guild.channels.create({
                     name: `🤖・${formattedTheme} - BOT ROOMS`,
                     type: ChannelType.GuildCategory,
@@ -346,49 +336,68 @@ client.on('interactionCreate', async interaction => {
             if (tokenStock.length === 0) {
                 return interaction.reply({ content: '❌ **Out of Stock:** There are currently no tokens available in the database. Ask an admin to add stock.', flags: 64 });
             }
-            const token = tokenStock.shift();
+            const tokenObj = tokenStock.shift();
             try {
-                await interaction.user.send(`🔑 **Your Generated EIC Token:**\n\`\`\`${token}\`\`\``);
+                const tokenEmbed = new EmbedBuilder()
+                    .setTitle('TOKENS BY ELLIOTT')
+                    .setDescription('🛠️ **Your Generated EIC Token:**\n\n' +
+                        '**Bearer Token:**\n```ini\n' + tokenObj.bearer + '\n```\n' +
+                        '**Refresh Token:**\n```ini\n' + tokenObj.refresh + '\n```')
+                    .setColor(0x5865F2)
+                    .setFooter({ text: 'Made by elliott.gg' });
+
+                await interaction.user.send({ embeds: [tokenEmbed] });
                 return interaction.reply({ content: '✅ **Token sent to your DMs!** (Ephemeral — only you can see this)', flags: 64 });
             } catch (err) {
                 return interaction.reply({ content: '❌ **DM Failed:** I could not send you a direct message. Please open your DMs to receive tokens.', flags: 64 });
             }
         }
 
+        // --- UPDATED /STOCK COMMAND MODAL TRIGGER ---
         if (commandName === 'stock') {
             const modal = new ModalBuilder()
                 .setCustomId('stock_modal')
                 .setTitle('📦 Add Token Stock');
 
-            const tokenInput = new TextInputBuilder()
-                .setCustomId('stock_input')
-                .setLabel("ENTER TOKENS (One per line or comma separated)")
-                .setStyle(TextInputStyle.Paragraph)
-                .setPlaceholder("token_abc123\ntoken_xyz789")
+            const bearerInput = new TextInputBuilder()
+                .setCustomId('stock_bearer_input')
+                .setLabel("ENTER BEARER TOKEN")
+                .setStyle(TextInputStyle.Short)
+                .setPlaceholder("ey3hG0...")
                 .setRequired(true);
 
-            modal.addComponents(new ActionRowBuilder().addComponents(tokenInput));
+            const refreshInput = new TextInputBuilder()
+                .setCustomId('stock_refresh_input')
+                .setLabel("ENTER REFRESH TOKEN")
+                .setStyle(TextInputStyle.Short)
+                .setPlaceholder("ey3hG0...")
+                .setRequired(true);
+
+            modal.addComponents(
+                new ActionRowBuilder().addComponents(bearerInput),
+                new ActionRowBuilder().addComponents(refreshInput)
+            );
             return await interaction.showModal(modal);
         }
 
         if (commandName === 'generator') {
             const embed = new EmbedBuilder()
-                .setTitle("envo token generator")
-                .setDescription("Generate your EIC token below!\n\n" +
-                    "**Public Token** — everyone | cooldown: `20m 0s`\n" +
-                    "**Booster Token** — <@&" + BOOSTER_ROLE_ID + "> only | cooldown: `10m 0s`\n" +
-                    "**Buyer Token** — <@&" + BUYER_ROLE_ID + "> only | cooldown: `6m 0s`\n" +
-                    "**VIP Token** — <@&" + VIP_ROLE_ID + "> only | cooldown: `4m 0s`\n\n" +
-                    "*Tokens are only visible to you.*\n" +
-                    "*Ephemeral — only you can see your token*\n\n" +
-                    "**Made by envo.gg**")
+                .setTitle('TOKENS BY ELLIOTT')
+                .setDescription('Generate your EIC token below!\n\n' +
+                    '**Public Token** – everyone | cooldown: 20m 0s\n' +
+                    '**Booster Token** – <@&' + BOOSTER_ROLE_ID + '> only | cooldown: 10m 0s\n' +
+                    '**Buyer Token** – <@&' + BUYER_ROLE_ID + '> only | cooldown: 6m 0s\n' +
+                    '**VIP Token** – <@&' + VIP_ROLE_ID + '> only | cooldown: 4m 0s\n\n' +
+                    '*Tokens are only visible to you.*\n' +
+                    '*Ephemeral — only you can see your token*\n\n' +
+                    '**Made by elliott.gg**')
                 .setColor(0x5865F2);
 
             const row = new ActionRowBuilder().addComponents(
                 new ButtonBuilder().setCustomId('gen_public').setLabel('Public Token').setStyle(ButtonStyle.Success).setEmoji('🟢'),
                 new ButtonBuilder().setCustomId('gen_booster').setLabel('Booster Token').setStyle(ButtonStyle.Primary).setEmoji('🚀'),
-                new ButtonBuilder().setCustomId('gen_buyer').setLabel('Buyer Token').setStyle(ButtonStyle.Secondary).setEmoji('🛒'),
-                new ButtonBuilder().setCustomId('gen_vip').setLabel('VIP Token').setStyle(ButtonStyle.Danger).setEmoji('⚡')
+                new ButtonBuilder().setCustomId('gen_buyer').setLabel('Buyer Token').setStyle(ButtonStyle.Secondary).setEmoji('⚡'),
+                new ButtonBuilder().setCustomId('gen_vip').setLabel('VIP Token').setStyle(ButtonStyle.Danger).setEmoji('👑')
             );
 
             return interaction.reply({ embeds: [embed], components: [row] });
@@ -432,22 +441,22 @@ client.on('interactionCreate', async interaction => {
 
             if (subArg === 'generator') {
                 const embed = new EmbedBuilder()
-                    .setTitle("envo token generator")
-                    .setDescription("Generate your EIC token below!\n\n" +
-                        "**Public Token** — everyone | cooldown: `20m 0s`\n" +
-                        "**Booster Token** — <@&" + BOOSTER_ROLE_ID + "> only | cooldown: `10m 0s`\n" +
-                        "**Buyer Token** — <@&" + BUYER_ROLE_ID + "> only | cooldown: `6m 0s`\n" +
-                        "**VIP Token** — <@&" + VIP_ROLE_ID + "> only | cooldown: `4m 0s`\n\n" +
-                        "*Tokens are only visible to you.*\n" +
-                        "*Ephemeral — only you can see your token*\n\n" +
-                        "**Made by envo.gg**")
+                    .setTitle('TOKENS BY ELLIOTT')
+                    .setDescription('Generate your EIC token below!\n\n' +
+                        '**Public Token** – everyone | cooldown: 20m 0s\n' +
+                        '**Booster Token** – <@&' + BOOSTER_ROLE_ID + '> only | cooldown: 10m 0s\n' +
+                        '**Buyer Token** – <@&' + BUYER_ROLE_ID + '> only | cooldown: 6m 0s\n' +
+                        '**VIP Token** – <@&' + VIP_ROLE_ID + '> only | cooldown: 4m 0s\n\n' +
+                        '*Tokens are only visible to you.*\n' +
+                        '*Ephemeral — only you can see your token*\n\n' +
+                        '**Made by elliott.gg**')
                     .setColor(0x5865F2);
 
                 const row = new ActionRowBuilder().addComponents(
                     new ButtonBuilder().setCustomId('gen_public').setLabel('Public Token').setStyle(ButtonStyle.Success).setEmoji('🟢'),
                     new ButtonBuilder().setCustomId('gen_booster').setLabel('Booster Token').setStyle(ButtonStyle.Primary).setEmoji('🚀'),
-                    new ButtonBuilder().setCustomId('gen_buyer').setLabel('Buyer Token').setStyle(ButtonStyle.Secondary).setEmoji('🛒'),
-                    new ButtonBuilder().setCustomId('gen_vip').setLabel('VIP Token').setStyle(ButtonStyle.Danger).setEmoji('⚡')
+                    new ButtonBuilder().setCustomId('gen_buyer').setLabel('Buyer Token').setStyle(ButtonStyle.Secondary).setEmoji('⚡'),
+                    new ButtonBuilder().setCustomId('gen_vip').setLabel('VIP Token').setStyle(ButtonStyle.Danger).setEmoji('👑')
                 );
 
                 return interaction.reply({ embeds: [embed], components: [row] });
@@ -465,7 +474,7 @@ client.on('interactionCreate', async interaction => {
                         { name: "🛠️ `/panel support`", value: "Deploys the automated private ticket room generator.", inline: false },
                         { name: "🛡️ `/panel automod`", value: "Deploys the defense grid status console.", inline: false },
                         { name: "🎨 `/panel roles`", value: "Deploys the community notification toggles.", inline: false },
-                        { name: "⚡ `/panel generator`", value: "Deploys the Envo Token Generator interface panel.", inline: false },
+                        { name: "⚡ `/panel generator`", value: "Deploys the Tokens by Elliott Generator interface panel.", inline: false },
                         { name: "🔑 `/generate-code`", value: "Generates a unique `supporter-xxxx-xxxx-xxxx` code for the redeem panel.", inline: false }
                     )
                     .setFooter({ text: "Elliott Modding Enterprise Security Suite" });
@@ -561,7 +570,6 @@ client.on('interactionCreate', async interaction => {
             }
         }
 
-        // Additional administrative and utility slash commands placeholders
         if (commandName === 'warn') {
             const target = options.getUser('target');
             const reason = options.getString('reason');
@@ -599,7 +607,7 @@ client.on('interactionCreate', async interaction => {
     // 2. BUTTON INTERACTIONS
     if (interaction.isButton()) {
 
-        // --- ENVO GENERATOR BUTTON LOGIC ---
+        // --- TOKENS BY ELLIOTT GENERATOR BUTTON LOGIC ---
         if (['gen_public', 'gen_booster', 'gen_buyer', 'gen_vip'].includes(interaction.customId)) {
             const userId = interaction.user.id;
             const member = interaction.member;
@@ -646,9 +654,17 @@ client.on('interactionCreate', async interaction => {
                 return interaction.reply({ content: '❌ **Out of Stock:** No tokens available in the database right now.', flags: 64 });
             }
 
-            const token = tokenStock.shift();
+            const tokenObj = tokenStock.shift();
             try {
-                await interaction.user.send(`🔑 **Your Generated Token:**\n\`\`\`${token}\`\`\``);
+                const tokenEmbed = new EmbedBuilder()
+                    .setTitle('TOKENS BY ELLIOTT')
+                    .setDescription('🛠️ **Your Generated EIC Token:**\n\n' +
+                        '**Bearer Token:**\n```ini\n' + tokenObj.bearer + '\n```\n' +
+                        '**Refresh Token:**\n```ini\n' + tokenObj.refresh + '\n```')
+                    .setColor(0x5865F2)
+                    .setFooter({ text: 'Made by elliott.gg' });
+
+                await interaction.user.send({ embeds: [tokenEmbed] });
                 return interaction.reply({ content: '✅ **Token sent to your DMs!**', flags: 64 });
             } catch (err) {
                 return interaction.reply({ content: '❌ **Error:** Could not send token via DM. Make sure your direct messages are open.', flags: 64 });
@@ -787,11 +803,11 @@ client.on('interactionCreate', async interaction => {
     if (interaction.isModalSubmit()) {
         if (interaction.customId === 'stock_modal') {
             await interaction.deferReply({ flags: 64 });
-            const inputData = interaction.fields.getTextInputValue('stock_input');
-            const newTokens = inputData.split(/[\r\n,]+/).map(t => t.trim()).filter(t => t.length > 0);
+            const bearer = interaction.fields.getTextInputValue('stock_bearer_input').trim();
+            const refresh = interaction.fields.getTextInputValue('stock_refresh_input').trim();
             
-            tokenStock.push(...newTokens);
-            return interaction.editReply({ content: `📦 Successfully added **${newTokens.length}** token(s) to stock queue! Total stock: \`${tokenStock.length}\`` });
+            tokenStock.push({ bearer, refresh });
+            return interaction.editReply({ content: `📦 Successfully added token pair to stock queue! Total stock available: \`${tokenStock.length}\`` });
         }
 
         if (interaction.customId === 'redeem_modal') {
