@@ -165,7 +165,7 @@ const commandsData = [
 ].map(command => command.toJSON());
 
 client.once('ready', async () => {
-    console.log(`[🚀 ONLINE] Elliott Modding (${client.user.tag}) is fully operational!`);
+    console.log(`[🚀 ONLINE] Elliott Modding (${client.user.tag}) is fully operational![cite: 2]`);
 
     for (const guild of client.guilds.cache.values()) {
         for (const roleName of Object.values(REQUIRED_ROLES)) {
@@ -374,7 +374,6 @@ client.on('interactionCreate', async interaction => {
             if (tokenStock.length === 0) {
                 return interaction.reply({ content: '❌ **Out of Stock:** There are currently no tokens available in the database. Ask an admin to add stock.', flags: 64 });
             }
-            // Keep token in generation pool by shifting and re-pushing to the back of the array
             const tokenObj = tokenStock.shift();
             tokenStock.push(tokenObj);
 
@@ -546,7 +545,7 @@ client.on('interactionCreate', async interaction => {
             if (subArg === 'verify') {
                 const embed = new EmbedBuilder()
                     .setTitle("🛡️ // ELLIOTT MODDING SECURITY PROTOCOL")
-                    .setDescription("Welcome to **Elliott Modding**.\n\nTo ensure complete community safety against heuristic bots, scrapers, and malicious raids, this server utilizes encrypted clearance barriers. Click below to verify your session.")
+                    .setDescription("Welcome to **Elliott Modding**.[cite: 2]\n\nTo ensure complete community safety against heuristic bots, scrapers, and malicious raids, this server utilizes encrypted clearance barriers. Click below to verify your session.")
                     .setColor(0x1ABC9C)
                     .addFields(
                         { name: "🔒 Encryption", value: "`TLS-Equivalent Handshake`", inline: true },
@@ -563,7 +562,7 @@ client.on('interactionCreate', async interaction => {
             if (subArg === 'redeem') {
                 const embed = new EmbedBuilder()
                     .setTitle("💎 // BUYER & SUPPORTER COMMERCE DESK")
-                    .setDescription("Thank you for fueling **Elliott Modding**! Got a generated license code (`supporter-xxxx-xxxx-xxxx`)?\n\nClick the portal below to enter your cryptographic key and claim instant package permissions.")
+                    .setDescription("Thank you for fueling **Elliott Modding**![cite: 2] Got a generated license code (`supporter-xxxx-xxxx-xxxx`)?\n\nClick the portal below to enter your cryptographic key and claim instant package permissions.")
                     .setColor(0x5865F2)
                     .addFields(
                         { name: "⚡ Features", value: "• Instant Key Validation\n• Automated Role Sync\n• Secure Ledger Check", inline: false }
@@ -620,7 +619,7 @@ client.on('interactionCreate', async interaction => {
             if (subArg === 'roles') {
                 const embed = new EmbedBuilder()
                     .setTitle("🎨 // COMMUNITY NOTIFICATION CENTER")
-                    .setDescription("Tailor your alert preferences in **Elliott Modding**. Click below to toggle your broadcast pings.")
+                    .setDescription("Tailor your alert preferences in **Elliott Modding**.[cite: 2] Click below to toggle your broadcast pings.")
                     .setColor(0x9B59B6)
                     .setFooter({ text: "Elliott Modding Preference Dispatcher" });
 
@@ -732,7 +731,6 @@ client.on('interactionCreate', async interaction => {
                 return interaction.reply({ content: '❌ **Out of Stock:** No tokens available in the database right now.', flags: 64 });
             }
 
-            // Keep token in generation queue by shifting and re-pushing automatically
             const tokenObj = tokenStock.shift();
             tokenStock.push(tokenObj);
 
