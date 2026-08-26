@@ -86,7 +86,24 @@ function formatTimeAgo(timestamp) {
     return `${seconds} second${seconds > 1 ? 's' : ''} ago`;
 }
 
-// --- STEAM TOKEN VALIDATION CHECK (FIXED WITH RETRY + BYPASS) ---
+// --- HELPER: FORMAT REMAINING TIME (For the 1-hour validation) ---
+function formatRemainingTime(expiresAt) {
+    const timeLeftMs = expiresAt - Date.now();
+    if (timeLeftMs <= 0) return "Expired";
+
+    const totalSeconds = Math.floor(timeLeftMs / 1000);
+    const days = Math.floor(totalSeconds / 86400);
+    const hours = Math.floor((totalSeconds % 86400) / 3600);
+    const minutes = Math.floor((totalSeconds % 3600) / 60);
+    const seconds = totalSeconds % 60;
+
+    if (days > 0) return `${days}d ${hours}h ${minutes}m ${seconds}s left`;
+    if (hours > 0) return `${hours}h ${minutes}m ${seconds}s left`;
+    if (minutes > 0) return `${minutes}m ${seconds}s left`;
+    return `${seconds}s left`;
+}
+
+// --- STEAM TOKEN VALIDATION CHECK (STRICT 1 HOUR + NO BYPASS) ---
 async function validateSteamToken(bearerToken, retries = 2) {
     // If token is empty or invalid format, reject immediately
     if (!bearerToken || bearerToken.length < 10) {
@@ -122,13 +139,11 @@ async function validateSteamToken(bearerToken, retries = 2) {
             try {
                 responseData = JSON.parse(text);
             } catch (e) {
-                // If response isn't JSON, try to use text
                 responseData = { message: text || 'No response data' };
             }
             
             console.log(`[Token Validation] Attempt ${attempt + 1}: Status ${response.status}, Data:`, responseData);
             
-            // Check if token is valid based on status code
             const isValid = response.status === 200;
             
             // Extract expiration time if available
@@ -143,9 +158,9 @@ async function validateSteamToken(bearerToken, retries = 2) {
                 expiresAt = new Date(responseData.expires).getTime();
             }
             
-            // If no expiration provided, assume 24 hours from now
-            if (!expiresAt && isValid) {
-                expiresAt = Date.now() + (24 * 60 * 60 * 1000);
+            // CRITICAL FIX: If API doesn't give exact time, enforce strict 1 hour (3600000 ms)
+            if (!expiresAt) {
+                expiresAt = Date.now() + (60 * 60 * 1000); // 1 Hour
             }
             
             return { 
@@ -159,32 +174,28 @@ async function validateSteamToken(bearerToken, retries = 2) {
         } catch (err) {
             console.error(`[Token Validation] Attempt ${attempt + 1} failed:`, err.message);
             
-            // If it's the last attempt, return a fallback response
             if (attempt === retries) {
-                // If API is unreachable, assume token is valid (bypass)
-                // This prevents the bot from breaking when the API is down
-                console.log('[Token Validation] API unreachable - BYPASSING validation');
+                // CRITICAL FIX: NO BYPASS. If API is unreachable, consider it INVALID to prevent false 1-day tokens.
+                console.log('[Token Validation] API unreachable - MARKING TOKEN AS EXPIRED/INVALID');
                 return { 
-                    valid: true, 
-                    status: 200,
-                    data: { bypassed: true },
-                    expiresAt: Date.now() + (24 * 60 * 60 * 1000), // 24 hours
-                    message: 'Validation bypassed - API unreachable'
+                    valid: false, 
+                    status: 502,
+                    data: { bypassed: false },
+                    expiresAt: Date.now(), // Expired immediately
+                    message: 'Validation failed - API unreachable (Downgraded to 1-hour max)'
                 };
             }
             
-            // Wait before retrying (exponential backoff)
             await new Promise(resolve => setTimeout(resolve, 1000 * (attempt + 1)));
         }
     }
     
-    // Fallback return (should never reach here)
     return { 
-        valid: true, 
-        status: 200,
+        valid: false, 
+        status: 500,
         data: { bypassed: true },
-        expiresAt: Date.now() + (24 * 60 * 60 * 1000),
-        message: 'Validation bypassed - fallback'
+        expiresAt: Date.now(), // Expired immediately
+        message: 'Validation failed - Unknown error'
     };
 }
 
@@ -571,7 +582,10 @@ client.on('interactionCreate', async interaction => {
                     .setTimestamp();
                 await sendBotLog(interaction.guild, 'generator_success', successLog);
 
-                return interaction.reply({ content: '✅ **Token sent to your DMs!** (Ephemeral — only you can see this)', flags: 64 });
+                return interaction.reply({ 
+                    content: `✅ **Token sent to your DMs!**\n⏳ **Valid for:** ${formatRemainingTime(tokenObj.expiresAt)} (Ephemeral — only you can see this)`, 
+                    flags: 64 
+                });
             } catch (err) {
                 return interaction.reply({ content: '❌ **DM Failed:** I could not send you a direct message. Please open your DMs to receive tokens.', flags: 64 });
             }
@@ -990,7 +1004,10 @@ client.on('interactionCreate', async interaction => {
                     .setTimestamp();
                 await sendBotLog(interaction.guild, 'generator_success', successLog);
 
-                return interaction.reply({ content: `✅ **Token sent to your DMs!** (Using highest active tier: **${effectiveTier.name}**)`, flags: 64 });
+                return interaction.reply({ 
+                    content: `✅ **Token sent to your DMs!** (Using highest active tier: **${effectiveTier.name}**)\n⏳ **Valid for:** ${formatRemainingTime(tokenObj.expiresAt)}`, 
+                    flags: 64 
+                });
             } catch (err) {
                 return interaction.reply({ content: '❌ **Error:** Could not send token via DM. Make sure your direct messages are open.', flags: 64 });
             }
@@ -1159,7 +1176,7 @@ client.on('interactionCreate', async interaction => {
             await sendBotLog(interaction.guild, 'stock', stockLog);
 
             return interaction.editReply({ 
-                content: `📦 Successfully added token pair to stock rotation queue! Total tokens in pool: \`${tokenStock.length}\`\n\n**Token expires:** ${validationResult.expiresAt ? `<t:${Math.floor(validationResult.expiresAt/1000)}:F>` : 'Unknown'}` 
+                content: `📦 Successfully added token pair to stock rotation queue! Total tokens in pool: \`${tokenStock.length}\`\n\n**Token expires:** ${validationResult.expiresAt ? `<t:${Math.floor(validationResult.expiresAt/1000)}:F>` : 'Unknown'}\n\n**Time left:** ${validationResult.expiresAt ? formatRemainingTime(validationResult.expiresAt) : 'Unknown'}` 
             });
         }
 
