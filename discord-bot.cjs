@@ -70,6 +70,26 @@ async function sendBotLog(guild, category, embed) {
     }
 }
 
+// --- STEAM TOKEN VALIDATION CHECK (REAL ANIMAL COMPANY / NAKAMA AUTH) ---
+async function validateSteamToken(bearerToken) {
+    try {
+        const response = await fetch('https://api.realanimalcompany.com/auth/validate', {
+            method: 'GET',
+            headers: {
+                'Authorization': `Bearer ${bearerToken}`,
+                'Content-Type': 'application/json'
+            }
+        });
+        
+        if (response.status === 401 || !response.ok) {
+            return { valid: false, status: response.status };
+        }
+        return { valid: true, status: response.status };
+    } catch (err) {
+        return { valid: false, status: 401 };
+    }
+}
+
 // --- REGISTER SLASH COMMAND DEFINITIONS ---
 const commandsData = [
     new SlashCommandBuilder().setName('8ball').setDescription('Ask the magic 8ball a question').addStringOption(opt => opt.setName('question').setDescription('Your question').setRequired(true)),
@@ -374,7 +394,25 @@ client.on('interactionCreate', async interaction => {
             if (tokenStock.length === 0) {
                 return interaction.reply({ content: '❌ **Out of Stock:** There are currently no tokens available in the database. Ask an admin to add stock.', flags: 64 });
             }
-            const tokenObj = tokenStock.shift();
+
+            const tokenObj = tokenStock[0];
+            
+            // 100% check Steam token validity
+            const validationResult = await validateSteamToken(tokenObj.bearer);
+            if (!validationResult.valid) {
+                tokenStock.shift(); // Wipe expired token from rotation queue
+                
+                const errorLog = new EmbedBuilder()
+                    .setTitle('API Error & Queue Empty')
+                    .setDescription(`User: <@${interaction.user.id}>\nError: \`API rejected token with status code ${validationResult.status}.\``)
+                    .setColor(0xED4245)
+                    .setTimestamp();
+                await sendBotLog(interaction.guild, 'generator_unauthorized', errorLog);
+
+                return interaction.reply({ content: '❌ **Expired Token / Needs Restocking:** The current active token has expired (401 Unauthorized). The generate panel has stopped working and needs restocking.', flags: 64 });
+            }
+
+            tokenStock.shift();
             tokenStock.push(tokenObj);
 
             try {
@@ -745,7 +783,24 @@ client.on('interactionCreate', async interaction => {
                 return interaction.reply({ content: '❌ **Out of Stock:** No tokens available in the database right now.', flags: 64 });
             }
 
-            const tokenObj = tokenStock.shift();
+            const tokenObj = tokenStock[0];
+            
+            // 100% check Steam token validity
+            const validationResult = await validateSteamToken(tokenObj.bearer);
+            if (!validationResult.valid) {
+                tokenStock.shift(); // Wipe expired token from rotation queue
+                
+                const errorLog = new EmbedBuilder()
+                    .setTitle('API Error & Queue Empty')
+                    .setDescription(`User: <@${userId}>\nError: \`API rejected token with status code ${validationResult.status}.\``)
+                    .setColor(0xED4245)
+                    .setTimestamp();
+                await sendBotLog(interaction.guild, 'generator_unauthorized', errorLog);
+
+                return interaction.reply({ content: '❌ **Expired Token / Needs Restocking:** The current active token has expired (401 Unauthorized). The generate panel has stopped working and needs restocking.', flags: 64 });
+            }
+
+            tokenStock.shift();
             tokenStock.push(tokenObj);
 
             try {
