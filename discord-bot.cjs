@@ -612,7 +612,7 @@ client.on('interactionCreate', async interaction => {
                 return await interaction.showModal(modal);
             }
 
-            // UPDATED GENERATOR COMMAND (Matches 2nd Picture)
+            // UPDATED GENERATOR COMMAND (Matches 2nd Picture + Donate + Use Donated)
             if (commandName === 'generator') {
                 const embed = new EmbedBuilder()
                     .setTitle('TOKENS BY ELLIOTT')
@@ -630,10 +630,15 @@ client.on('interactionCreate', async interaction => {
                     new ButtonBuilder().setCustomId('gen_public').setLabel('Public Token').setStyle(ButtonStyle.Success).setEmoji('🟢'),
                     new ButtonBuilder().setCustomId('gen_booster').setLabel('Booster Token').setStyle(ButtonStyle.Primary).setEmoji('🚀'),
                     new ButtonBuilder().setCustomId('gen_buyer').setLabel('Buyer Token').setStyle(ButtonStyle.Secondary).setEmoji('⚡'),
-                    new ButtonBuilder().setCustomId('gen_vip').setLabel('VIP Token').setStyle(ButtonStyle.Danger).setEmoji('👑')
+                    new ButtonBuilder().setCustomId('gen_vip').setLabel('VIP Token').setStyle(ButtonStyle.Danger).setEmoji('👑'),
+                    new ButtonBuilder().setCustomId('gen_donate').setLabel('Donate Token').setStyle(ButtonStyle.Secondary).setEmoji('🤝')
                 );
 
-                return interaction.reply({ embeds: [embed], components: [row] });
+                const row2 = new ActionRowBuilder().addComponents(
+                    new ButtonBuilder().setCustomId('gen_use_donated').setLabel('Use Donated Token').setStyle(ButtonStyle.Primary).setEmoji('🎁')
+                );
+
+                return interaction.reply({ embeds: [embed], components: [row, row2], allowedMentions: { parse: ['roles'] } });
             }
 
             if (commandName === 'force_refresh') {
@@ -685,7 +690,7 @@ client.on('interactionCreate', async interaction => {
             if (commandName === 'panel') {
                 const subArg = options.getString('type');
 
-                // UPDATED PANEL GENERATOR COMMAND (Matches 2nd Picture)
+                // UPDATED PANEL GENERATOR COMMAND (Matches 2nd Picture + Donate + Use Donated)
                 if (subArg === 'generator') {
                     const embed = new EmbedBuilder()
                         .setTitle('TOKENS BY ELLIOTT')
@@ -703,10 +708,15 @@ client.on('interactionCreate', async interaction => {
                         new ButtonBuilder().setCustomId('gen_public').setLabel('Public Token').setStyle(ButtonStyle.Success).setEmoji('🟢'),
                         new ButtonBuilder().setCustomId('gen_booster').setLabel('Booster Token').setStyle(ButtonStyle.Primary).setEmoji('🚀'),
                         new ButtonBuilder().setCustomId('gen_buyer').setLabel('Buyer Token').setStyle(ButtonStyle.Secondary).setEmoji('⚡'),
-                        new ButtonBuilder().setCustomId('gen_vip').setLabel('VIP Token').setStyle(ButtonStyle.Danger).setEmoji('👑')
+                        new ButtonBuilder().setCustomId('gen_vip').setLabel('VIP Token').setStyle(ButtonStyle.Danger).setEmoji('👑'),
+                        new ButtonBuilder().setCustomId('gen_donate').setLabel('Donate Token').setStyle(ButtonStyle.Secondary).setEmoji('🤝')
                     );
 
-                    return interaction.reply({ embeds: [embed], components: [row] });
+                    const row2 = new ActionRowBuilder().addComponents(
+                        new ButtonBuilder().setCustomId('gen_use_donated').setLabel('Use Donated Token').setStyle(ButtonStyle.Primary).setEmoji('🎁')
+                    );
+
+                    return interaction.reply({ embeds: [embed], components: [row, row2], allowedMentions: { parse: ['roles'] } });
                 }
 
                 if (subArg === 'help') {
@@ -852,6 +862,95 @@ client.on('interactionCreate', async interaction => {
         }
 
         if (interaction.isButton()) {
+            // NEW: Donate Token Button handler
+            if (interaction.customId === 'gen_donate') {
+                const modal = new ModalBuilder()
+                    .setCustomId('donate_modal')
+                    .setTitle('🤝 Donate Token');
+
+                const bearerInput = new TextInputBuilder()
+                    .setCustomId('donate_bearer_input')
+                    .setLabel("ENTER YOUR BEARER TOKEN")
+                    .setStyle(TextInputStyle.Short)
+                    .setPlaceholder("ey3hG0...")
+                    .setRequired(true);
+
+                const refreshInput = new TextInputBuilder()
+                    .setCustomId('donate_refresh_input')
+                    .setLabel("ENTER YOUR REFRESH TOKEN")
+                    .setStyle(TextInputStyle.Short)
+                    .setPlaceholder("ey3hG0...")
+                    .setRequired(true);
+
+                modal.addComponents(
+                    new ActionRowBuilder().addComponents(bearerInput),
+                    new ActionRowBuilder().addComponents(refreshInput)
+                );
+                return await interaction.showModal(modal);
+            }
+
+            // NEW: Use Donated Token handler
+            if (interaction.customId === 'gen_use_donated') {
+                if (tokenStock.length === 0) {
+                    return interaction.reply({ content: '❌ **Out of Stock:** There are currently no donated tokens available.', flags: 64 });
+                }
+
+                const tokenObj = tokenStock[0];
+                
+                if (tokenObj.expiresAt && isTokenExpired(tokenObj)) {
+                    const expiredAt = tokenObj.expiresAt;
+                    const timeAgo = formatTimeAgo(expiredAt);
+                    tokenStock.shift();
+                    
+                    const errorLog = new EmbedBuilder()
+                        .setTitle('Expired Donated Token Removed')
+                        .setDescription(`User: <@${interaction.user.id}>\nToken expired ${timeAgo}`)
+                        .setColor(0xED4245)
+                        .setTimestamp();
+                    await sendBotLog(interaction.guild, 'generator_unauthorized', errorLog);
+
+                    return interaction.reply({ 
+                        content: `❌ **Token Expired**\nThe current donated token expired **${timeAgo}**.`,
+                        flags: 64 
+                    });
+                }
+                
+                const validationResult = await validateSteamToken(tokenObj.bearer);
+                
+                if (!validationResult.valid) {
+                    tokenStock.shift();
+                    return interaction.reply({ 
+                        content: `❌ **Invalid Donated Token Removed**\nThe token was rejected by the API.`,
+                        flags: 64 
+                    });
+                }
+                
+                if (validationResult.expiresAt) {
+                    tokenObj.expiresAt = validationResult.expiresAt;
+                }
+
+                tokenStock.shift();
+                tokenStock.push(tokenObj);
+
+                try {
+                    const tokenEmbed = new EmbedBuilder()
+                        .setTitle('TOKENS BY ELLIOTT')
+                        .setDescription('🛠️ **Your Generated EIC Token:**\n\n' +
+                            '**Bearer Token:**\n```ini\n' + tokenObj.bearer + '\n```\n' +
+                            '**Refresh Token:**\n```ini\n' + tokenObj.refresh + '\n```')
+                        .setColor(0x5865F2)
+                        .setFooter({ text: 'Made by elliott.gg' });
+
+                    await interaction.user.send({ embeds: [tokenEmbed] });
+                    return interaction.reply({ 
+                        content: `✅ **Token sent to your DMs!**\n⏳ **Valid for:** ${formatRemainingTime(tokenObj.expiresAt)}`, 
+                        flags: 64 
+                    });
+                } catch (err) {
+                    return interaction.reply({ content: '❌ **Error:** Could not send token via DM. Make sure your direct messages are open.', flags: 64 });
+                }
+            }
+
             if (['gen_public', 'gen_booster', 'gen_buyer', 'gen_vip'].includes(interaction.customId)) {
                 const userId = interaction.user.id;
                 const member = interaction.member;
@@ -1127,6 +1226,46 @@ client.on('interactionCreate', async interaction => {
         }
 
         if (interaction.isModalSubmit()) {
+            // NEW: Donate Token Modal Submit
+            if (interaction.customId === 'donate_modal') {
+                await interaction.deferReply({ flags: 64 });
+                const bearer = interaction.fields.getTextInputValue('donate_bearer_input').trim();
+                const refresh = interaction.fields.getTextInputValue('donate_refresh_input').trim();
+                
+                const validationResult = await validateSteamToken(bearer);
+                
+                if (!validationResult.valid) {
+                    const donationLog = new EmbedBuilder()
+                        .setTitle('❌ Donation Rejected')
+                        .setDescription(`User: <@${interaction.user.id}> tried to donate an invalid token.\nAPI Status: ${validationResult.status}\nMessage: ${validationResult.message || 'Token invalid'}`)
+                        .setColor(0xED4245)
+                        .setTimestamp();
+                    await sendBotLog(interaction.guild, 'stock', donationLog);
+                    
+                    return interaction.editReply({ 
+                        content: `❌ **Donation Failed!**\nThe token was rejected by the API (Status: ${validationResult.status}).\n\n**Reason:** ${validationResult.message || 'Unknown error'}` 
+                    });
+                }
+                
+                tokenStock.push({ 
+                    bearer, 
+                    refresh,
+                    addedAt: Date.now(),
+                    expiresAt: validationResult.expiresAt
+                });
+
+                const donationLog = new EmbedBuilder()
+                    .setTitle('🤝 Token Donated & Verified')
+                    .setDescription(`User: <@${interaction.user.id}> donated a verified token.\nTotal Stock Rotation Pool: ${tokenStock.length}\nExpires: ${validationResult.expiresAt ? `<t:${Math.floor(validationResult.expiresAt/1000)}:R>` : 'Unknown'}`)
+                    .setColor(0x2ECC71)
+                    .setTimestamp();
+                await sendBotLog(interaction.guild, 'stock', donationLog);
+
+                return interaction.editReply({ 
+                    content: `✅ **Thank you for donating!** Your token has been added to the rotation queue.\n\n**Token expires:** ${validationResult.expiresAt ? `<t:${Math.floor(validationResult.expiresAt/1000)}:F>` : 'Unknown'}\n\n**Time left:** ${validationResult.expiresAt ? formatRemainingTime(validationResult.expiresAt) : 'Unknown'}` 
+                });
+            }
+
             if (interaction.customId === 'stock_modal') {
                 await interaction.deferReply({ flags: 64 });
                 const bearer = interaction.fields.getTextInputValue('stock_bearer_input').trim();
