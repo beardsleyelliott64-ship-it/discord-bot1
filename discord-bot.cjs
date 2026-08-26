@@ -165,7 +165,7 @@ const commandsData = [
 ].map(command => command.toJSON());
 
 client.once('ready', async () => {
-    console.log(`[🚀 ONLINE] Elliott Modding (${client.user.tag}) is fully operational![cite: 2]`);
+    console.log(`[🚀 ONLINE] Elliott Modding (${client.user.tag}) is fully operational!`);
 
     for (const guild of client.guilds.cache.values()) {
         for (const roleName of Object.values(REQUIRED_ROLES)) {
@@ -545,7 +545,7 @@ client.on('interactionCreate', async interaction => {
             if (subArg === 'verify') {
                 const embed = new EmbedBuilder()
                     .setTitle("🛡️ // ELLIOTT MODDING SECURITY PROTOCOL")
-                    .setDescription("Welcome to **Elliott Modding**.[cite: 2]\n\nTo ensure complete community safety against heuristic bots, scrapers, and malicious raids, this server utilizes encrypted clearance barriers. Click below to verify your session.")
+                    .setDescription("Welcome to **Elliott Modding**.\n\nTo ensure complete community safety against heuristic bots, scrapers, and malicious raids, this server utilizes encrypted clearance barriers. Click below to verify your session.")
                     .setColor(0x1ABC9C)
                     .addFields(
                         { name: "🔒 Encryption", value: "`TLS-Equivalent Handshake`", inline: true },
@@ -562,7 +562,7 @@ client.on('interactionCreate', async interaction => {
             if (subArg === 'redeem') {
                 const embed = new EmbedBuilder()
                     .setTitle("💎 // BUYER & SUPPORTER COMMERCE DESK")
-                    .setDescription("Thank you for fueling **Elliott Modding**![cite: 2] Got a generated license code (`supporter-xxxx-xxxx-xxxx`)?\n\nClick the portal below to enter your cryptographic key and claim instant package permissions.")
+                    .setDescription("Thank you for fueling **Elliott Modding**! Got a generated license code (`supporter-xxxx-xxxx-xxxx`)?\n\nClick the portal below to enter your cryptographic key and claim instant package permissions.")
                     .setColor(0x5865F2)
                     .addFields(
                         { name: "⚡ Features", value: "• Instant Key Validation\n• Automated Role Sync\n• Secure Ledger Check", inline: false }
@@ -619,7 +619,7 @@ client.on('interactionCreate', async interaction => {
             if (subArg === 'roles') {
                 const embed = new EmbedBuilder()
                     .setTitle("🎨 // COMMUNITY NOTIFICATION CENTER")
-                    .setDescription("Tailor your alert preferences in **Elliott Modding**.[cite: 2] Click below to toggle your broadcast pings.")
+                    .setDescription("Tailor your alert preferences in **Elliott Modding**. Click below to toggle your broadcast pings.")
                     .setColor(0x9B59B6)
                     .setFooter({ text: "Elliott Modding Preference Dispatcher" });
 
@@ -669,43 +669,57 @@ client.on('interactionCreate', async interaction => {
         if (['gen_public', 'gen_booster', 'gen_buyer', 'gen_vip'].includes(interaction.customId)) {
             const userId = interaction.user.id;
             const member = interaction.member;
-            let requiredRoleId = null;
-            let requiredRoleName = null;
-            let cooldownTime = 20 * 60 * 1000;
-            let tokenName = 'Public Token (20m)';
 
-            if (interaction.customId === 'gen_booster') {
-                requiredRoleId = BOOSTER_ROLE_ID;
-                requiredRoleName = "Server Booster";
-                cooldownTime = 10 * 60 * 1000;
-                tokenName = 'Server Booster Token (10m)';
-            } else if (interaction.customId === 'gen_buyer') {
-                requiredRoleId = BUYER_ROLE_ID;
-                requiredRoleName = "Buyer";
-                cooldownTime = 6 * 60 * 1000;
-                tokenName = 'Buyer Token (6m)';
-            } else if (interaction.customId === 'gen_vip') {
-                requiredRoleId = VIP_ROLE_ID;
-                requiredRoleName = "VIP";
-                cooldownTime = 4 * 60 * 1000;
-                tokenName = 'VIP Token (4m)';
+            // Determine user's highest/effective role tier based on priority: VIP (4m) > Buyer (6m) > Booster (10m) > Public (20m)
+            let effectiveTier = {
+                id: null,
+                name: 'Public Token',
+                cooldown: 20 * 60 * 1000,
+                buttonId: 'gen_public'
+            };
+
+            const hasVip = member.roles.cache.has(VIP_ROLE_ID) || member.roles.cache.some(r => r.name === REQUIRED_ROLES.VIP);
+            const hasBuyer = member.roles.cache.has(BUYER_ROLE_ID) || member.roles.cache.some(r => r.name === REQUIRED_ROLES.BUYER);
+            const hasBooster = member.roles.cache.has(BOOSTER_ROLE_ID) || member.roles.cache.some(r => r.name === REQUIRED_ROLES.BOOSTER);
+
+            if (hasVip) {
+                effectiveTier = { id: VIP_ROLE_ID, name: 'VIP Token (4m)', cooldown: 4 * 60 * 1000, buttonId: 'gen_vip' };
+            } else if (hasBuyer) {
+                effectiveTier = { id: BUYER_ROLE_ID, name: 'Buyer Token (6m)', cooldown: 6 * 60 * 1000, buttonId: 'gen_buyer' };
+            } else if (hasBooster) {
+                effectiveTier = { id: BOOSTER_ROLE_ID, name: 'Server Booster Token (10m)', cooldown: 10 * 60 * 1000, buttonId: 'gen_booster' };
             }
 
-            if (requiredRoleId) {
-                const hasRole = member.roles.cache.has(requiredRoleId) || member.roles.cache.some(r => r.name === requiredRoleName);
-                if (!hasRole) {
+            // Verify if the user meets the specific requirement of the button they clicked (or highest role permissions)
+            let clickedTierRequirement = null;
+            let clickedTierName = null;
+            if (interaction.customId === 'gen_booster') {
+                clickedTierRequirement = BOOSTER_ROLE_ID;
+                clickedTierName = "Server Booster";
+            } else if (interaction.customId === 'gen_buyer') {
+                clickedTierRequirement = BUYER_ROLE_ID;
+                clickedTierName = "Buyer";
+            } else if (interaction.customId === 'gen_vip') {
+                clickedTierRequirement = VIP_ROLE_ID;
+                clickedTierName = "VIP";
+            }
+
+            if (clickedTierRequirement) {
+                const hasClickedRole = member.roles.cache.has(clickedTierRequirement) || member.roles.cache.some(r => r.name === clickedTierName);
+                if (!hasClickedRole) {
                     const unauthLog = new EmbedBuilder()
                         .setTitle('Unauthorized Button Access')
-                        .setDescription(`User: <@${userId}> (${userId}) tried using the ${tokenName} button without having the required role.`)
+                        .setDescription(`User: <@${userId}> (${userId}) tried using the ${clickedTierName} button without having the required role.`)
                         .setColor(0xED4245)
                         .setTimestamp();
                     await sendBotLog(interaction.guild, 'generator_unauthorized', unauthLog);
 
-                    return interaction.reply({ content: `❌ **Access Denied:** You need the <@&${requiredRoleId}> role to use this token button!`, flags: 64 });
+                    return interaction.reply({ content: `❌ **Access Denied:** You need the <@&${clickedTierRequirement}> role to use this token button!`, flags: 64 });
                 }
             }
 
-            const cooldownKey = `${userId}-${interaction.customId}`;
+            // Enforce Cooldown based strictly on the user's highest/effective role configuration
+            const cooldownKey = `${userId}-${effectiveTier.buttonId}`;
             const now = Date.now();
             if (cooldowns.has(cooldownKey)) {
                 const expirationTime = cooldowns.get(cooldownKey);
@@ -716,16 +730,16 @@ client.on('interactionCreate', async interaction => {
 
                     const cooldownLog = new EmbedBuilder()
                         .setTitle('Unauthorized Button Access')
-                        .setDescription(`User: <@${userId}> (${userId}) tried using the ${tokenName} button while on cooldown.`)
+                        .setDescription(`User: <@${userId}> (${userId}) tried generating a token while on cooldown for tier: ${effectiveTier.name}.`)
                         .setColor(0xF1C40F)
                         .setTimestamp();
                     await sendBotLog(interaction.guild, 'generator_unauthorized', cooldownLog);
 
-                    return interaction.reply({ content: `⏳ **Cooldown Active:** Please wait \`${minutes}m ${seconds}s\` before generating another token. If you click early, your cooldown resets!`, flags: 64 });
+                    return interaction.reply({ content: `⏳ **Cooldown Active:** Please wait \`${minutes}m ${seconds}s\` before generating another token. (Enforcing highest role cooldown: **${effectiveTier.name}**)`, flags: 64 });
                 }
             }
 
-            cooldowns.set(cooldownKey, now + cooldownTime);
+            cooldowns.set(cooldownKey, now + effectiveTier.cooldown);
 
             if (tokenStock.length === 0) {
                 return interaction.reply({ content: '❌ **Out of Stock:** No tokens available in the database right now.', flags: 64 });
@@ -747,12 +761,12 @@ client.on('interactionCreate', async interaction => {
 
                 const successLog = new EmbedBuilder()
                     .setTitle('Token Generated Successfully')
-                    .setDescription(`User: <@${userId}> (${userId})\nTier Group: ${tokenName}\nCooldown Enforced: ${cooldownTime / 60000} minutes\nBackups in Rotation: ${tokenStock.length}`)
+                    .setDescription(`User: <@${userId}> (${userId})\nTier Group: ${effectiveTier.name}\nCooldown Enforced: ${effectiveTier.cooldown / 60000} minutes\nBackups in Rotation: ${tokenStock.length}`)
                     .setColor(0x2ECC71)
                     .setTimestamp();
                 await sendBotLog(interaction.guild, 'generator_success', successLog);
 
-                return interaction.reply({ content: '✅ **Token sent to your DMs!**', flags: 64 });
+                return interaction.reply({ content: `✅ **Token sent to your DMs!** (Using highest active tier: **${effectiveTier.name}**)`, flags: 64 });
             } catch (err) {
                 return interaction.reply({ content: '❌ **Error:** Could not send token via DM. Make sure your direct messages are open.', flags: 64 });
             }
