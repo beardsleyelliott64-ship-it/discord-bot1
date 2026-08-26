@@ -47,7 +47,7 @@ const REQUIRED_ROLES = {
 // Temporary in-memory storage for generated codes, stock, cooldowns, and log channels
 const validCodes = new Set();
 const userWarnings = new Map(); // Simple mock warning system storage
-const tokenStock = []; // Array to hold loaded token objects { bearer, refresh }
+const tokenStock = []; // Array to hold loaded token objects { bearer, refresh, addedAt }
 const cooldowns = new Map(); // Tracks user cooldown timestamps per token type
 const logChannels = new Map(); // Stores category-specific log channel IDs per guild
 
@@ -68,6 +68,22 @@ async function sendBotLog(guild, category, embed) {
     } catch (err) {
         console.error(`[Logging Error] Could not send log to channel ${channelId}:`, err.message);
     }
+}
+
+// --- HELPER: FORMAT TIME AGO ---
+function formatTimeAgo(timestamp) {
+    const now = Date.now();
+    const diff = now - timestamp;
+    
+    const seconds = Math.floor(diff / 1000);
+    const minutes = Math.floor(seconds / 60);
+    const hours = Math.floor(minutes / 60);
+    const days = Math.floor(hours / 24);
+    
+    if (days > 0) return `${days} day${days > 1 ? 's' : ''} ago`;
+    if (hours > 0) return `${hours} hour${hours > 1 ? 's' : ''} ago`;
+    if (minutes > 0) return `${minutes} minute${minutes > 1 ? 's' : ''} ago`;
+    return `${seconds} second${seconds > 1 ? 's' : ''} ago`;
 }
 
 // --- STEAM TOKEN VALIDATION CHECK (REAL ANIMAL COMPANY / NAKAMA AUTH) ---
@@ -400,16 +416,22 @@ client.on('interactionCreate', async interaction => {
             // 100% check Steam token validity
             const validationResult = await validateSteamToken(tokenObj.bearer);
             if (!validationResult.valid) {
+                const expiredAt = tokenObj.addedAt || Date.now();
+                const timeAgo = formatTimeAgo(expiredAt);
+                
                 tokenStock.shift(); // Wipe expired token from rotation queue
                 
                 const errorLog = new EmbedBuilder()
-                    .setTitle('API Error & Queue Empty')
-                    .setDescription(`User: <@${interaction.user.id}>\nError: \`API rejected token with status code ${validationResult.status}.\``)
+                    .setTitle('Expired Token Removed')
+                    .setDescription(`User: <@${interaction.user.id}>\nError: \`API rejected token with status code ${validationResult.status}.\`\nToken age: ${timeAgo}\nToken was added: <t:${Math.floor(expiredAt/1000)}:R>`)
                     .setColor(0xED4245)
                     .setTimestamp();
                 await sendBotLog(interaction.guild, 'generator_unauthorized', errorLog);
 
-                return interaction.reply({ content: '❌ **Expired Token / Needs Restocking:** The current active token has expired (401 Unauthorized). The generate panel has stopped working and needs restocking.', flags: 64 });
+                return interaction.reply({ 
+                    content: `❌ **Expired Token Removed**\nThe current active token expired **${timeAgo}** and has been removed from the queue. The generator needs restocking.\n\n**Token was added:** <t:${Math.floor(expiredAt/1000)}:F>`,
+                    flags: 64 
+                });
             }
 
             tokenStock.shift();
@@ -788,16 +810,22 @@ client.on('interactionCreate', async interaction => {
             // 100% check Steam token validity
             const validationResult = await validateSteamToken(tokenObj.bearer);
             if (!validationResult.valid) {
+                const expiredAt = tokenObj.addedAt || Date.now();
+                const timeAgo = formatTimeAgo(expiredAt);
+                
                 tokenStock.shift(); // Wipe expired token from rotation queue
                 
                 const errorLog = new EmbedBuilder()
-                    .setTitle('API Error & Queue Empty')
-                    .setDescription(`User: <@${userId}>\nError: \`API rejected token with status code ${validationResult.status}.\``)
+                    .setTitle('Expired Token Removed')
+                    .setDescription(`User: <@${userId}>\nError: \`API rejected token with status code ${validationResult.status}.\`\nToken age: ${timeAgo}\nToken was added: <t:${Math.floor(expiredAt/1000)}:R>`)
                     .setColor(0xED4245)
                     .setTimestamp();
                 await sendBotLog(interaction.guild, 'generator_unauthorized', errorLog);
 
-                return interaction.reply({ content: '❌ **Expired Token / Needs Restocking:** The current active token has expired (401 Unauthorized). The generate panel has stopped working and needs restocking.', flags: 64 });
+                return interaction.reply({ 
+                    content: `❌ **Expired Token Removed**\nThe current active token expired **${timeAgo}** and has been removed from the queue. The generator needs restocking.\n\n**Token was added:** <t:${Math.floor(expiredAt/1000)}:F>`,
+                    flags: 64 
+                });
             }
 
             tokenStock.shift();
@@ -958,7 +986,11 @@ client.on('interactionCreate', async interaction => {
             const bearer = interaction.fields.getTextInputValue('stock_bearer_input').trim();
             const refresh = interaction.fields.getTextInputValue('stock_refresh_input').trim();
             
-            tokenStock.push({ bearer, refresh });
+            tokenStock.push({ 
+                bearer, 
+                refresh,
+                addedAt: Date.now() // Track when the token was added to stock
+            });
 
             const stockLog = new EmbedBuilder()
                 .setTitle('Stock Restocked & Verified')
