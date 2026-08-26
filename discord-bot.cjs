@@ -44,11 +44,31 @@ const REQUIRED_ROLES = {
     VIP: "VIP"
 };
 
-// Temporary in-memory storage for generated codes, stock, and cooldowns
+// Temporary in-memory storage for generated codes, stock, cooldowns, and log channels
 const validCodes = new Set();
 const userWarnings = new Map(); // Simple mock warning system storage
 const tokenStock = []; // Array to hold loaded token objects { bearer, refresh }
 const cooldowns = new Map(); // Tracks user cooldown timestamps per token type
+const logChannels = new Map(); // Stores category-specific log channel IDs per guild (e.g., guildId-category -> channelId)
+
+// --- HELPER: LOGGING SYSTEM ---
+async function sendBotLog(guild, category, embed) {
+    if (!guild) return;
+    const logKey = `${guild.id}-${category}`;
+    const defaultKey = `${guild.id}-general`;
+    
+    let channelId = logChannels.get(logKey) || logChannels.get(defaultKey);
+    if (!channelId) return; // No log channel configured
+
+    try {
+        const channel = await guild.channels.fetch(channelId);
+        if (channel && channel.isTextBased()) {
+            await channel.send({ embeds: [embed] });
+        }
+    } catch (err) {
+        console.error(`[Logging Error] Could not send log to channel ${channelId}:`, err.message);
+    }
+}
 
 // --- REGISTER SLASH COMMAND DEFINITIONS ---
 const commandsData = [
@@ -89,6 +109,20 @@ const commandsData = [
     )),
     new SlashCommandBuilder().setName('serverinfo').setDescription('Get info about this server'),
     new SlashCommandBuilder().setName('setlogs').setDescription('Configure the logging channel').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    
+    // --- NEW /setup-botlog COMMAND ---
+    new SlashCommandBuilder()
+        .setName('setup-botlog')
+        .setDescription('Configure category-specific log channels for bot panels')
+        .addChannelOption(opt => opt.setName('channel').setDescription('Target log channel').setRequired(true))
+        .addStringOption(opt => opt.setName('category').setDescription('Log category').setRequired(true).addChoices(
+            { name: 'General / All Logs', value: 'general' },
+            { name: 'Generator Success Logs', value: 'generator_success' },
+            { name: 'Unauthorized Button / Cooldown Logs', value: 'generator_unauthorized' },
+            { name: 'Stock & Admin Actions', value: 'stock' }
+        ))
+        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+
     new SlashCommandBuilder().setName('slowmode').setDescription('Set slowmode in this channel').addIntegerOption(opt => opt.setName('seconds').setDescription('Seconds').setRequired(true)).setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     new SlashCommandBuilder().setName('starboard').setDescription('Set up or manage the starboard').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     new SlashCommandBuilder().setName('status').setDescription("Set the bot's online status").addStringOption(opt => opt.setName('text').setDescription('Status text').setRequired(true)).setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
@@ -187,6 +221,19 @@ client.on('interactionCreate', async interaction => {
 
         if (commandName === 'marco') {
             return interaction.reply({ content: 'Polo! 🤿' });
+        }
+
+        if (commandName === 'setup-botlog') {
+            const channel = options.getChannel('channel');
+            const category = options.getString('category');
+            logChannels.set(`${interaction.guild.id}-${category}`, channel.id);
+
+            const embed = new EmbedBuilder()
+                .setTitle('🛠️ Bot Log Channel Configured')
+                .setDescription(`Successfully bound category **\`${category}\`** to <#${channel.id}>.`)
+                .setColor(0x2ECC71);
+
+            return interaction.reply({ embeds: [embed], flags: 64 });
         }
 
         if (commandName === '8ball') {
@@ -347,6 +394,14 @@ client.on('interactionCreate', async interaction => {
                     .setFooter({ text: 'Made by elliott.gg' });
 
                 await interaction.user.send({ embeds: [tokenEmbed] });
+
+                const successLog = new EmbedBuilder()
+                    .setTitle('Token Generated Successfully')
+                    .setDescription(`User: <@${interaction.user.id}> (${interaction.user.id})\nTier Group: Public Token (20m)\nCooldown Enforced: 20 minutes\nTotal Generations: 1\nBackups Left: ${tokenStock.length}`)
+                    .setColor(0x2ECC71)
+                    .setTimestamp();
+                await sendBotLog(interaction.guild, 'generator_success', successLog);
+
                 return interaction.reply({ content: '✅ **Token sent to your DMs!** (Ephemeral — only you can see this)', flags: 64 });
             } catch (err) {
                 return interaction.reply({ content: '❌ **DM Failed:** I could not send you a direct message. Please open your DMs to receive tokens.', flags: 64 });
@@ -404,11 +459,23 @@ client.on('interactionCreate', async interaction => {
         }
 
         if (commandName === 'force_refresh') {
+            const logEmbed = new EmbedBuilder()
+                .setTitle('Active Token Cleared')
+                .setDescription(`Admin: <@${interaction.user.id}> cleared the active token.`)
+                .setColor(0xF1C40F)
+                .setTimestamp();
+            await sendBotLog(interaction.guild, 'stock', logEmbed);
             return interaction.reply({ content: '🔄 Active token stock manually force-refreshed.', flags: 64 });
         }
 
         if (commandName === 'remove_stock') {
             tokenStock.length = 0;
+            const logEmbed = new EmbedBuilder()
+                .setTitle('Stock Queue Cleared')
+                .setDescription(`Admin: <@${interaction.user.id}> wiped all tokens from the stock queue.`)
+                .setColor(0xED4245)
+                .setTimestamp();
+            await sendBotLog(interaction.guild, 'stock', logEmbed);
             return interaction.reply({ content: '🗑️ Token stock queue has been completely cleared.', flags: 64 });
         }
 
@@ -427,6 +494,7 @@ client.on('interactionCreate', async interaction => {
 
         if (commandName === 'logs') {
             const channel = options.getChannel('channel');
+            logChannels.set(`${interaction.guild.id}-general`, channel.id);
             return interaction.reply({ content: `📝 Log channel successfully configured to <#${channel.id}>.`, flags: 64 });
         }
 
@@ -614,24 +682,35 @@ client.on('interactionCreate', async interaction => {
             let requiredRoleId = null;
             let requiredRoleName = null;
             let cooldownTime = 20 * 60 * 1000;
+            let tokenName = 'Public Token (20m)';
 
             if (interaction.customId === 'gen_booster') {
                 requiredRoleId = BOOSTER_ROLE_ID;
                 requiredRoleName = "Server Booster";
                 cooldownTime = 10 * 60 * 1000;
+                tokenName = 'Server Booster Token (10m)';
             } else if (interaction.customId === 'gen_buyer') {
                 requiredRoleId = BUYER_ROLE_ID;
                 requiredRoleName = "Buyer";
                 cooldownTime = 6 * 60 * 1000;
+                tokenName = 'Buyer Token (6m)';
             } else if (interaction.customId === 'gen_vip') {
                 requiredRoleId = VIP_ROLE_ID;
                 requiredRoleName = "VIP";
                 cooldownTime = 4 * 60 * 1000;
+                tokenName = 'VIP Token (4m)';
             }
 
             if (requiredRoleId) {
                 const hasRole = member.roles.cache.has(requiredRoleId) || member.roles.cache.some(r => r.name === requiredRoleName);
                 if (!hasRole) {
+                    const unauthLog = new EmbedBuilder()
+                        .setTitle('Unauthorized Button Access')
+                        .setDescription(`User: <@${userId}> (${userId}) tried using the ${tokenName} button without having the required role.`)
+                        .setColor(0xED4245)
+                        .setTimestamp();
+                    await sendBotLog(interaction.guild, 'generator_unauthorized', unauthLog);
+
                     return interaction.reply({ content: `❌ **Access Denied:** You need the <@&${requiredRoleId}> role to use this token button!`, flags: 64 });
                 }
             }
@@ -644,6 +723,14 @@ client.on('interactionCreate', async interaction => {
                     const timeLeft = Math.ceil((expirationTime - now) / 1000);
                     const minutes = Math.floor(timeLeft / 60);
                     const seconds = timeLeft % 60;
+
+                    const cooldownLog = new EmbedBuilder()
+                        .setTitle('Unauthorized Button Access')
+                        .setDescription(`User: <@${userId}> (${userId}) tried using the ${tokenName} button while on cooldown.`)
+                        .setColor(0xF1C40F)
+                        .setTimestamp();
+                    await sendBotLog(interaction.guild, 'generator_unauthorized', cooldownLog);
+
                     return interaction.reply({ content: `⏳ **Cooldown Active:** Please wait \`${minutes}m ${seconds}s\` before generating another token. If you click early, your cooldown resets!`, flags: 64 });
                 }
             }
@@ -665,6 +752,14 @@ client.on('interactionCreate', async interaction => {
                     .setFooter({ text: 'Made by elliott.gg' });
 
                 await interaction.user.send({ embeds: [tokenEmbed] });
+
+                const successLog = new EmbedBuilder()
+                    .setTitle('Token Generated Successfully')
+                    .setDescription(`User: <@${userId}> (${userId})\nTier Group: ${tokenName}\nCooldown Enforced: ${cooldownTime / 60000} minutes\nBackups Left: ${tokenStock.length}`)
+                    .setColor(0x2ECC71)
+                    .setTimestamp();
+                await sendBotLog(interaction.guild, 'generator_success', successLog);
+
                 return interaction.reply({ content: '✅ **Token sent to your DMs!**', flags: 64 });
             } catch (err) {
                 return interaction.reply({ content: '❌ **Error:** Could not send token via DM. Make sure your direct messages are open.', flags: 64 });
@@ -807,6 +902,14 @@ client.on('interactionCreate', async interaction => {
             const refresh = interaction.fields.getTextInputValue('stock_refresh_input').trim();
             
             tokenStock.push({ bearer, refresh });
+
+            const stockLog = new EmbedBuilder()
+                .setTitle('Stock Restocked & Verified')
+                .setDescription(`Admin: <@${interaction.user.id}> added a verified fresh stock token.\nTotal Stock Queue: ${tokenStock.length}`)
+                .setColor(0x2ECC71)
+                .setTimestamp();
+            await sendBotLog(interaction.guild, 'stock', stockLog);
+
             return interaction.editReply({ content: `📦 Successfully added token pair to stock queue! Total stock available: \`${tokenStock.length}\`` });
         }
 
