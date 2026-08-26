@@ -32,9 +32,18 @@ const MEMBER_ROLE_ID = "1539945420501950535";      // Verification Role ID
 const SUPPORTER_ROLE_ID = "1540841149554499634";   // Role given upon code redemption
 const ANNOUNCEMENT_ROLE_ID = "123456789012345678"; // Announcement Role ID
 
-// Temporary in-memory storage for generated codes
+// Role Names to Auto-Create if Missing
+const REQUIRED_ROLES = {
+    BOOSTER: "Server Booster",
+    BUYER: "Buyer",
+    VIP: "VIP"
+};
+
+// Temporary in-memory storage for generated codes, stock, and cooldowns
 const validCodes = new Set();
 const userWarnings = new Map(); // Simple mock warning system storage
+const tokenStock = []; // Array to hold loaded token strings
+const cooldowns = new Map(); // Tracks user cooldown timestamps per token type
 
 // --- REGISTER SLASH COMMAND DEFINITIONS ---
 const commandsData = [
@@ -85,17 +94,19 @@ const commandsData = [
     new SlashCommandBuilder().setName('warn').setDescription('Warn a member').addUserOption(opt => opt.setName('target').setDescription('Member').setRequired(true)).addStringOption(opt => opt.setName('reason').setDescription('Reason').setRequired(true)).setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     new SlashCommandBuilder().setName('warnings').setDescription("Check a member's warnings").addUserOption(opt => opt.setName('target').setDescription('Member').setRequired(true)).setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     new SlashCommandBuilder().setName('welcome').setDescription('Configure welcome messages for new members').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-    // Token & Generator Additions from screenshots
+    
+    // Generator & Token Commands from Screenshots
     new SlashCommandBuilder().setName('token').setDescription('Generate a fresh token directly to your DMs'),
     new SlashCommandBuilder().setName('stock').setDescription('Open form to add token stock').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     new SlashCommandBuilder().setName('generator').setDescription('Post clean generator panel').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     new SlashCommandBuilder().setName('force_refresh').setDescription('Manually force-refresh the current active token in stock').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     new SlashCommandBuilder().setName('remove_stock').setDescription('Remove or clear tokens from stock queue').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-    new SlashCommandBuilder().setName('refresh_cooldown_all').setDescription('Reset token generation cooldown for everyone'),
-    new SlashCommandBuilder().setName('refresh_cooldown_user').setDescription('Reset token generation cooldown for a specific user').addUserOption(opt => opt.setName('target').setDescription('User').setRequired(true)),
-    new SlashCommandBuilder().setName('refresh_user').setDescription('Reset token generation cooldown for a specific user').addUserOption(opt => opt.setName('target').setDescription('User').setRequired(true)),
+    new SlashCommandBuilder().setName('refresh_cooldown_all').setDescription('Reset token generation cooldown for everyone').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    new SlashCommandBuilder().setName('refresh_cooldown_user').setDescription('Reset token generation cooldown for a specific user').addUserOption(opt => opt.setName('target').setDescription('User').setRequired(true)).setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    new SlashCommandBuilder().setName('refresh_user').setDescription('Reset token generation cooldown for a specific user').addUserOption(opt => opt.setName('target').setDescription('User').setRequired(true)).setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     new SlashCommandBuilder().setName('logs').setDescription('Set log channel').addChannelOption(opt => opt.setName('channel').setDescription('Log channel').setRequired(true)).setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     new SlashCommandBuilder().setName('servers').setDescription('List all servers the bot is currently in').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+
     // Core panels
     new SlashCommandBuilder().setName('panel')
         .setDescription('Deploys interactive management panels')
@@ -105,14 +116,33 @@ const commandsData = [
             { name: 'Support', value: 'support' },
             { name: 'Automod', value: 'automod' },
             { name: 'Roles', value: 'roles' },
-            { name: 'Help Directory', value: 'help' }
+            { name: 'Help Directory', value: 'help' },
+            { name: 'Generator', value: 'generator' }
         ))
 ].map(command => command.toJSON());
 
 client.once('ready', async () => {
-    console.log(`[🚀 ONLINE] Elliott Modding (${client.user.tag}) is fully operational!`);
+    console.log(`[🚀 ONLINE] Elliott Modding (${client.user.tag}) is fully operational![cite: 2]`);
 
-    // Automatically register slash commands globally
+    // --- AUTO-CREATE MISSING ROLES ACROSS ALL SERVERS ---
+    for (const guild of client.guilds.cache.values()) {
+        for (const roleName of Object.values(REQUIRED_ROLES)) {
+            const exists = guild.roles.cache.some(r => r.name === roleName);
+            if (!exists) {
+                try {
+                    await guild.roles.create({
+                        name: roleName,
+                        reason: "Automated Setup: Missing required token generator role."
+                    });
+                    console.log(`[Role Setup] Created missing role '${roleName}' in guild: ${guild.name}`);
+                } catch (err) {
+                    console.error(`[Role Setup Error] Could not create role '${roleName}' in ${guild.name}:`, err.message);
+                }
+            }
+        }
+    }
+
+    // Automatically register slash commands globally[cite: 2]
     const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
     try {
         console.log('[Slash Commands] Started refreshing application (/) commands.');
@@ -132,7 +162,7 @@ function generateSupporterCode() {
     return `supporter-${randomNums()}-${randomNums()}-${randomNums()}`;
 }
 
-// --- INTERACTION HANDLER (Slash Commands, Buttons, Dropdowns, Modals) ---
+// --- INTERACTION HANDLER (Slash Commands, Buttons, Dropdowns, Modals)[cite: 2] ---
 client.on('interactionCreate', async interaction => {
 
     // 1. SLASH COMMANDS
@@ -194,23 +224,55 @@ client.on('interactionCreate', async interaction => {
             return interaction.reply({ embeds: [codeEmbed], flags: 64 });
         }
 
-        // --- NEW SCREENSHOT COMMAND HANDLERS ---
         if (commandName === 'token') {
-            return interaction.reply({ content: '🔑 Fresh token generation requested. Check your direct messages!', flags: 64 });
+            if (tokenStock.length === 0) {
+                return interaction.reply({ content: '❌ **Out of Stock:** There are currently no tokens available in the database. Ask an admin to add stock.', flags: 64 });
+            }
+            const token = tokenStock.shift();
+            try {
+                await interaction.user.send(`🔑 **Your Generated EIC Token:**\n\`\`\`${token}\`\`\``);
+                return interaction.reply({ content: '✅ **Token sent to your DMs!** (Ephemeral — only you can see this)', flags: 64 });
+            } catch (err) {
+                return interaction.reply({ content: '❌ **DM Failed:** I could not send you a direct message. Please open your DMs to receive tokens.', flags: 64 });
+            }
         }
 
         if (commandName === 'stock') {
-            return interaction.reply({ content: '📦 Stock management form interface opened.', flags: 64 });
+            const modal = new ModalBuilder()
+                .setCustomId('stock_modal')
+                .setTitle('📦 Add Token Stock');
+
+            const tokenInput = new TextInputBuilder()
+                .setCustomId('stock_input')
+                .setLabel("ENTER TOKENS (One per line or comma separated)")
+                .setStyle(TextInputStyle.Paragraph)
+                .setPlaceholder("token_abc123\ntoken_xyz789")
+                .setRequired(true);
+
+            modal.addComponents(new ActionRowBuilder().addComponents(tokenInput));
+            return await interaction.showModal(modal);
         }
 
         if (commandName === 'generator') {
             const embed = new EmbedBuilder()
-                .setTitle("⚡ // TOKEN GENERATOR PANEL")
-                .setDescription("Click the button below to generate your token securely.")
+                .setTitle("envo token generator")
+                .setDescription("Generate your EIC token below!\n\n" +
+                    "**Public Token** — everyone | cooldown: `20m 0s`\n" +
+                    "**Booster Token** — <@&Server Booster> only | cooldown: `10m 0s`\n" +
+                    "**Buyer Token** — <@&Buyer> only | cooldown: `6m 0s`\n" +
+                    "**VIP Token** — <@&VIP> only | cooldown: `4m 0s`\n\n" +
+                    "*Tokens are only visible to you.*\n" +
+                    "*Ephemeral — only you can see your token*\n\n" +
+                    "**Made by envo.gg**")
                 .setColor(0x5865F2);
+
             const row = new ActionRowBuilder().addComponents(
-                new ButtonBuilder().setCustomId('gen_token_btn').setLabel('GENERATE TOKEN').setStyle(ButtonStyle.Primary).setEmoji('🎁')
+                new ButtonBuilder().setCustomId('gen_public').setLabel('Public Token').setStyle(ButtonStyle.Success).setEmoji('🟢'),
+                new ButtonBuilder().setCustomId('gen_booster').setLabel('Booster Token').setStyle(ButtonStyle.Primary).setEmoji('🚀'),
+                new ButtonBuilder().setCustomId('gen_buyer').setLabel('Buyer Token').setStyle(ButtonStyle.Secondary).setEmoji('🛒'),
+                new ButtonBuilder().setCustomId('gen_vip').setLabel('VIP Token').setStyle(ButtonStyle.Danger).setEmoji('⚡')
             );
+
             return interaction.reply({ embeds: [embed], components: [row] });
         }
 
@@ -219,15 +281,20 @@ client.on('interactionCreate', async interaction => {
         }
 
         if (commandName === 'remove_stock') {
-            return interaction.reply({ content: '🗑️ Stock queue cleared or item removed successfully.', flags: 64 });
+            tokenStock.length = 0;
+            return interaction.reply({ content: '🗑️ Token stock queue has been completely cleared.', flags: 64 });
         }
 
         if (commandName === 'refresh_cooldown_all') {
+            cooldowns.clear();
             return interaction.reply({ content: '⏱️ Token generation cooldowns have been reset for **everyone**.' });
         }
 
         if (commandName === 'refresh_cooldown_user' || commandName === 'refresh_user') {
             const target = options.getUser('target');
+            for (const key of cooldowns.keys()) {
+                if (key.startsWith(target.id)) cooldowns.delete(key);
+            }
             return interaction.reply({ content: `⏱️ Cooldown reset successfully for <@${target.id}>.` });
         }
 
@@ -245,6 +312,29 @@ client.on('interactionCreate', async interaction => {
         if (commandName === 'panel') {
             const subArg = options.getString('type');
 
+            if (subArg === 'generator') {
+                const embed = new EmbedBuilder()
+                    .setTitle("envo token generator")
+                    .setDescription("Generate your EIC token below!\n\n" +
+                        "**Public Token** — everyone | cooldown: `20m 0s`\n" +
+                        "**Booster Token** — <@&Server Booster> only | cooldown: `10m 0s`\n" +
+                        "**Buyer Token** — <@&Buyer> only | cooldown: `6m 0s`\n" +
+                        "**VIP Token** — <@&VIP> only | cooldown: `4m 0s`\n\n" +
+                        "*Tokens are only visible to you.*\n" +
+                        "*Ephemeral — only you can see your token*\n\n" +
+                        "**Made by envo.gg**")
+                    .setColor(0x5865F2);
+
+                const row = new ActionRowBuilder().addComponents(
+                    new ButtonBuilder().setCustomId('gen_public').setLabel('Public Token').setStyle(ButtonStyle.Success).setEmoji('🟢'),
+                    new ButtonBuilder().setCustomId('gen_booster').setLabel('Booster Token').setStyle(ButtonStyle.Primary).setEmoji('🚀'),
+                    new ButtonBuilder().setCustomId('gen_buyer').setLabel('Buyer Token').setStyle(ButtonStyle.Secondary).setEmoji('🛒'),
+                    new ButtonBuilder().setCustomId('gen_vip').setLabel('VIP Token').setStyle(ButtonStyle.Danger).setEmoji('⚡')
+                );
+
+                return interaction.reply({ embeds: [embed], components: [row] });
+            }
+
             if (subArg === 'help') {
                 const embed = new EmbedBuilder()
                     .setTitle("⚡ // ELLIOTT MODDING COMMAND DIRECTORY")
@@ -256,6 +346,7 @@ client.on('interactionCreate', async interaction => {
                         { name: "🛠️ `/panel support`", value: "Deploys the automated private ticket room generator.", inline: false },
                         { name: "🛡️ `/panel automod`", value: "Deploys the defense grid status console.", inline: false },
                         { name: "🎨 `/panel roles`", value: "Deploys the community notification toggles.", inline: false },
+                        { name: "⚡ `/panel generator`", value: "Deploys the Envo Token Generator interface panel.", inline: false },
                         { name: "🔑 `/generate-code`", value: "Generates a unique `supporter-xxxx-xxxx-xxxx` code for the redeem panel.", inline: false }
                     )
                     .setFooter({ text: "Elliott Modding Enterprise Security Suite" });
@@ -381,7 +472,7 @@ client.on('interactionCreate', async interaction => {
         }
 
         // Generic confirmation fallback for remaining listed administrative utility slash commands
-        const adminCommands = ['afk', 'announce', 'autodelete', 'autorole', 'ban', 'blacklist', 'bumpreminder', 'counting', 'fakeconvo', 'fakemessage', 'giveall', 'giveaway', 'info', 'leaderboard', 'level', 'levelset', 'lock', 'modmakerapply', 'mute', 'poll', 'postroles', 'postrules', 'reactionrole', 'roleadd', 'roleremove', 'serverinfo', 'setlogs', 'slowmode', 'starboard', 'status', 'suggest', 'ticketpanel', 'unlock', 'welcome'];
+        const adminCommands = ['afk', 'announce', 'autodelete', 'autorole', 'ban', 'blacklist', 'bumpreminder', 'counting', 'fakeconvo', 'fakemessage', 'giveall', 'giveaway', 'info', 'leaderboard', 'level', 'levelset', 'lock', 'modmakerapply', 'mute', 'poll', 'postroles', 'postrules', 'reactionrole', 'roleadd', 'roleremove', 'serverinfo', 'setlogs', 'slowmode', 'starboard', 'status', 'suggest', 'unlock', 'welcome'];
         if (adminCommands.includes(commandName)) {
             return interaction.reply({ content: `⚡ Command \`/${commandName}\` executed successfully!`, flags: 64 });
         }
@@ -389,6 +480,61 @@ client.on('interactionCreate', async interaction => {
 
     // 2. BUTTON INTERACTIONS
     if (interaction.isButton()) {
+
+        // --- ENVO GENERATOR BUTTON LOGIC ---
+        if (['gen_public', 'gen_booster', 'gen_buyer', 'gen_vip'].includes(interaction.customId)) {
+            const userId = interaction.user.id;
+            const member = interaction.member;
+            let requiredRoleName = null;
+            let cooldownTime = 20 * 60 * 1000; // Default 20 mins for public
+
+            if (interaction.customId === 'gen_booster') {
+                requiredRoleName = REQUIRED_ROLES.BOOSTER;
+                cooldownTime = 10 * 60 * 1000;
+            } else if (interaction.customId === 'gen_buyer') {
+                requiredRoleName = REQUIRED_ROLES.BUYER;
+                cooldownTime = 6 * 60 * 1000;
+            } else if (interaction.customId === 'gen_vip') {
+                requiredRoleName = REQUIRED_ROLES.VIP;
+                cooldownTime = 4 * 60 * 1000;
+            }
+
+            // Check Role Requirement
+            if (requiredRoleName) {
+                const hasRole = member.roles.cache.some(r => r.name === requiredRoleName);
+                if (!hasRole) {
+                    return interaction.reply({ content: `❌ **Access Denied:** You need the **${requiredRoleName}** role to use this token button!`, flags: 64 });
+                }
+            }
+
+            // Check Cooldown
+            const cooldownKey = `${userId}-${interaction.customId}`;
+            const now = Date.now();
+            if (cooldowns.has(cooldownKey)) {
+                const expirationTime = cooldowns.get(cooldownKey);
+                if (now < expirationTime) {
+                    const timeLeft = Math.ceil((expirationTime - now) / 1000);
+                    const minutes = Math.floor(timeLeft / 60);
+                    const seconds = timeLeft % 60;
+                    return interaction.reply({ content: `⏳ **Cooldown Active:** Please wait \`${minutes}m ${seconds}s\` before generating another token. If you click early, your cooldown resets!`, flags: 64 });
+                }
+            }
+
+            // Set New Cooldown
+            cooldowns.set(cooldownKey, now + cooldownTime);
+
+            if (tokenStock.length === 0) {
+                return interaction.reply({ content: '❌ **Out of Stock:** No tokens available in the database right now.', flags: 64 });
+            }
+
+            const token = tokenStock.shift();
+            try {
+                await interaction.user.send(`🔑 **Your Generated Token:**\n\`\`\`${token}\`\`\``);
+                return interaction.reply({ content: '✅ **Token sent to your DMs!**', flags: 64 });
+            } catch (err) {
+                return interaction.reply({ content: '❌ **Error:** Could not send token via DM. Make sure your direct messages are open.', flags: 64 });
+            }
+        }
         
         // --- SECURE VERIFICATION PROTOCOL ---
         if (interaction.customId === 'verify_btn') {
@@ -521,8 +667,17 @@ client.on('interactionCreate', async interaction => {
         setTimeout(() => interaction.channel.delete().catch(() => {}), 5000);
     }
 
-    // 4. MODAL SUBMISSIONS (KEY REDEMPTION LOGIC & ROLE ASSIGNMENT)
+    // 4. MODAL SUBMISSIONS (KEY REDEMPTION, STOCK LOADING, & ROLE ASSIGNMENT)
     if (interaction.isModalSubmit()) {
+        if (interaction.customId === 'stock_modal') {
+            await interaction.deferReply({ flags: 64 });
+            const inputData = interaction.fields.getTextInputValue('stock_input');
+            const newTokens = inputData.split(/[\r\n,]+/).map(t => t.trim()).filter(t => t.length > 0);
+            
+            tokenStock.push(...newTokens);
+            return interaction.editReply({ content: `📦 Successfully added **${newTokens.length}** token(s) to stock queue! Total stock: \`${tokenStock.length}\`` });
+        }
+
         if (interaction.customId === 'redeem_modal') {
             await interaction.deferReply({ flags: 64 });
             const code = interaction.fields.getTextInputValue('redeem_code_input').trim();
