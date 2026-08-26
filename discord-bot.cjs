@@ -103,11 +103,11 @@ const commandsData = [
     // Custom /build server generator command
     new SlashCommandBuilder()
         .setName('build')
-        .setDescription('Builds a custom category and essential channels based on your theme')
+        .setDescription('Builds a full theme layout with panels and categorized community/gaming channels')
         .addStringOption(opt => opt.setName('theme').setDescription('The theme/name for your server layout').setRequired(true))
         .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
 
-    // Generator & Token Commands from Screenshots
+    // Generator & Token Commands
     new SlashCommandBuilder().setName('token').setDescription('Generate a fresh token directly to your DMs'),
     new SlashCommandBuilder().setName('stock').setDescription('Open form to add token stock').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     new SlashCommandBuilder().setName('generator').setDescription('Post clean generator panel').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
@@ -174,7 +174,7 @@ function generateSupporterCode() {
     return `supporter-${randomNums()}-${randomNums()}-${randomNums()}`;
 }
 
-// --- INTERACTION HANDLER (Slash Commands, Buttons, Dropdowns, Modals)[cite: 2] ---
+// --- INTERACTION HANDLER ---
 client.on('interactionCreate', async interaction => {
 
     // 1. SLASH COMMANDS
@@ -219,41 +219,41 @@ client.on('interactionCreate', async interaction => {
             return interaction.reply({ content: `You chose **${userChoice}**, Queen Bee chose **${botChoice}**. ${outcome}` });
         }
 
-        // --- NEW /BUILD COMMAND IMPLEMENTATION ---
+        // --- UPDATED /BUILD COMMAND WITH ORGANIZED CATEGORIES ---
         if (commandName === 'build') {
             const theme = options.getString('theme');
             await interaction.deferReply({ flags: 64 });
 
             try {
                 const guild = interaction.guild;
-                const categoryName = `📁・${theme.toUpperCase()}`;
+                const formattedTheme = theme.toUpperCase();
 
-                // 1. Create the Category
-                const category = await guild.channels.create({
-                    name: categoryName,
+                // 1. WELCOME & VERIFICATION CATEGORY (Keeps verification, redeem, support at the top)
+                const welcomeCategory = await guild.channels.create({
+                    name: `📌・${formattedTheme} - WELCOME`,
                     type: ChannelType.GuildCategory,
                 });
 
-                // 2. Create Verification Channel + Panel
+                // #verification channel + panel
                 const verifyChannel = await guild.channels.create({
                     name: 'verification',
                     type: ChannelType.GuildText,
-                    parent: category.id,
+                    parent: welcomeCategory.id,
                 });
                 const verifyEmbed = new EmbedBuilder()
                     .setTitle("🛡️ // SECURITY PROTOCOL")
-                    .setDescription(`Welcome to the **${theme}** sector. Click below to verify your session and unlock community channels.`)
+                    .setDescription(`Welcome to **${theme}**. Click below to verify your session and unlock community channels.`)
                     .setColor(0x1ABC9C);
                 const verifyRow = new ActionRowBuilder().addComponents(
                     new ButtonBuilder().setCustomId('verify_btn').setLabel('VERIFY').setStyle(ButtonStyle.Success).setEmoji('🛡️')
                 );
                 await verifyChannel.send({ embeds: [verifyEmbed], components: [verifyRow] });
 
-                // 3. Create Redeem Channel + Panel
+                // #redeem channel + panel
                 const redeemChannel = await guild.channels.create({
                     name: 'redeem',
                     type: ChannelType.GuildText,
-                    parent: category.id,
+                    parent: welcomeCategory.id,
                 });
                 const redeemEmbed = new EmbedBuilder()
                     .setTitle("💎 // KEY REDEEM DESK")
@@ -264,11 +264,11 @@ client.on('interactionCreate', async interaction => {
                 );
                 await redeemChannel.send({ embeds: [redeemEmbed], components: [redeemRow] });
 
-                // 4. Create Support Channel + Panel
+                // #support channel + panel
                 const supportChannel = await guild.channels.create({
                     name: 'support',
                     type: ChannelType.GuildText,
-                    parent: category.id,
+                    parent: welcomeCategory.id,
                 });
                 const supportEmbed = new EmbedBuilder()
                     .setTitle("🛠️ // SUPPORT DESK")
@@ -285,7 +285,40 @@ client.on('interactionCreate', async interaction => {
                 );
                 await supportChannel.send({ embeds: [supportEmbed], components: [supportRow] });
 
-                return interaction.editReply({ content: `✅ Successfully built category **${categoryName}** with channels **#verification**, **#redeem**, and **#support**!` });
+
+                // 2. STANDARD COMMUNITY CATEGORY
+                const communityCategory = await guild.channels.create({
+                    name: `💬・${formattedTheme} - COMMUNITY`,
+                    type: ChannelType.GuildCategory,
+                });
+
+                await guild.channels.create({ name: 'rules', type: ChannelType.GuildText, parent: communityCategory.id });
+                await guild.channels.create({ name: 'announcements', type: ChannelType.GuildText, parent: communityCategory.id });
+                await guild.channels.create({ name: 'general', type: ChannelType.GuildText, parent: communityCategory.id });
+                await guild.channels.create({ name: 'media-share', type: ChannelType.GuildText, parent: communityCategory.id });
+
+
+                // 3. GAMING & LOUNGE CATEGORY
+                const gamingCategory = await guild.channels.create({
+                    name: `🎮・${formattedTheme} - GAMING`,
+                    type: ChannelType.GuildCategory,
+                });
+
+                await guild.channels.create({ name: 'gaming-chat', type: ChannelType.GuildText, parent: gamingCategory.id });
+                await guild.channels.create({ name: 'General Lounge', type: ChannelType.GuildVoice, parent: gamingCategory.id });
+                await guild.channels.create({ name: 'Squad Voice', type: ChannelType.GuildVoice, parent: gamingCategory.id });
+
+
+                // 4. BOT COMMANDS CATEGORY
+                const botCategory = await guild.channels.create({
+                    name: `🤖・${formattedTheme} - BOT ROOMS`,
+                    type: ChannelType.GuildCategory,
+                });
+
+                await guild.channels.create({ name: 'bot-commands', type: ChannelType.GuildText, parent: botCategory.id });
+                await guild.channels.create({ name: 'generator', type: ChannelType.GuildText, parent: botCategory.id });
+
+                return interaction.editReply({ content: `✅ Successfully built the structured **${theme}** server layout containing your verification, redeem, support panels, plus categorized community and gaming rooms!` });
             } catch (err) {
                 console.error("Build Command Error:", err);
                 return interaction.editReply({ content: "❌ Failed to build server layout. Ensure the bot has `MANAGE_CHANNELS` permissions." });
@@ -426,7 +459,7 @@ client.on('interactionCreate', async interaction => {
                     .setDescription("Ultra-secure administrative panel deployment suite:")
                     .setColor(0x3498DB)
                     .addFields(
-                        { name: "🔨 `/build [theme]`", value: "Generates a custom category with #verification, #redeem, and #support channels.", inline: false },
+                        { name: "🔨 `/build [theme]`", value: "Generates full server layout categories with panels, rules, community chat, and voice rooms.", inline: false },
                         { name: "🔒 `/panel verify`", value: "Deploys the ultra-secure verification gate with automated role integration.", inline: false },
                         { name: "💎 `/panel redeem`", value: "Deploys the live key redemption modal system.", inline: false },
                         { name: "🛠️ `/panel support`", value: "Deploys the automated private ticket room generator.", inline: false },
@@ -557,7 +590,6 @@ client.on('interactionCreate', async interaction => {
             return interaction.reply({ content: `🔇 Timed out <@${target.id}> for **${minutes}** minutes.`, flags: 64 });
         }
 
-        // Generic confirmation fallback for remaining listed administrative utility slash commands
         const adminCommands = ['afk', 'announce', 'autodelete', 'autorole', 'ban', 'blacklist', 'bumpreminder', 'counting', 'fakeconvo', 'fakemessage', 'giveall', 'giveaway', 'info', 'leaderboard', 'level', 'levelset', 'lock', 'modmakerapply', 'mute', 'poll', 'postroles', 'postrules', 'reactionrole', 'roleadd', 'roleremove', 'serverinfo', 'setlogs', 'slowmode', 'starboard', 'status', 'suggest', 'unlock', 'welcome'];
         if (adminCommands.includes(commandName)) {
             return interaction.reply({ content: `⚡ Command \`/${commandName}\` executed successfully!`, flags: 64 });
@@ -573,7 +605,7 @@ client.on('interactionCreate', async interaction => {
             const member = interaction.member;
             let requiredRoleId = null;
             let requiredRoleName = null;
-            let cooldownTime = 20 * 60 * 1000; // Default 20 mins for public
+            let cooldownTime = 20 * 60 * 1000;
 
             if (interaction.customId === 'gen_booster') {
                 requiredRoleId = BOOSTER_ROLE_ID;
@@ -589,7 +621,6 @@ client.on('interactionCreate', async interaction => {
                 cooldownTime = 4 * 60 * 1000;
             }
 
-            // Check Role Requirement
             if (requiredRoleId) {
                 const hasRole = member.roles.cache.has(requiredRoleId) || member.roles.cache.some(r => r.name === requiredRoleName);
                 if (!hasRole) {
@@ -597,7 +628,6 @@ client.on('interactionCreate', async interaction => {
                 }
             }
 
-            // Check Cooldown
             const cooldownKey = `${userId}-${interaction.customId}`;
             const now = Date.now();
             if (cooldowns.has(cooldownKey)) {
@@ -610,7 +640,6 @@ client.on('interactionCreate', async interaction => {
                 }
             }
 
-            // Set New Cooldown
             cooldowns.set(cooldownKey, now + cooldownTime);
 
             if (tokenStock.length === 0) {
@@ -628,7 +657,7 @@ client.on('interactionCreate', async interaction => {
         
         // --- SECURE VERIFICATION PROTOCOL ---
         if (interaction.customId === 'verify_btn') {
-            await interaction.deferReply({ flags: 64 }); // Ephemeral loading
+            await interaction.deferReply({ flags: 64 });
 
             const guild = interaction.guild;
             const member = interaction.member;
@@ -675,7 +704,6 @@ client.on('interactionCreate', async interaction => {
             return await interaction.showModal(modal);
         }
 
-        // --- ANNOUNCEMENT ROLE TOGGLE ---
         if (interaction.customId === 'role_announcements') {
             const role = interaction.guild.roles.cache.get(ANNOUNCEMENT_ROLE_ID);
             if (!role) return interaction.reply({ content: "❌ **Error:** Announcement role is not configured.", flags: 64 });
@@ -689,7 +717,6 @@ client.on('interactionCreate', async interaction => {
             }
         }
 
-        // --- AUTOMOD DASHBOARD TOGGLE ---
         if (interaction.customId === 'automod_toggle') {
             if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
                 return interaction.reply({ content: "❌ **Access Denied:** Administrator clearance required to audit defense grids.", flags: 64 });
@@ -748,7 +775,6 @@ client.on('interactionCreate', async interaction => {
         }
     }
 
-    // Handle Closing Tickets via Button
     if (interaction.isButton() && interaction.customId === 'close_ticket_btn') {
         if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
             return interaction.reply({ content: "❌ Only staff members can close active tickets.", flags: 64 });
@@ -757,7 +783,7 @@ client.on('interactionCreate', async interaction => {
         setTimeout(() => interaction.channel.delete().catch(() => {}), 5000);
     }
 
-    // 4. MODAL SUBMISSIONS (KEY REDEMPTION, STOCK LOADING, & ROLE ASSIGNMENT)
+    // 4. MODAL SUBMISSIONS
     if (interaction.isModalSubmit()) {
         if (interaction.customId === 'stock_modal') {
             await interaction.deferReply({ flags: 64 });
@@ -773,7 +799,7 @@ client.on('interactionCreate', async interaction => {
             const code = interaction.fields.getTextInputValue('redeem_code_input').trim();
 
             if (validCodes.has(code)) {
-                validCodes.delete(code); // Consume the code
+                validCodes.delete(code);
 
                 const guild = interaction.guild;
                 const member = interaction.member;
