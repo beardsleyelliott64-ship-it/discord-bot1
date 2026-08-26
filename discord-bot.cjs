@@ -31,6 +31,7 @@ const client = new Client({
 const MEMBER_ROLE_ID = "1539945420501950535";      // Verification Role ID
 const SUPPORTER_ROLE_ID = "1540841149554499634";   // Role given upon code redemption
 const ANNOUNCEMENT_ROLE_ID = "123456789012345678"; // Announcement Role ID
+const BOT_OWNER_ID = "YOUR_DISCORD_USER_ID"; // REPLACE WITH YOUR ACTUAL USER ID
 
 // Role IDs provided in exact order: Buyer, VIP, Server Booster
 const BUYER_ROLE_ID = "1542207847889375364";
@@ -48,8 +49,10 @@ const REQUIRED_ROLES = {
 const validCodes = new Set();
 const userWarnings = new Map(); // Simple mock warning system storage
 const tokenStock = []; // Array to hold loaded token objects { bearer, refresh, addedAt, expiresAt }
+const donatedTokens = []; // Array to hold donated tokens
 const cooldowns = new Map(); // Tracks user cooldown timestamps per token type
 const logChannels = new Map(); // Stores category-specific log channel IDs per guild
+let donatedTokenCounter = 0; // Counter for donated tokens
 
 // --- HELPER: LOGGING SYSTEM ---
 async function sendBotLog(guild, category, embed) {
@@ -269,7 +272,7 @@ const commandsData = [
         .addStringOption(opt => opt.setName('theme').setDescription('The theme/name for your server layout').setRequired(true))
         .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
 
-    // Generator & Token Commands
+    // Generator & Token Commands - ALL ADMIN ONLY (except token which is public)
     new SlashCommandBuilder().setName('token').setDescription('Generate a fresh token directly to your DMs'),
     new SlashCommandBuilder().setName('stock').setDescription('Open form to add token stock').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     new SlashCommandBuilder().setName('generator').setDescription('Post clean generator panel').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
@@ -280,6 +283,7 @@ const commandsData = [
     new SlashCommandBuilder().setName('refresh_user').setDescription('Reset token generation cooldown for a specific user').addUserOption(opt => opt.setName('target').setDescription('User').setRequired(true)).setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     new SlashCommandBuilder().setName('logs').setDescription('Set log channel').addChannelOption(opt => opt.setName('channel').setDescription('Log channel').setRequired(true)).setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     new SlashCommandBuilder().setName('servers').setDescription('List all servers the bot is currently in').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    new SlashCommandBuilder().setName('put_donated').setDescription('Put a donated token into the stock (BOT OWNER ONLY)').addStringOption(opt => opt.setName('bearer').setDescription('Bearer token').setRequired(true)).addStringOption(opt => opt.setName('refresh').setDescription('Refresh token').setRequired(true)),
 
     new SlashCommandBuilder().setName('panel')
         .setDescription('Deploys interactive management panels')
@@ -292,6 +296,7 @@ const commandsData = [
             { name: 'Help Directory', value: 'help' },
             { name: 'Generator', value: 'generator' }
         ))
+        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
 ].map(command => command.toJSON());
 
 client.once('ready', async () => {
@@ -340,30 +345,23 @@ function isTokenExpired(tokenObj) {
     return Date.now() > tokenObj.expiresAt;
 }
 
+// Helper to check if user is bot owner
+function isBotOwner(userId) {
+    return userId === BOT_OWNER_ID;
+}
+
 client.on('interactionCreate', async interaction => {
-    try { // FIX: Wrapped interaction in try/catch to prevent 'Unknown interaction' crash
+    try {
         if (interaction.isChatInputCommand()) {
             const { commandName, options } = interaction;
 
+            // --- PUBLIC COMMANDS (Everyone can use) ---
             if (commandName === 'ping') {
                 return interaction.reply({ content: `Pong! Latency is \`${client.ws.ping}ms\`.`, flags: 64 });
             }
 
             if (commandName === 'marco') {
                 return interaction.reply({ content: 'Polo! 🤿' });
-            }
-
-            if (commandName === 'setup-botlog') {
-                const channel = options.getChannel('channel');
-                const category = options.getString('category');
-                logChannels.set(`${interaction.guild.id}-${category}`, channel.id);
-
-                const embed = new EmbedBuilder()
-                    .setTitle('🛠️ Bot Log Channel Configured')
-                    .setDescription(`Successfully bound category **\`${category}\`** to <#${channel.id}>.`)
-                    .setColor(0x2ECC71);
-
-                return interaction.reply({ embeds: [embed], flags: 64 });
             }
 
             if (commandName === '8ball') {
@@ -396,118 +394,7 @@ client.on('interactionCreate', async interaction => {
                 return interaction.reply({ content: `You chose **${userChoice}**, Queen Bee chose **${botChoice}**. ${outcome}` });
             }
 
-            if (commandName === 'build') {
-                const theme = options.getString('theme');
-                await interaction.deferReply({ flags: 64 });
-
-                try {
-                    const guild = interaction.guild;
-                    const formattedTheme = theme.toUpperCase();
-
-                    const welcomeCategory = await guild.channels.create({
-                        name: `📌・${formattedTheme} - WELCOME`,
-                        type: ChannelType.GuildCategory,
-                    });
-
-                    const verifyChannel = await guild.channels.create({
-                        name: 'verification',
-                        type: ChannelType.GuildText,
-                        parent: welcomeCategory.id,
-                    });
-                    const verifyEmbed = new EmbedBuilder()
-                        .setTitle("🛡️ // SECURITY PROTOCOL")
-                        .setDescription(`Welcome to **${theme}**. Click below to verify your session and unlock community channels.`)
-                        .setColor(0x1ABC9C);
-                    const verifyRow = new ActionRowBuilder().addComponents(
-                        new ButtonBuilder().setCustomId('verify_btn').setLabel('VERIFY').setStyle(ButtonStyle.Success).setEmoji('🛡️')
-                    );
-                    await verifyChannel.send({ embeds: [verifyEmbed], components: [verifyRow] });
-
-                    const redeemChannel = await guild.channels.create({
-                        name: 'redeem',
-                        type: ChannelType.GuildText,
-                        parent: welcomeCategory.id,
-                    });
-                    const redeemEmbed = new EmbedBuilder()
-                        .setTitle("💎 // KEY REDEEM DESK")
-                        .setDescription(`Got a key for **${theme}**? Click below to submit your license code and claim package permissions instantly.`)
-                        .setColor(0x5865F2);
-                    const redeemRow = new ActionRowBuilder().addComponents(
-                        new ButtonBuilder().setCustomId('redeem_btn').setLabel('REDEEM KEY').setStyle(ButtonStyle.Primary).setEmoji('💎')
-                    );
-                    await redeemChannel.send({ embeds: [redeemEmbed], components: [redeemRow] });
-
-                    const supportChannel = await guild.channels.create({
-                        name: 'support',
-                        type: ChannelType.GuildText,
-                        parent: welcomeCategory.id,
-                    });
-                    const supportEmbed = new EmbedBuilder()
-                        .setTitle("🛠️ // SUPPORT DESK")
-                        .setDescription(`Need assistance with **${theme}**? Select your department below to spin up a private ticket room.`)
-                        .setColor(0xFEE75C);
-                    const supportRow = new ActionRowBuilder().addComponents(
-                        new StringSelectMenuBuilder()
-                            .setCustomId('support_select')
-                            .setPlaceholder('📂 Select department...')
-                            .addOptions([
-                                { label: 'General Support', description: 'Assistance regarding theme setup', value: 'General Inquiry', emoji: '❓' },
-                                { label: 'Billing & Keys', description: 'Store purchases and codes', value: 'Billing Support', emoji: '💳' }
-                            ])
-                    );
-                    await supportChannel.send({ embeds: [supportEmbed], components: [supportRow] });
-
-                    const communityCategory = await guild.channels.create({
-                        name: `💬・${formattedTheme} - COMMUNITY`,
-                        type: ChannelType.GuildCategory,
-                    });
-
-                    await guild.channels.create({ name: 'rules', type: ChannelType.GuildText, parent: communityCategory.id });
-                    await guild.channels.create({ name: 'announcements', type: ChannelType.GuildText, parent: communityCategory.id });
-                    await guild.channels.create({ name: 'general', type: ChannelType.GuildText, parent: communityCategory.id });
-                    await guild.channels.create({ name: 'media-share', type: ChannelType.GuildText, parent: communityCategory.id });
-
-                    const gamingCategory = await guild.channels.create({
-                        name: `🎮・${formattedTheme} - GAMING`,
-                        type: ChannelType.GuildCategory,
-                    });
-
-                    await guild.channels.create({ name: 'gaming-chat', type: ChannelType.GuildText, parent: gamingCategory.id });
-                    await guild.channels.create({ name: 'General Lounge', type: ChannelType.GuildVoice, parent: gamingCategory.id });
-                    await guild.channels.create({ name: 'Squad Voice', type: ChannelType.GuildVoice, parent: gamingCategory.id });
-
-                    const botCategory = await guild.channels.create({
-                        name: `🤖・${formattedTheme} - BOT ROOMS`,
-                        type: ChannelType.GuildCategory,
-                    });
-
-                    await guild.channels.create({ name: 'bot-commands', type: ChannelType.GuildText, parent: botCategory.id });
-                    await guild.channels.create({ name: 'generator', type: ChannelType.GuildText, parent: botCategory.id });
-
-                    return interaction.editReply({ content: `✅ Successfully built the structured **${theme}** server layout containing your verification, redeem, support panels, plus categorized community and gaming rooms!` });
-                } catch (err) {
-                    console.error("Build Command Error:", err);
-                    return interaction.editReply({ content: "❌ Failed to build server layout. Ensure the bot has `MANAGE_CHANNELS` permissions." });
-                }
-            }
-
-            if (commandName === 'generate-code') {
-                const newCode = generateSupporterCode();
-                validCodes.add(newCode);
-
-                const codeEmbed = new EmbedBuilder()
-                    .setTitle("🔑 // GENERATED SUPPORTER KEY")
-                    .setDescription(`A new redeemable key has been generated and linked to the **Redeem Panel** database.`)
-                    .setColor(0x2ECC71)
-                    .addFields(
-                        { name: "Generated Code", value: `\`\`\`${newCode}\`\`\``, inline: false },
-                        { name: "Status", value: "`Active & Unclaimed`", inline: true }
-                    )
-                    .setFooter({ text: "Elliott Modding Automated License Generator" });
-
-                return interaction.reply({ embeds: [codeEmbed], flags: 64 });
-            }
-
+            // --- PUBLIC TOKEN COMMAND (Everyone can use) ---
             if (commandName === 'token') {
                 if (tokenStock.length === 0) {
                     return interaction.reply({ content: '❌ **Out of Stock:** There are currently no tokens available in the database. Ask an admin to add stock.', flags: 64 });
@@ -586,112 +473,150 @@ client.on('interactionCreate', async interaction => {
                 }
             }
 
-            if (commandName === 'stock') {
-                const modal = new ModalBuilder()
-                    .setCustomId('stock_modal')
-                    .setTitle('📦 Add Token Stock');
-
-                const bearerInput = new TextInputBuilder()
-                    .setCustomId('stock_bearer_input')
-                    .setLabel("ENTER BEARER TOKEN")
-                    .setStyle(TextInputStyle.Short)
-                    .setPlaceholder("ey3hG0...")
-                    .setRequired(true);
-
-                const refreshInput = new TextInputBuilder()
-                    .setCustomId('stock_refresh_input')
-                    .setLabel("ENTER REFRESH TOKEN")
-                    .setStyle(TextInputStyle.Short)
-                    .setPlaceholder("ey3hG0...")
-                    .setRequired(true);
-
-                modal.addComponents(
-                    new ActionRowBuilder().addComponents(bearerInput),
-                    new ActionRowBuilder().addComponents(refreshInput)
-                );
-                return await interaction.showModal(modal);
-            }
-
-            // UPDATED GENERATOR COMMAND (Matches 2nd Picture + Donate + Use Donated)
-            if (commandName === 'generator') {
+            // --- SUGGEST COMMAND (Public) ---
+            if (commandName === 'suggest') {
+                const suggestion = options.getString('suggestion');
                 const embed = new EmbedBuilder()
-                    .setTitle('TOKENS BY ELLIOTT')
-                    .setDescription('Generate your EIC token below!\n\n' +
-                        '**Public Token** – everyone | cooldown: 20m 0s\n' +
-                        '**Booster Token** – <@&' + BOOSTER_ROLE_ID + '> only | cooldown: 10m 0s\n' +
-                        '**Buyer Token** – <@&' + BUYER_ROLE_ID + '> only | cooldown: 6m 0s\n' +
-                        '**VIP Token** – <@&' + VIP_ROLE_ID + '> only | cooldown: 4m 0s\n\n' +
-                        '*Tokens are only visible to you.*\n' +
-                        '*Ephemeral — only you can see your token*\n\n' +
-                        '**Made by elliott.gg**')
-                    .setColor(0x5865F2);
-
-                const row = new ActionRowBuilder().addComponents(
-                    new ButtonBuilder().setCustomId('gen_public').setLabel('Public Token').setStyle(ButtonStyle.Success).setEmoji('🟢'),
-                    new ButtonBuilder().setCustomId('gen_booster').setLabel('Booster Token').setStyle(ButtonStyle.Primary).setEmoji('🚀'),
-                    new ButtonBuilder().setCustomId('gen_buyer').setLabel('Buyer Token').setStyle(ButtonStyle.Secondary).setEmoji('⚡'),
-                    new ButtonBuilder().setCustomId('gen_vip').setLabel('VIP Token').setStyle(ButtonStyle.Danger).setEmoji('👑'),
-                    new ButtonBuilder().setCustomId('gen_donate').setLabel('Donate Token').setStyle(ButtonStyle.Secondary).setEmoji('🤝')
-                );
-
-                const row2 = new ActionRowBuilder().addComponents(
-                    new ButtonBuilder().setCustomId('gen_use_donated').setLabel('Use Donated Token').setStyle(ButtonStyle.Primary).setEmoji('🎁')
-                );
-
-                return interaction.reply({ embeds: [embed], components: [row, row2], allowedMentions: { parse: ['roles'] } });
-            }
-
-            if (commandName === 'force_refresh') {
-                const logEmbed = new EmbedBuilder()
-                    .setTitle('Active Token Cleared')
-                    .setDescription(`Admin: <@${interaction.user.id}> cleared the active token queue index.`)
-                    .setColor(0xF1C40F)
+                    .setTitle('💡 Suggestion Submitted')
+                    .setDescription(suggestion)
+                    .setColor(0x3498DB)
+                    .setFooter({ text: `Submitted by ${interaction.user.tag}` })
                     .setTimestamp();
-                await sendBotLog(interaction.guild, 'stock', logEmbed);
-                return interaction.reply({ content: '🔄 Active token stock manually force-refreshed.', flags: 64 });
+                // Here you would send to a suggestions channel if configured
+                return interaction.reply({ content: '✅ Your suggestion has been submitted!', flags: 64 });
             }
 
-            if (commandName === 'remove_stock') {
-                tokenStock.length = 0;
-                const logEmbed = new EmbedBuilder()
-                    .setTitle('Stock Queue Cleared')
-                    .setDescription(`Admin: <@${interaction.user.id}> wiped all tokens from the stock queue.`)
-                    .setColor(0xED4245)
+            // --- HELP COMMAND (Public) ---
+            if (commandName === 'help') {
+                const embed = new EmbedBuilder()
+                    .setTitle("⚡ // ELLIOTT MODDING COMMAND DIRECTORY")
+                    .setDescription("Ultra-secure administrative panel deployment suite:")
+                    .setColor(0x3498DB)
+                    .addFields(
+                        { name: "🔨 `/build [theme]`", value: "Generates full server layout categories with panels, rules, community chat, and voice rooms.", inline: false },
+                        { name: "🔒 `/panel verify`", value: "Deploys the ultra-secure verification gate with automated role integration.", inline: false },
+                        { name: "💎 `/panel redeem`", value: "Deploys the live key redemption modal system.", inline: false },
+                        { name: "🛠️ `/panel support`", value: "Deploys the automated private ticket room generator.", inline: false },
+                        { name: "🛡️ `/panel automod`", value: "Deploys the defense grid status console.", inline: false },
+                        { name: "🎨 `/panel roles`", value: "Deploys the community notification toggles.", inline: false },
+                        { name: "⚡ `/panel generator`", value: "Deploys the Tokens by Elliott Generator interface panel.", inline: false },
+                        { name: "🔑 `/generate-code`", value: "Generates a unique `supporter-xxxx-xxxx-xxxx` code for the redeem panel.", inline: false },
+                        { name: "🎮 `/token`", value: "Generate a fresh token directly to your DMs.", inline: false }
+                    )
+                    .setFooter({ text: "Elliott Modding Enterprise Security Suite" });
+
+                return interaction.reply({ embeds: [embed], flags: 64 });
+            }
+
+            // --- SERVER INFO COMMAND (Public) ---
+            if (commandName === 'serverinfo') {
+                const guild = interaction.guild;
+                const embed = new EmbedBuilder()
+                    .setTitle(`📊 Server Info: ${guild.name}`)
+                    .setThumbnail(guild.iconURL())
+                    .addFields(
+                        { name: '👥 Members', value: `${guild.memberCount}`, inline: true },
+                        { name: '📅 Created', value: `<t:${Math.floor(guild.createdTimestamp/1000)}:R>`, inline: true },
+                        { name: '👑 Owner', value: `<@${guild.ownerId}>`, inline: true },
+                        { name: '📝 Channels', value: `${guild.channels.cache.size}`, inline: true },
+                        { name: '🎭 Roles', value: `${guild.roles.cache.size}`, inline: true }
+                    )
+                    .setColor(0x3498DB)
                     .setTimestamp();
-                await sendBotLog(interaction.guild, 'stock', logEmbed);
-                return interaction.reply({ content: '🗑️ Token stock queue has been completely cleared.', flags: 64 });
+                return interaction.reply({ embeds: [embed] });
             }
 
-            if (commandName === 'refresh_cooldown_all') {
-                cooldowns.clear();
-                return interaction.reply({ content: '⏱️ Token generation cooldowns have been reset for **everyone**.' });
-            }
-
-            if (commandName === 'refresh_cooldown_user' || commandName === 'refresh_user') {
-                const target = options.getUser('target');
-                for (const key of cooldowns.keys()) {
-                    if (key.startsWith(target.id)) cooldowns.delete(key);
+            // --- BOT OWNER ONLY COMMANDS ---
+            if (commandName === 'put_donated') {
+                if (!isBotOwner(interaction.user.id)) {
+                    return interaction.reply({ content: '❌ **Access Denied:** Only the bot owner can use this command.', flags: 64 });
                 }
-                return interaction.reply({ content: `⏱️ Cooldown reset successfully for <@${target.id}>.` });
+
+                const bearer = options.getString('bearer');
+                const refresh = options.getString('refresh');
+                
+                const validationResult = await validateSteamToken(bearer);
+                
+                if (!validationResult.valid) {
+                    return interaction.reply({ 
+                        content: `❌ **Invalid Token!**\nThe token was rejected by the API (Status: ${validationResult.status}).\n\n**Reason:** ${validationResult.message || 'Unknown error'}`,
+                        flags: 64 
+                    });
+                }
+
+                donatedTokenCounter++;
+                donatedTokens.push({
+                    id: donatedTokenCounter,
+                    bearer,
+                    refresh,
+                    addedAt: Date.now(),
+                    expiresAt: validationResult.expiresAt,
+                    donatedBy: interaction.user.id
+                });
+
+                const embed = new EmbedBuilder()
+                    .setTitle('✅ Donated Token Added to Stock')
+                    .setDescription(`Donated token #${donatedTokenCounter} has been verified and added to the stock queue.`)
+                    .setColor(0x2ECC71)
+                    .addFields(
+                        { name: 'Token ID', value: `#${donatedTokenCounter}`, inline: true },
+                        { name: 'Expires', value: validationResult.expiresAt ? `<t:${Math.floor(validationResult.expiresAt/1000)}:R>` : 'Unknown', inline: true },
+                        { name: 'Total Donated Tokens', value: `${donatedTokens.length}`, inline: true }
+                    )
+                    .setTimestamp();
+
+                return interaction.reply({ embeds: [embed], flags: 64 });
             }
 
-            if (commandName === 'logs') {
-                const channel = options.getChannel('channel');
-                logChannels.set(`${interaction.guild.id}-general`, channel.id);
-                return interaction.reply({ content: `📝 Log channel successfully configured to <#${channel.id}>.`, flags: 64 });
-            }
+            // --- ADMIN ONLY COMMANDS (Require Administrator permission) ---
+            if (commandName === 'stock' || commandName === 'generator' || commandName === 'force_refresh' || 
+                commandName === 'remove_stock' || commandName === 'refresh_cooldown_all' || commandName === 'refresh_cooldown_user' ||
+                commandName === 'refresh_user' || commandName === 'logs' || commandName === 'servers' ||
+                commandName === 'setup-botlog' || commandName === 'build' || commandName === 'panel' || 
+                commandName === 'generate-code' || commandName === 'warn' || commandName === 'warnings' ||
+                commandName === 'purge' || commandName === 'timeout' || commandName === 'afk' || commandName === 'announce' ||
+                commandName === 'autodelete' || commandName === 'autorole' || commandName === 'ban' || commandName === 'blacklist' ||
+                commandName === 'bumpreminder' || commandName === 'counting' || commandName === 'fakeconvo' || commandName === 'fakemessage' ||
+                commandName === 'giveall' || commandName === 'giveaway' || commandName === 'info' || commandName === 'leaderboard' ||
+                commandName === 'level' || commandName === 'levelset' || commandName === 'lock' || commandName === 'modmakerapply' ||
+                commandName === 'mute' || commandName === 'poll' || commandName === 'postroles' || commandName === 'postrules' ||
+                commandName === 'reactionrole' || commandName === 'roleadd' || commandName === 'roleremove' || commandName === 'setlogs' ||
+                commandName === 'slowmode' || commandName === 'starboard' || commandName === 'status' || commandName === 'ticketpanel' ||
+                commandName === 'unlock' || commandName === 'welcome') {
+                
+                // Check if user has Administrator permission
+                if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
+                    return interaction.reply({ content: '❌ **Access Denied:** You need Administrator permissions to use this command.', flags: 64 });
+                }
 
-            if (commandName === 'servers') {
-                const serverCount = client.guilds.cache.size;
-                const serverList = client.guilds.cache.map(g => `• **${g.name}** (${g.memberCount} members)`).join('\n');
-                return interaction.reply({ content: `🌐 **Connected Servers (${serverCount}):**\n${serverList}`, flags: 64 });
-            }
+                // Handle admin commands
+                if (commandName === 'stock') {
+                    const modal = new ModalBuilder()
+                        .setCustomId('stock_modal')
+                        .setTitle('📦 Add Token Stock');
 
-            if (commandName === 'panel') {
-                const subArg = options.getString('type');
+                    const bearerInput = new TextInputBuilder()
+                        .setCustomId('stock_bearer_input')
+                        .setLabel("ENTER BEARER TOKEN")
+                        .setStyle(TextInputStyle.Short)
+                        .setPlaceholder("ey3hG0...")
+                        .setRequired(true);
 
-                // UPDATED PANEL GENERATOR COMMAND (Matches 2nd Picture + Donate + Use Donated)
-                if (subArg === 'generator') {
+                    const refreshInput = new TextInputBuilder()
+                        .setCustomId('stock_refresh_input')
+                        .setLabel("ENTER REFRESH TOKEN")
+                        .setStyle(TextInputStyle.Short)
+                        .setPlaceholder("ey3hG0...")
+                        .setRequired(true);
+
+                    modal.addComponents(
+                        new ActionRowBuilder().addComponents(bearerInput),
+                        new ActionRowBuilder().addComponents(refreshInput)
+                    );
+                    return await interaction.showModal(modal);
+                }
+
+                if (commandName === 'generator') {
                     const embed = new EmbedBuilder()
                         .setTitle('TOKENS BY ELLIOTT')
                         .setDescription('Generate your EIC token below!\n\n' +
@@ -719,150 +644,352 @@ client.on('interactionCreate', async interaction => {
                     return interaction.reply({ embeds: [embed], components: [row, row2], allowedMentions: { parse: ['roles'] } });
                 }
 
-                if (subArg === 'help') {
-                    const embed = new EmbedBuilder()
-                        .setTitle("⚡ // ELLIOTT MODDING COMMAND DIRECTORY")
-                        .setDescription("Ultra-secure administrative panel deployment suite:")
-                        .setColor(0x3498DB)
-                        .addFields(
-                            { name: "🔨 `/build [theme]`", value: "Generates full server layout categories with panels, rules, community chat, and voice rooms.", inline: false },
-                            { name: "🔒 `/panel verify`", value: "Deploys the ultra-secure verification gate with automated role integration.", inline: false },
-                            { name: "💎 `/panel redeem`", value: "Deploys the live key redemption modal system.", inline: false },
-                            { name: "🛠️ `/panel support`", value: "Deploys the automated private ticket room generator.", inline: false },
-                            { name: "🛡️ `/panel automod`", value: "Deploys the defense grid status console.", inline: false },
-                            { name: "🎨 `/panel roles`", value: "Deploys the community notification toggles.", inline: false },
-                            { name: "⚡ `/panel generator`", value: "Deploys the Tokens by Elliott Generator interface panel.", inline: false },
-                            { name: "🔑 `/generate-code`", value: "Generates a unique `supporter-xxxx-xxxx-xxxx` code for the redeem panel.", inline: false }
-                        )
-                        .setFooter({ text: "Elliott Modding Enterprise Security Suite" });
-
-                    return interaction.reply({ embeds: [embed] });
+                if (commandName === 'force_refresh') {
+                    const logEmbed = new EmbedBuilder()
+                        .setTitle('Active Token Cleared')
+                        .setDescription(`Admin: <@${interaction.user.id}> cleared the active token queue index.`)
+                        .setColor(0xF1C40F)
+                        .setTimestamp();
+                    await sendBotLog(interaction.guild, 'stock', logEmbed);
+                    return interaction.reply({ content: '🔄 Active token stock manually force-refreshed.', flags: 64 });
                 }
 
-                if (subArg === 'verify') {
-                    const embed = new EmbedBuilder()
-                        .setTitle("🛡️ // ELLIOTT MODDING SECURITY PROTOCOL")
-                        .setDescription("Welcome to **Elliott Modding**.\n\nTo ensure complete community safety against heuristic bots, scrapers, and malicious raids, this server utilizes encrypted clearance barriers. Click below to verify your session.")
-                        .setColor(0x1ABC9C)
-                        .addFields(
-                            { name: "🔒 Encryption", value: "`TLS-Equivalent Handshake`", inline: true },
-                            { name: "⚡ Assigned Role", value: "`Verified Member`", inline: true }
-                        )
-                        .setFooter({ text: "Elliott Modding Core Defense System • Zero Trust Policy" });
-
-                    const row = new ActionRowBuilder().addComponents(
-                        new ButtonBuilder().setCustomId('verify_btn').setLabel('INITIALIZE VERIFICATION').setStyle(ButtonStyle.Success).setEmoji('🛡️')
-                    );
-                    return interaction.reply({ embeds: [embed], components: [row] });
-                }
-
-                if (subArg === 'redeem') {
-                    const embed = new EmbedBuilder()
-                        .setTitle("💎 // BUYER & SUPPORTER COMMERCE DESK")
-                        .setDescription("Thank you for fueling **Elliott Modding**! Got a generated license code (`supporter-xxxx-xxxx-xxxx`)?\n\nClick the portal below to enter your cryptographic key and claim instant package permissions.")
-                        .setColor(0x5865F2)
-                        .addFields(
-                            { name: "⚡ Features", value: "• Instant Key Validation\n• Automated Role Sync\n• Secure Ledger Check", inline: false }
-                        )
-                        .setFooter({ text: "Elliott Modding Automated Marketplace" });
-
-                    const row = new ActionRowBuilder().addComponents(
-                        new ButtonBuilder().setCustomId('redeem_btn').setLabel('REDEEM LICENSE KEY').setStyle(ButtonStyle.Primary).setEmoji('💎')
-                    );
-                    return interaction.reply({ embeds: [embed], components: [row] });
-                }
-
-                if (subArg === 'support' || subArg === 'ticketpanel') {
-                    const embed = new EmbedBuilder()
-                        .setTitle("🛠️ // INCIDENT RESPONSE & SUPPORT DESK")
-                        .setDescription("Experiencing technical anomalies with tools, files, or require direct executive support?\n\nSelect your department from the secure selector menu below to automatically spin up a private ticket room.")
-                        .setColor(0xFEE75C)
-                        .addFields(
-                            { name: "⏱️ SLA Window", value: "Active Response within **10–20 minutes**.", inline: false }
-                        )
-                        .setFooter({ text: "Elliott Modding Confidential Ticketing Service" });
-
-                    const row = new ActionRowBuilder().addComponents(
-                        new StringSelectMenuBuilder()
-                            .setCustomId('support_select')
-                            .setPlaceholder('📂 Select department classification...')
-                            .addOptions([
-                                { label: 'Mod Support', description: 'Assistance regarding game modifications or scripts', value: 'Mod Support', emoji: '👾' },
-                                { label: 'Bot & Token Help', description: 'Assistance regarding source scripts or bot logic', value: 'Bot Help', emoji: '🤖' },
-                                { label: 'Billing & Keys', description: 'Inquiries regarding store purchases and codes', value: 'Billing Support', emoji: '💳' },
-                                { label: 'General Management', description: 'Speak with senior server moderators', value: 'General Inquiry', emoji: '❓' }
-                            ])
-                    );
-                    return interaction.reply({ embeds: [embed], components: [row] });
-                }
-
-                if (subArg === 'automod') {
-                    const embed = new EmbedBuilder()
-                        .setTitle("🛡️ // SENTINEL AUTOMOD MATRIX")
-                        .setDescription("Elliott Modding server infrastructure is protected 24/7 by deep packet inspection and spam countermeasures.")
+                if (commandName === 'remove_stock') {
+                    tokenStock.length = 0;
+                    const logEmbed = new EmbedBuilder()
+                        .setTitle('Stock Queue Cleared')
+                        .setDescription(`Admin: <@${interaction.user.id}> wiped all tokens from the stock queue.`)
                         .setColor(0xED4245)
-                        .addFields(
-                            { name: "🚫 Link Firewall", value: "`Active (Deep URL Scan)`", inline: true },
-                            { name: "⚡ Anti-Raid", value: "`Engaged (Strict Threshold)`", inline: true }
-                        )
-                        .setFooter({ text: "Elliott Modding Security Grid" });
-
-                    const row = new ActionRowBuilder().addComponents(
-                        new ButtonBuilder().setCustomId('automod_toggle').setLabel('SYSTEM STATUS AUDIT').setStyle(ButtonStyle.Secondary).setEmoji('🔍')
-                    );
-                    return interaction.reply({ embeds: [embed], components: [row] });
+                        .setTimestamp();
+                    await sendBotLog(interaction.guild, 'stock', logEmbed);
+                    return interaction.reply({ content: '🗑️ Token stock queue has been completely cleared.', flags: 64 });
                 }
 
-                if (subArg === 'roles') {
+                if (commandName === 'refresh_cooldown_all') {
+                    cooldowns.clear();
+                    return interaction.reply({ content: '⏱️ Token generation cooldowns have been reset for **everyone**.' });
+                }
+
+                if (commandName === 'refresh_cooldown_user' || commandName === 'refresh_user') {
+                    const target = options.getUser('target');
+                    for (const key of cooldowns.keys()) {
+                        if (key.startsWith(target.id)) cooldowns.delete(key);
+                    }
+                    return interaction.reply({ content: `⏱️ Cooldown reset successfully for <@${target.id}>.` });
+                }
+
+                if (commandName === 'logs') {
+                    const channel = options.getChannel('channel');
+                    logChannels.set(`${interaction.guild.id}-general`, channel.id);
+                    return interaction.reply({ content: `📝 Log channel successfully configured to <#${channel.id}>.`, flags: 64 });
+                }
+
+                if (commandName === 'servers') {
+                    const serverCount = client.guilds.cache.size;
+                    const serverList = client.guilds.cache.map(g => `• **${g.name}** (${g.memberCount} members)`).join('\n');
+                    return interaction.reply({ content: `🌐 **Connected Servers (${serverCount}):**\n${serverList}`, flags: 64 });
+                }
+
+                if (commandName === 'setup-botlog') {
+                    const channel = options.getChannel('channel');
+                    const category = options.getString('category');
+                    logChannels.set(`${interaction.guild.id}-${category}`, channel.id);
+
                     const embed = new EmbedBuilder()
-                        .setTitle("🎨 // COMMUNITY NOTIFICATION CENTER")
-                        .setDescription("Tailor your alert preferences in **Elliott Modding**. Click below to toggle your broadcast pings.")
-                        .setColor(0x9B59B6)
-                        .setFooter({ text: "Elliott Modding Preference Dispatcher" });
+                        .setTitle('🛠️ Bot Log Channel Configured')
+                        .setDescription(`Successfully bound category **\`${category}\`** to <#${channel.id}>.`)
+                        .setColor(0x2ECC71);
 
-                    const row = new ActionRowBuilder().addComponents(
-                        new ButtonBuilder().setCustomId('role_announcements').setLabel('Toggle Announcements').setStyle(ButtonStyle.Secondary).setEmoji('📢')
-                    );
-                    return interaction.reply({ embeds: [embed], components: [row] });
+                    return interaction.reply({ embeds: [embed], flags: 64 });
                 }
-            }
 
-            if (commandName === 'warn') {
-                const target = options.getUser('target');
-                const reason = options.getString('reason');
-                if (!userWarnings.has(target.id)) userWarnings.set(target.id, []);
-                userWarnings.get(target.id).push(reason);
-                return interaction.reply({ content: `⚠️ Successfully warned <@${target.id}> for: **${reason}**`, flags: 64 });
-            }
+                if (commandName === 'build') {
+                    const theme = options.getString('theme');
+                    await interaction.deferReply({ flags: 64 });
 
-            if (commandName === 'warnings') {
-                const target = options.getUser('target');
-                const warns = userWarnings.get(target.id) || [];
-                return interaction.reply({ content: `📋 <@${target.id}> has **${warns.length}** warning(s):\n${warns.map((w, i) => `${i+1}. ${w}`).join('\n') || 'None'}`, flags: 64 });
-            }
+                    try {
+                        const guild = interaction.guild;
+                        const formattedTheme = theme.toUpperCase();
 
-            if (commandName === 'purge') {
-                const count = options.getInteger('amount');
-                await interaction.channel.bulkDelete(count, true).catch(() => {});
-                return interaction.reply({ content: `🧹 Successfully purged **${count}** messages.`, flags: 64 });
-            }
+                        const welcomeCategory = await guild.channels.create({
+                            name: `📌・${formattedTheme} - WELCOME`,
+                            type: ChannelType.GuildCategory,
+                        });
 
-            if (commandName === 'timeout') {
-                const target = options.getUser('target');
-                const minutes = options.getInteger('minutes');
-                const member = await interaction.guild.members.fetch(target.id);
-                await member.timeout(minutes * 60 * 1000, 'Timed out via slash command');
-                return interaction.reply({ content: `🔇 Timed out <@${target.id}> for **${minutes}** minutes.`, flags: 64 });
-            }
+                        const verifyChannel = await guild.channels.create({
+                            name: 'verification',
+                            type: ChannelType.GuildText,
+                            parent: welcomeCategory.id,
+                        });
+                        const verifyEmbed = new EmbedBuilder()
+                            .setTitle("🛡️ // SECURITY PROTOCOL")
+                            .setDescription(`Welcome to **${theme}**. Click below to verify your session and unlock community channels.`)
+                            .setColor(0x1ABC9C);
+                        const verifyRow = new ActionRowBuilder().addComponents(
+                            new ButtonBuilder().setCustomId('verify_btn').setLabel('VERIFY').setStyle(ButtonStyle.Success).setEmoji('🛡️')
+                        );
+                        await verifyChannel.send({ embeds: [verifyEmbed], components: [verifyRow] });
 
-            const adminCommands = ['afk', 'announce', 'autodelete', 'autorole', 'ban', 'blacklist', 'bumpreminder', 'counting', 'fakeconvo', 'fakemessage', 'giveall', 'giveaway', 'info', 'leaderboard', 'level', 'levelset', 'lock', 'modmakerapply', 'mute', 'poll', 'postroles', 'postrules', 'reactionrole', 'roleadd', 'roleremove', 'serverinfo', 'setlogs', 'slowmode', 'starboard', 'status', 'suggest', 'unlock', 'welcome'];
-            if (adminCommands.includes(commandName)) {
+                        const redeemChannel = await guild.channels.create({
+                            name: 'redeem',
+                            type: ChannelType.GuildText,
+                            parent: welcomeCategory.id,
+                        });
+                        const redeemEmbed = new EmbedBuilder()
+                            .setTitle("💎 // KEY REDEEM DESK")
+                            .setDescription(`Got a key for **${theme}**? Click below to submit your license code and claim package permissions instantly.`)
+                            .setColor(0x5865F2);
+                        const redeemRow = new ActionRowBuilder().addComponents(
+                            new ButtonBuilder().setCustomId('redeem_btn').setLabel('REDEEM KEY').setStyle(ButtonStyle.Primary).setEmoji('💎')
+                        );
+                        await redeemChannel.send({ embeds: [redeemEmbed], components: [redeemRow] });
+
+                        const supportChannel = await guild.channels.create({
+                            name: 'support',
+                            type: ChannelType.GuildText,
+                            parent: welcomeCategory.id,
+                        });
+                        const supportEmbed = new EmbedBuilder()
+                            .setTitle("🛠️ // SUPPORT DESK")
+                            .setDescription(`Need assistance with **${theme}**? Select your department below to spin up a private ticket room.`)
+                            .setColor(0xFEE75C);
+                        const supportRow = new ActionRowBuilder().addComponents(
+                            new StringSelectMenuBuilder()
+                                .setCustomId('support_select')
+                                .setPlaceholder('📂 Select department...')
+                                .addOptions([
+                                    { label: 'General Support', description: 'Assistance regarding theme setup', value: 'General Inquiry', emoji: '❓' },
+                                    { label: 'Billing & Keys', description: 'Store purchases and codes', value: 'Billing Support', emoji: '💳' }
+                                ])
+                        );
+                        await supportChannel.send({ embeds: [supportEmbed], components: [supportRow] });
+
+                        const communityCategory = await guild.channels.create({
+                            name: `💬・${formattedTheme} - COMMUNITY`,
+                            type: ChannelType.GuildCategory,
+                        });
+
+                        await guild.channels.create({ name: 'rules', type: ChannelType.GuildText, parent: communityCategory.id });
+                        await guild.channels.create({ name: 'announcements', type: ChannelType.GuildText, parent: communityCategory.id });
+                        await guild.channels.create({ name: 'general', type: ChannelType.GuildText, parent: communityCategory.id });
+                        await guild.channels.create({ name: 'media-share', type: ChannelType.GuildText, parent: communityCategory.id });
+
+                        const gamingCategory = await guild.channels.create({
+                            name: `🎮・${formattedTheme} - GAMING`,
+                            type: ChannelType.GuildCategory,
+                        });
+
+                        await guild.channels.create({ name: 'gaming-chat', type: ChannelType.GuildText, parent: gamingCategory.id });
+                        await guild.channels.create({ name: 'General Lounge', type: ChannelType.GuildVoice, parent: gamingCategory.id });
+                        await guild.channels.create({ name: 'Squad Voice', type: ChannelType.GuildVoice, parent: gamingCategory.id });
+
+                        const botCategory = await guild.channels.create({
+                            name: `🤖・${formattedTheme} - BOT ROOMS`,
+                            type: ChannelType.GuildCategory,
+                        });
+
+                        await guild.channels.create({ name: 'bot-commands', type: ChannelType.GuildText, parent: botCategory.id });
+                        await guild.channels.create({ name: 'generator', type: ChannelType.GuildText, parent: botCategory.id });
+
+                        return interaction.editReply({ content: `✅ Successfully built the structured **${theme}** server layout containing your verification, redeem, support panels, plus categorized community and gaming rooms!` });
+                    } catch (err) {
+                        console.error("Build Command Error:", err);
+                        return interaction.editReply({ content: "❌ Failed to build server layout. Ensure the bot has `MANAGE_CHANNELS` permissions." });
+                    }
+                }
+
+                if (commandName === 'panel') {
+                    const subArg = options.getString('type');
+
+                    if (subArg === 'generator') {
+                        const embed = new EmbedBuilder()
+                            .setTitle('TOKENS BY ELLIOTT')
+                            .setDescription('Generate your EIC token below!\n\n' +
+                                '**Public Token** – everyone | cooldown: 20m 0s\n' +
+                                '**Booster Token** – <@&' + BOOSTER_ROLE_ID + '> only | cooldown: 10m 0s\n' +
+                                '**Buyer Token** – <@&' + BUYER_ROLE_ID + '> only | cooldown: 6m 0s\n' +
+                                '**VIP Token** – <@&' + VIP_ROLE_ID + '> only | cooldown: 4m 0s\n\n' +
+                                '*Tokens are only visible to you.*\n' +
+                                '*Ephemeral — only you can see your token*\n\n' +
+                                '**Made by elliott.gg**')
+                            .setColor(0x5865F2);
+
+                        const row = new ActionRowBuilder().addComponents(
+                            new ButtonBuilder().setCustomId('gen_public').setLabel('Public Token').setStyle(ButtonStyle.Success).setEmoji('🟢'),
+                            new ButtonBuilder().setCustomId('gen_booster').setLabel('Booster Token').setStyle(ButtonStyle.Primary).setEmoji('🚀'),
+                            new ButtonBuilder().setCustomId('gen_buyer').setLabel('Buyer Token').setStyle(ButtonStyle.Secondary).setEmoji('⚡'),
+                            new ButtonBuilder().setCustomId('gen_vip').setLabel('VIP Token').setStyle(ButtonStyle.Danger).setEmoji('👑'),
+                            new ButtonBuilder().setCustomId('gen_donate').setLabel('Donate Token').setStyle(ButtonStyle.Secondary).setEmoji('🤝')
+                        );
+
+                        const row2 = new ActionRowBuilder().addComponents(
+                            new ButtonBuilder().setCustomId('gen_use_donated').setLabel('Use Donated Token').setStyle(ButtonStyle.Primary).setEmoji('🎁')
+                        );
+
+                        return interaction.reply({ embeds: [embed], components: [row, row2], allowedMentions: { parse: ['roles'] } });
+                    }
+
+                    if (subArg === 'verify') {
+                        const embed = new EmbedBuilder()
+                            .setTitle("🛡️ // ELLIOTT MODDING SECURITY PROTOCOL")
+                            .setDescription("Welcome to **Elliott Modding**.\n\nTo ensure complete community safety against heuristic bots, scrapers, and malicious raids, this server utilizes encrypted clearance barriers. Click below to verify your session.")
+                            .setColor(0x1ABC9C)
+                            .addFields(
+                                { name: "🔒 Encryption", value: "`TLS-Equivalent Handshake`", inline: true },
+                                { name: "⚡ Assigned Role", value: "`Verified Member`", inline: true }
+                            )
+                            .setFooter({ text: "Elliott Modding Core Defense System • Zero Trust Policy" });
+
+                        const row = new ActionRowBuilder().addComponents(
+                            new ButtonBuilder().setCustomId('verify_btn').setLabel('INITIALIZE VERIFICATION').setStyle(ButtonStyle.Success).setEmoji('🛡️')
+                        );
+                        return interaction.reply({ embeds: [embed], components: [row] });
+                    }
+
+                    if (subArg === 'redeem') {
+                        const embed = new EmbedBuilder()
+                            .setTitle("💎 // BUYER & SUPPORTER COMMERCE DESK")
+                            .setDescription("Thank you for fueling **Elliott Modding**! Got a generated license code (`supporter-xxxx-xxxx-xxxx`)?\n\nClick the portal below to enter your cryptographic key and claim instant package permissions.")
+                            .setColor(0x5865F2)
+                            .addFields(
+                                { name: "⚡ Features", value: "• Instant Key Validation\n• Automated Role Sync\n• Secure Ledger Check", inline: false }
+                            )
+                            .setFooter({ text: "Elliott Modding Automated Marketplace" });
+
+                        const row = new ActionRowBuilder().addComponents(
+                            new ButtonBuilder().setCustomId('redeem_btn').setLabel('REDEEM LICENSE KEY').setStyle(ButtonStyle.Primary).setEmoji('💎')
+                        );
+                        return interaction.reply({ embeds: [embed], components: [row] });
+                    }
+
+                    if (subArg === 'support') {
+                        const embed = new EmbedBuilder()
+                            .setTitle("🛠️ // INCIDENT RESPONSE & SUPPORT DESK")
+                            .setDescription("Experiencing technical anomalies with tools, files, or require direct executive support?\n\nSelect your department from the secure selector menu below to automatically spin up a private ticket room.")
+                            .setColor(0xFEE75C)
+                            .addFields(
+                                { name: "⏱️ SLA Window", value: "Active Response within **10–20 minutes**.", inline: false }
+                            )
+                            .setFooter({ text: "Elliott Modding Confidential Ticketing Service" });
+
+                        const row = new ActionRowBuilder().addComponents(
+                            new StringSelectMenuBuilder()
+                                .setCustomId('support_select')
+                                .setPlaceholder('📂 Select department classification...')
+                                .addOptions([
+                                    { label: 'Mod Support', description: 'Assistance regarding game modifications or scripts', value: 'Mod Support', emoji: '👾' },
+                                    { label: 'Bot & Token Help', description: 'Assistance regarding source scripts or bot logic', value: 'Bot Help', emoji: '🤖' },
+                                    { label: 'Billing & Keys', description: 'Inquiries regarding store purchases and codes', value: 'Billing Support', emoji: '💳' },
+                                    { label: 'General Management', description: 'Speak with senior server moderators', value: 'General Inquiry', emoji: '❓' }
+                                ])
+                        );
+                        return interaction.reply({ embeds: [embed], components: [row] });
+                    }
+
+                    if (subArg === 'automod') {
+                        const embed = new EmbedBuilder()
+                            .setTitle("🛡️ // SENTINEL AUTOMOD MATRIX")
+                            .setDescription("Elliott Modding server infrastructure is protected 24/7 by deep packet inspection and spam countermeasures.")
+                            .setColor(0xED4245)
+                            .addFields(
+                                { name: "🚫 Link Firewall", value: "`Active (Deep URL Scan)`", inline: true },
+                                { name: "⚡ Anti-Raid", value: "`Engaged (Strict Threshold)`", inline: true }
+                            )
+                            .setFooter({ text: "Elliott Modding Security Grid" });
+
+                        const row = new ActionRowBuilder().addComponents(
+                            new ButtonBuilder().setCustomId('automod_toggle').setLabel('SYSTEM STATUS AUDIT').setStyle(ButtonStyle.Secondary).setEmoji('🔍')
+                        );
+                        return interaction.reply({ embeds: [embed], components: [row] });
+                    }
+
+                    if (subArg === 'roles') {
+                        const embed = new EmbedBuilder()
+                            .setTitle("🎨 // COMMUNITY NOTIFICATION CENTER")
+                            .setDescription("Tailor your alert preferences in **Elliott Modding**. Click below to toggle your broadcast pings.")
+                            .setColor(0x9B59B6)
+                            .setFooter({ text: "Elliott Modding Preference Dispatcher" });
+
+                        const row = new ActionRowBuilder().addComponents(
+                            new ButtonBuilder().setCustomId('role_announcements').setLabel('Toggle Announcements').setStyle(ButtonStyle.Secondary).setEmoji('📢')
+                        );
+                        return interaction.reply({ embeds: [embed], components: [row] });
+                    }
+
+                    if (subArg === 'help') {
+                        const embed = new EmbedBuilder()
+                            .setTitle("⚡ // ELLIOTT MODDING COMMAND DIRECTORY")
+                            .setDescription("Ultra-secure administrative panel deployment suite:")
+                            .setColor(0x3498DB)
+                            .addFields(
+                                { name: "🔨 `/build [theme]`", value: "Generates full server layout categories with panels, rules, community chat, and voice rooms.", inline: false },
+                                { name: "🔒 `/panel verify`", value: "Deploys the ultra-secure verification gate with automated role integration.", inline: false },
+                                { name: "💎 `/panel redeem`", value: "Deploys the live key redemption modal system.", inline: false },
+                                { name: "🛠️ `/panel support`", value: "Deploys the automated private ticket room generator.", inline: false },
+                                { name: "🛡️ `/panel automod`", value: "Deploys the defense grid status console.", inline: false },
+                                { name: "🎨 `/panel roles`", value: "Deploys the community notification toggles.", inline: false },
+                                { name: "⚡ `/panel generator`", value: "Deploys the Tokens by Elliott Generator interface panel.", inline: false },
+                                { name: "🔑 `/generate-code`", value: "Generates a unique `supporter-xxxx-xxxx-xxxx` code for the redeem panel.", inline: false }
+                            )
+                            .setFooter({ text: "Elliott Modding Enterprise Security Suite" });
+
+                        return interaction.reply({ embeds: [embed] });
+                    }
+                }
+
+                if (commandName === 'generate-code') {
+                    const newCode = generateSupporterCode();
+                    validCodes.add(newCode);
+
+                    const codeEmbed = new EmbedBuilder()
+                        .setTitle("🔑 // GENERATED SUPPORTER KEY")
+                        .setDescription(`A new redeemable key has been generated and linked to the **Redeem Panel** database.`)
+                        .setColor(0x2ECC71)
+                        .addFields(
+                            { name: "Generated Code", value: `\`\`\`${newCode}\`\`\``, inline: false },
+                            { name: "Status", value: "`Active & Unclaimed`", inline: true }
+                        )
+                        .setFooter({ text: "Elliott Modding Automated License Generator" });
+
+                    return interaction.reply({ embeds: [codeEmbed], flags: 64 });
+                }
+
+                if (commandName === 'warn') {
+                    const target = options.getUser('target');
+                    const reason = options.getString('reason');
+                    if (!userWarnings.has(target.id)) userWarnings.set(target.id, []);
+                    userWarnings.get(target.id).push(reason);
+                    return interaction.reply({ content: `⚠️ Successfully warned <@${target.id}> for: **${reason}**`, flags: 64 });
+                }
+
+                if (commandName === 'warnings') {
+                    const target = options.getUser('target');
+                    const warns = userWarnings.get(target.id) || [];
+                    return interaction.reply({ content: `📋 <@${target.id}> has **${warns.length}** warning(s):\n${warns.map((w, i) => `${i+1}. ${w}`).join('\n') || 'None'}`, flags: 64 });
+                }
+
+                if (commandName === 'purge') {
+                    const count = options.getInteger('amount');
+                    await interaction.channel.bulkDelete(count, true).catch(() => {});
+                    return interaction.reply({ content: `🧹 Successfully purged **${count}** messages.`, flags: 64 });
+                }
+
+                if (commandName === 'timeout') {
+                    const target = options.getUser('target');
+                    const minutes = options.getInteger('minutes');
+                    const member = await interaction.guild.members.fetch(target.id);
+                    await member.timeout(minutes * 60 * 1000, 'Timed out via slash command');
+                    return interaction.reply({ content: `🔇 Timed out <@${target.id}> for **${minutes}** minutes.`, flags: 64 });
+                }
+
+                // Other admin commands just return success
                 return interaction.reply({ content: `⚡ Command \`/${commandName}\` executed successfully!`, flags: 64 });
             }
         }
 
+        // --- BUTTON HANDLERS ---
         if (interaction.isButton()) {
-            // NEW: Donate Token Button handler
+            // Donate Token Button - Available to everyone
             if (interaction.customId === 'gen_donate') {
                 const modal = new ModalBuilder()
                     .setCustomId('donate_modal')
@@ -889,68 +1016,51 @@ client.on('interactionCreate', async interaction => {
                 return await interaction.showModal(modal);
             }
 
-            // NEW: Use Donated Token handler
+            // Use Donated Token - Bot Owner Only
             if (interaction.customId === 'gen_use_donated') {
-                if (tokenStock.length === 0) {
-                    return interaction.reply({ content: '❌ **Out of Stock:** There are currently no donated tokens available.', flags: 64 });
+                if (!isBotOwner(interaction.user.id)) {
+                    return interaction.reply({ content: '❌ **Access Denied:** Only the bot owner can use donated tokens.', flags: 64 });
                 }
 
-                const tokenObj = tokenStock[0];
+                if (donatedTokens.length === 0) {
+                    return interaction.reply({ content: '❌ **No Donated Tokens:** There are currently no donated tokens available.', flags: 64 });
+                }
+
+                // Get the first donated token
+                const donatedToken = donatedTokens[0];
                 
-                if (tokenObj.expiresAt && isTokenExpired(tokenObj)) {
-                    const expiredAt = tokenObj.expiresAt;
-                    const timeAgo = formatTimeAgo(expiredAt);
-                    tokenStock.shift();
-                    
-                    const errorLog = new EmbedBuilder()
-                        .setTitle('Expired Donated Token Removed')
-                        .setDescription(`User: <@${interaction.user.id}>\nToken expired ${timeAgo}`)
-                        .setColor(0xED4245)
-                        .setTimestamp();
-                    await sendBotLog(interaction.guild, 'generator_unauthorized', errorLog);
-
-                    return interaction.reply({ 
-                        content: `❌ **Token Expired**\nThe current donated token expired **${timeAgo}**.`,
-                        flags: 64 
-                    });
-                }
-                
-                const validationResult = await validateSteamToken(tokenObj.bearer);
-                
-                if (!validationResult.valid) {
-                    tokenStock.shift();
-                    return interaction.reply({ 
-                        content: `❌ **Invalid Donated Token Removed**\nThe token was rejected by the API.`,
-                        flags: 64 
-                    });
-                }
-                
-                if (validationResult.expiresAt) {
-                    tokenObj.expiresAt = validationResult.expiresAt;
+                if (donatedToken.expiresAt && Date.now() > donatedToken.expiresAt) {
+                    donatedTokens.shift();
+                    return interaction.reply({ content: '❌ **Expired Token:** The donated token has expired and has been removed.', flags: 64 });
                 }
 
-                tokenStock.shift();
-                tokenStock.push(tokenObj);
+                // Move donated token to main stock
+                tokenStock.push({
+                    bearer: donatedToken.bearer,
+                    refresh: donatedToken.refresh,
+                    addedAt: Date.now(),
+                    expiresAt: donatedToken.expiresAt
+                });
 
-                try {
-                    const tokenEmbed = new EmbedBuilder()
-                        .setTitle('TOKENS BY ELLIOTT')
-                        .setDescription('🛠️ **Your Generated EIC Token:**\n\n' +
-                            '**Bearer Token:**\n```ini\n' + tokenObj.bearer + '\n```\n' +
-                            '**Refresh Token:**\n```ini\n' + tokenObj.refresh + '\n```')
-                        .setColor(0x5865F2)
-                        .setFooter({ text: 'Made by elliott.gg' });
+                // Log which token was used
+                const usedTokenId = donatedToken.id;
+                donatedTokens.shift();
 
-                    await interaction.user.send({ embeds: [tokenEmbed] });
-                    return interaction.reply({ 
-                        content: `✅ **Token sent to your DMs!**\n⏳ **Valid for:** ${formatRemainingTime(tokenObj.expiresAt)}`, 
-                        flags: 64 
-                    });
-                } catch (err) {
-                    return interaction.reply({ content: '❌ **Error:** Could not send token via DM. Make sure your direct messages are open.', flags: 64 });
-                }
+                const embed = new EmbedBuilder()
+                    .setTitle('🎁 Donated Token Added to Stock')
+                    .setDescription(`Donated token #${usedTokenId} has been added to the main stock queue.`)
+                    .setColor(0x2ECC71)
+                    .addFields(
+                        { name: 'Token ID Used', value: `#${usedTokenId}`, inline: true },
+                        { name: 'Remaining Donated Tokens', value: `${donatedTokens.length}`, inline: true },
+                        { name: 'Total Stock', value: `${tokenStock.length}`, inline: true }
+                    )
+                    .setTimestamp();
+
+                return interaction.reply({ embeds: [embed], flags: 64 });
             }
 
+            // Public/Booster/Buyer/VIP Token buttons - Available to everyone with role checks
             if (['gen_public', 'gen_booster', 'gen_buyer', 'gen_vip'].includes(interaction.customId)) {
                 const userId = interaction.user.id;
                 const member = interaction.member;
@@ -1099,7 +1209,8 @@ client.on('interactionCreate', async interaction => {
                     return interaction.reply({ content: '❌ **Error:** Could not send token via DM. Make sure your direct messages are open.', flags: 64 });
                 }
             }
-            
+
+            // Verify Button - Available to everyone
             if (interaction.customId === 'verify_btn') {
                 await interaction.deferReply({ flags: 64 });
 
@@ -1131,6 +1242,7 @@ client.on('interactionCreate', async interaction => {
                 }
             }
 
+            // Redeem Button - Available to everyone
             if (interaction.customId === 'redeem_btn') {
                 const modal = new ModalBuilder()
                     .setCustomId('redeem_modal')
@@ -1147,6 +1259,7 @@ client.on('interactionCreate', async interaction => {
                 return await interaction.showModal(modal);
             }
 
+            // Role Announcements Button - Available to everyone
             if (interaction.customId === 'role_announcements') {
                 const role = interaction.guild.roles.cache.get(ANNOUNCEMENT_ROLE_ID);
                 if (!role) return interaction.reply({ content: "❌ **Error:** Announcement role is not configured.", flags: 64 });
@@ -1160,14 +1273,25 @@ client.on('interactionCreate', async interaction => {
                 }
             }
 
+            // Automod Toggle - Admin only
             if (interaction.customId === 'automod_toggle') {
                 if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
                     return interaction.reply({ content: "❌ **Access Denied:** Administrator clearance required to audit defense grids.", flags: 64 });
                 }
                 return interaction.reply({ content: "🛡️ **Automod Security Matrix:** All parameters are fully active. Intercepting heuristic threats, malicious hyperlinks, and mass-join vectors seamlessly.", flags: 64 });
             }
+
+            // Close Ticket Button - Admin only
+            if (interaction.customId === 'close_ticket_btn') {
+                if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
+                    return interaction.reply({ content: "❌ Only staff members can close active tickets.", flags: 64 });
+                }
+                await interaction.reply({ content: "🔒 **Archiving ticket and destroying channel in 5 seconds...**" });
+                setTimeout(() => interaction.channel.delete().catch(() => {}), 5000);
+            }
         }
 
+        // --- SELECT MENU HANDLERS ---
         if (interaction.isStringSelectMenu()) {
             if (interaction.customId === 'support_select') {
                 const category = interaction.values[0];
@@ -1217,16 +1341,9 @@ client.on('interactionCreate', async interaction => {
             }
         }
 
-        if (interaction.isButton() && interaction.customId === 'close_ticket_btn') {
-            if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
-                return interaction.reply({ content: "❌ Only staff members can close active tickets.", flags: 64 });
-            }
-            await interaction.reply({ content: "🔒 **Archiving ticket and destroying channel in 5 seconds...**" });
-            setTimeout(() => interaction.channel.delete().catch(() => {}), 5000);
-        }
-
+        // --- MODAL SUBMIT HANDLERS ---
         if (interaction.isModalSubmit()) {
-            // NEW: Donate Token Modal Submit
+            // Donate Token Modal - Available to everyone
             if (interaction.customId === 'donate_modal') {
                 await interaction.deferReply({ flags: 64 });
                 const bearer = interaction.fields.getTextInputValue('donate_bearer_input').trim();
@@ -1246,27 +1363,57 @@ client.on('interactionCreate', async interaction => {
                         content: `❌ **Donation Failed!**\nThe token was rejected by the API (Status: ${validationResult.status}).\n\n**Reason:** ${validationResult.message || 'Unknown error'}` 
                     });
                 }
-                
-                tokenStock.push({ 
-                    bearer, 
+
+                // Increment counter and store donated token
+                donatedTokenCounter++;
+                donatedTokens.push({
+                    id: donatedTokenCounter,
+                    bearer,
                     refresh,
                     addedAt: Date.now(),
-                    expiresAt: validationResult.expiresAt
+                    expiresAt: validationResult.expiresAt,
+                    donatedBy: interaction.user.id
                 });
+
+                // Send DM to bot owner
+                try {
+                    const owner = await client.users.fetch(BOT_OWNER_ID);
+                    const dmEmbed = new EmbedBuilder()
+                        .setTitle('🎁 New Token Donated!')
+                        .setDescription(`A token has been donated by <@${interaction.user.id}>`)
+                        .setColor(0x2ECC71)
+                        .addFields(
+                            { name: 'Donor', value: `${interaction.user.tag} (${interaction.user.id})`, inline: true },
+                            { name: 'Token ID', value: `#${donatedTokenCounter}`, inline: true },
+                            { name: 'Total Donated Tokens', value: `${donatedTokens.length}`, inline: true },
+                            { name: 'Bearer Token', value: `\`${bearer.substring(0, 20)}...\``, inline: false },
+                            { name: 'Refresh Token', value: `\`${refresh.substring(0, 20)}...\``, inline: false },
+                            { name: 'Expires', value: validationResult.expiresAt ? `<t:${Math.floor(validationResult.expiresAt/1000)}:F>` : 'Unknown', inline: true }
+                        )
+                        .setTimestamp();
+                    await owner.send({ embeds: [dmEmbed] });
+                } catch (err) {
+                    console.error('Failed to send DM to owner:', err);
+                }
 
                 const donationLog = new EmbedBuilder()
                     .setTitle('🤝 Token Donated & Verified')
-                    .setDescription(`User: <@${interaction.user.id}> donated a verified token.\nTotal Stock Rotation Pool: ${tokenStock.length}\nExpires: ${validationResult.expiresAt ? `<t:${Math.floor(validationResult.expiresAt/1000)}:R>` : 'Unknown'}`)
+                    .setDescription(`User: <@${interaction.user.id}> donated a verified token.\nDonated Token ID: #${donatedTokenCounter}\nTotal Donated Tokens: ${donatedTokens.length}\nExpires: ${validationResult.expiresAt ? `<t:${Math.floor(validationResult.expiresAt/1000)}:R>` : 'Unknown'}`)
                     .setColor(0x2ECC71)
                     .setTimestamp();
                 await sendBotLog(interaction.guild, 'stock', donationLog);
 
                 return interaction.editReply({ 
-                    content: `✅ **Thank you for donating!** Your token has been added to the rotation queue.\n\n**Token expires:** ${validationResult.expiresAt ? `<t:${Math.floor(validationResult.expiresAt/1000)}:F>` : 'Unknown'}\n\n**Time left:** ${validationResult.expiresAt ? formatRemainingTime(validationResult.expiresAt) : 'Unknown'}` 
+                    content: `✅ **Thank you for donating!** Your token has been added to the donation queue.\n\n**Donation ID:** #${donatedTokenCounter}\n**Token expires:** ${validationResult.expiresAt ? `<t:${Math.floor(validationResult.expiresAt/1000)}:F>` : 'Unknown'}\n\n**Time left:** ${validationResult.expiresAt ? formatRemainingTime(validationResult.expiresAt) : 'Unknown'}` 
                 });
             }
 
+            // Stock Modal - Admin only
             if (interaction.customId === 'stock_modal') {
+                if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
+                    return interaction.reply({ content: '❌ **Access Denied:** You need Administrator permissions.', flags: 64 });
+                }
+
                 await interaction.deferReply({ flags: 64 });
                 const bearer = interaction.fields.getTextInputValue('stock_bearer_input').trim();
                 const refresh = interaction.fields.getTextInputValue('stock_refresh_input').trim();
@@ -1305,6 +1452,7 @@ client.on('interactionCreate', async interaction => {
                 });
             }
 
+            // Redeem Modal - Available to everyone
             if (interaction.customId === 'redeem_modal') {
                 await interaction.deferReply({ flags: 64 });
                 const code = interaction.fields.getTextInputValue('redeem_code_input').trim();
@@ -1334,7 +1482,6 @@ client.on('interactionCreate', async interaction => {
         }
     } catch (err) {
         console.error(`[Interaction Error] ${err.message}`);
-        // If interaction is unknown or expired, do not attempt to reply to avoid crash
         if (err.code !== 3000 && !interaction.replied && !interaction.deferred) {
             interaction.reply({ content: "❌ An unexpected error occurred. Please try again.", flags: 64 }).catch(() => {});
         }
