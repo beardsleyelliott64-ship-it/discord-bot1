@@ -32,6 +32,11 @@ const MEMBER_ROLE_ID = "1539945420501950535";      // Verification Role ID
 const SUPPORTER_ROLE_ID = "1540841149554499634";   // Role given upon code redemption
 const ANNOUNCEMENT_ROLE_ID = "123456789012345678"; // Announcement Role ID
 
+// Role IDs provided in exact order: Buyer, VIP, Server Booster
+const BUYER_ROLE_ID = "1542207847889375364";
+const VIP_ROLE_ID = "1542207848413667530";
+const BOOSTER_ROLE_ID = "1542207847004119192";
+
 // Role Names to Auto-Create if Missing
 const REQUIRED_ROLES = {
     BOOSTER: "Server Booster",
@@ -95,6 +100,13 @@ const commandsData = [
     new SlashCommandBuilder().setName('warnings').setDescription("Check a member's warnings").addUserOption(opt => opt.setName('target').setDescription('Member').setRequired(true)).setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     new SlashCommandBuilder().setName('welcome').setDescription('Configure welcome messages for new members').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     
+    // Custom /build server generator command
+    new SlashCommandBuilder()
+        .setName('build')
+        .setDescription('Builds a custom category and essential channels based on your theme')
+        .addStringOption(opt => opt.setName('theme').setDescription('The theme/name for your server layout').setRequired(true))
+        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+
     // Generator & Token Commands from Screenshots
     new SlashCommandBuilder().setName('token').setDescription('Generate a fresh token directly to your DMs'),
     new SlashCommandBuilder().setName('stock').setDescription('Open form to add token stock').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
@@ -207,6 +219,79 @@ client.on('interactionCreate', async interaction => {
             return interaction.reply({ content: `You chose **${userChoice}**, Queen Bee chose **${botChoice}**. ${outcome}` });
         }
 
+        // --- NEW /BUILD COMMAND IMPLEMENTATION ---
+        if (commandName === 'build') {
+            const theme = options.getString('theme');
+            await interaction.deferReply({ flags: 64 });
+
+            try {
+                const guild = interaction.guild;
+                const categoryName = `📁・${theme.toUpperCase()}`;
+
+                // 1. Create the Category
+                const category = await guild.channels.create({
+                    name: categoryName,
+                    type: ChannelType.GuildCategory,
+                });
+
+                // 2. Create Verification Channel + Panel
+                const verifyChannel = await guild.channels.create({
+                    name: 'verification',
+                    type: ChannelType.GuildText,
+                    parent: category.id,
+                });
+                const verifyEmbed = new EmbedBuilder()
+                    .setTitle("🛡️ // SECURITY PROTOCOL")
+                    .setDescription(`Welcome to the **${theme}** sector. Click below to verify your session and unlock community channels.`)
+                    .setColor(0x1ABC9C);
+                const verifyRow = new ActionRowBuilder().addComponents(
+                    new ButtonBuilder().setCustomId('verify_btn').setLabel('VERIFY').setStyle(ButtonStyle.Success).setEmoji('🛡️')
+                );
+                await verifyChannel.send({ embeds: [verifyEmbed], components: [verifyRow] });
+
+                // 3. Create Redeem Channel + Panel
+                const redeemChannel = await guild.channels.create({
+                    name: 'redeem',
+                    type: ChannelType.GuildText,
+                    parent: category.id,
+                });
+                const redeemEmbed = new EmbedBuilder()
+                    .setTitle("💎 // KEY REDEEM DESK")
+                    .setDescription(`Got a key for **${theme}**? Click below to submit your license code and claim package permissions instantly.`)
+                    .setColor(0x5865F2);
+                const redeemRow = new ActionRowBuilder().addComponents(
+                    new ButtonBuilder().setCustomId('redeem_btn').setLabel('REDEEM KEY').setStyle(ButtonStyle.Primary).setEmoji('💎')
+                );
+                await redeemChannel.send({ embeds: [redeemEmbed], components: [redeemRow] });
+
+                // 4. Create Support Channel + Panel
+                const supportChannel = await guild.channels.create({
+                    name: 'support',
+                    type: ChannelType.GuildText,
+                    parent: category.id,
+                });
+                const supportEmbed = new EmbedBuilder()
+                    .setTitle("🛠️ // SUPPORT DESK")
+                    .setDescription(`Need assistance with **${theme}**? Select your department below to spin up a private ticket room.`)
+                    .setColor(0xFEE75C);
+                const supportRow = new ActionRowBuilder().addComponents(
+                    new StringSelectMenuBuilder()
+                        .setCustomId('support_select')
+                        .setPlaceholder('📂 Select department...')
+                        .addOptions([
+                            { label: 'General Support', description: 'Assistance regarding theme setup', value: 'General Inquiry', emoji: '❓' },
+                            { label: 'Billing & Keys', description: 'Store purchases and codes', value: 'Billing Support', emoji: '💳' }
+                        ])
+                );
+                await supportChannel.send({ embeds: [supportEmbed], components: [supportRow] });
+
+                return interaction.editReply({ content: `✅ Successfully built category **${categoryName}** with channels **#verification**, **#redeem**, and **#support**!` });
+            } catch (err) {
+                console.error("Build Command Error:", err);
+                return interaction.editReply({ content: "❌ Failed to build server layout. Ensure the bot has `MANAGE_CHANNELS` permissions." });
+            }
+        }
+
         if (commandName === 'generate-code') {
             const newCode = generateSupporterCode();
             validCodes.add(newCode);
@@ -258,9 +343,9 @@ client.on('interactionCreate', async interaction => {
                 .setTitle("envo token generator")
                 .setDescription("Generate your EIC token below!\n\n" +
                     "**Public Token** — everyone | cooldown: `20m 0s`\n" +
-                    "**Booster Token** — <@&Server Booster> only | cooldown: `10m 0s`\n" +
-                    "**Buyer Token** — <@&Buyer> only | cooldown: `6m 0s`\n" +
-                    "**VIP Token** — <@&VIP> only | cooldown: `4m 0s`\n\n" +
+                    "**Booster Token** — <@&" + BOOSTER_ROLE_ID + "> only | cooldown: `10m 0s`\n" +
+                    "**Buyer Token** — <@&" + BUYER_ROLE_ID + "> only | cooldown: `6m 0s`\n" +
+                    "**VIP Token** — <@&" + VIP_ROLE_ID + "> only | cooldown: `4m 0s`\n\n" +
                     "*Tokens are only visible to you.*\n" +
                     "*Ephemeral — only you can see your token*\n\n" +
                     "**Made by envo.gg**")
@@ -317,9 +402,9 @@ client.on('interactionCreate', async interaction => {
                     .setTitle("envo token generator")
                     .setDescription("Generate your EIC token below!\n\n" +
                         "**Public Token** — everyone | cooldown: `20m 0s`\n" +
-                        "**Booster Token** — <@&Server Booster> only | cooldown: `10m 0s`\n" +
-                        "**Buyer Token** — <@&Buyer> only | cooldown: `6m 0s`\n" +
-                        "**VIP Token** — <@&VIP> only | cooldown: `4m 0s`\n\n" +
+                        "**Booster Token** — <@&" + BOOSTER_ROLE_ID + "> only | cooldown: `10m 0s`\n" +
+                        "**Buyer Token** — <@&" + BUYER_ROLE_ID + "> only | cooldown: `6m 0s`\n" +
+                        "**VIP Token** — <@&" + VIP_ROLE_ID + "> only | cooldown: `4m 0s`\n\n" +
                         "*Tokens are only visible to you.*\n" +
                         "*Ephemeral — only you can see your token*\n\n" +
                         "**Made by envo.gg**")
@@ -341,6 +426,7 @@ client.on('interactionCreate', async interaction => {
                     .setDescription("Ultra-secure administrative panel deployment suite:")
                     .setColor(0x3498DB)
                     .addFields(
+                        { name: "🔨 `/build [theme]`", value: "Generates a custom category with #verification, #redeem, and #support channels.", inline: false },
                         { name: "🔒 `/panel verify`", value: "Deploys the ultra-secure verification gate with automated role integration.", inline: false },
                         { name: "💎 `/panel redeem`", value: "Deploys the live key redemption modal system.", inline: false },
                         { name: "🛠️ `/panel support`", value: "Deploys the automated private ticket room generator.", inline: false },
@@ -485,25 +571,29 @@ client.on('interactionCreate', async interaction => {
         if (['gen_public', 'gen_booster', 'gen_buyer', 'gen_vip'].includes(interaction.customId)) {
             const userId = interaction.user.id;
             const member = interaction.member;
+            let requiredRoleId = null;
             let requiredRoleName = null;
             let cooldownTime = 20 * 60 * 1000; // Default 20 mins for public
 
             if (interaction.customId === 'gen_booster') {
-                requiredRoleName = REQUIRED_ROLES.BOOSTER;
+                requiredRoleId = BOOSTER_ROLE_ID;
+                requiredRoleName = "Server Booster";
                 cooldownTime = 10 * 60 * 1000;
             } else if (interaction.customId === 'gen_buyer') {
-                requiredRoleName = REQUIRED_ROLES.BUYER;
+                requiredRoleId = BUYER_ROLE_ID;
+                requiredRoleName = "Buyer";
                 cooldownTime = 6 * 60 * 1000;
             } else if (interaction.customId === 'gen_vip') {
-                requiredRoleName = REQUIRED_ROLES.VIP;
+                requiredRoleId = VIP_ROLE_ID;
+                requiredRoleName = "VIP";
                 cooldownTime = 4 * 60 * 1000;
             }
 
             // Check Role Requirement
-            if (requiredRoleName) {
-                const hasRole = member.roles.cache.some(r => r.name === requiredRoleName);
+            if (requiredRoleId) {
+                const hasRole = member.roles.cache.has(requiredRoleId) || member.roles.cache.some(r => r.name === requiredRoleName);
                 if (!hasRole) {
-                    return interaction.reply({ content: `❌ **Access Denied:** You need the **${requiredRoleName}** role to use this token button!`, flags: 64 });
+                    return interaction.reply({ content: `❌ **Access Denied:** You need the <@&${requiredRoleId}> role to use this token button!`, flags: 64 });
                 }
             }
 
@@ -554,13 +644,13 @@ client.on('interactionCreate', async interaction => {
             }
 
             if (member.roles.cache.has(role.id)) {
-                return interaction.editReply({ content: "⚠️ You are already fully verified and authenticated in **Elliott Modding**!" });
+                return interaction.editReply({ content: "⚠️ You are already fully verified and authenticated!" });
             }
 
             try {
                 await member.roles.add(role);
                 return interaction.editReply({ 
-                    content: "✅ **Authentication Successful!**\nSecurity clearance granted. Your account has been bound to the verification ledger and community channels are now unlocked." 
+                    content: "✅ **Authentication Successful!**\nSecurity clearance granted. Your account has been bound to the verification ledger." 
                 });
             } catch (err) {
                 console.error("Role Assignment Error:", err);
@@ -572,7 +662,7 @@ client.on('interactionCreate', async interaction => {
         if (interaction.customId === 'redeem_btn') {
             const modal = new ModalBuilder()
                 .setCustomId('redeem_modal')
-                .setTitle('💎 Elliott Modding // Secure Key Redemption');
+                .setTitle('💎 Secure Key Redemption');
 
             const codeInput = new TextInputBuilder()
                 .setCustomId('redeem_code_input')
@@ -642,7 +732,7 @@ client.on('interactionCreate', async interaction => {
                     .setDescription(`Welcome, <@${user.id}>. Staff has been notified of your inquiry regarding **${category}**.\n\nPlease describe your issue in detail below. An administrator will review your case shortly.`)
                     .setColor(0xFEE75C)
                     .setTimestamp()
-                    .setFooter({ text: "Elliott Modding Incident Resolution Desk" });
+                    .setFooter({ text: "Incident Resolution Desk" });
 
                 const closeButton = new ActionRowBuilder().addComponents(
                     new ButtonBuilder().setCustomId('close_ticket_btn').setLabel('CLOSE TICKET').setStyle(ButtonStyle.Danger).setEmoji('🔒')
