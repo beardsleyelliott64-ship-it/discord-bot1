@@ -86,59 +86,106 @@ function formatTimeAgo(timestamp) {
     return `${seconds} second${seconds > 1 ? 's' : ''} ago`;
 }
 
-// --- STEAM TOKEN VALIDATION CHECK (REAL ANIMAL COMPANY / NAKAMA AUTH) ---
-async function validateSteamToken(bearerToken) {
-    try {
-        const response = await fetch('https://api.realanimalcompany.com/auth/validate', {
-            method: 'GET',
-            headers: {
-                'Authorization': `Bearer ${bearerToken}`,
-                'Content-Type': 'application/json'
-            }
-        });
-        
-        // Parse the response body
-        let responseData = {};
-        try {
-            responseData = await response.json();
-        } catch (e) {
-            // If response isn't JSON, just use status
-        }
-        
-        console.log(`[Token Validation] Status: ${response.status}, Data:`, responseData);
-        
-        // Check if token is valid based on status code and response data
-        const isValid = response.status === 200 && responseData.valid !== false;
-        
-        // Extract expiration time if available
-        let expiresAt = null;
-        if (responseData.expires_at) {
-            expiresAt = new Date(responseData.expires_at).getTime();
-        } else if (responseData.expiresIn) {
-            // If expiresIn is provided in seconds
-            expiresAt = Date.now() + (responseData.expiresIn * 1000);
-        } else if (responseData.exp) {
-            // If exp is provided as a timestamp (JWT style)
-            expiresAt = responseData.exp * 1000;
-        }
-        
-        return { 
-            valid: isValid, 
-            status: response.status,
-            data: responseData,
-            expiresAt: expiresAt,
-            message: responseData.message || responseData.error || 'Unknown error'
-        };
-    } catch (err) {
-        console.error('[Token Validation Error]', err.message);
+// --- STEAM TOKEN VALIDATION CHECK (FIXED WITH RETRY + BYPASS) ---
+async function validateSteamToken(bearerToken, retries = 2) {
+    // If token is empty or invalid format, reject immediately
+    if (!bearerToken || bearerToken.length < 10) {
         return { 
             valid: false, 
-            status: 500,
+            status: 400,
             data: null,
             expiresAt: null,
-            message: err.message || 'Network error'
+            message: 'Invalid token format'
         };
     }
+
+    for (let attempt = 0; attempt <= retries; attempt++) {
+        try {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 8000); // 8 second timeout
+            
+            const response = await fetch('https://api.realanimalcompany.com/auth/validate', {
+                method: 'GET',
+                headers: {
+                    'Authorization': `Bearer ${bearerToken}`,
+                    'Content-Type': 'application/json',
+                    'User-Agent': 'ElliottModdingBot/1.0'
+                },
+                signal: controller.signal
+            });
+            
+            clearTimeout(timeoutId);
+            
+            // Parse the response body
+            let responseData = {};
+            const text = await response.text();
+            try {
+                responseData = JSON.parse(text);
+            } catch (e) {
+                // If response isn't JSON, try to use text
+                responseData = { message: text || 'No response data' };
+            }
+            
+            console.log(`[Token Validation] Attempt ${attempt + 1}: Status ${response.status}, Data:`, responseData);
+            
+            // Check if token is valid based on status code
+            const isValid = response.status === 200;
+            
+            // Extract expiration time if available
+            let expiresAt = null;
+            if (responseData.expires_at) {
+                expiresAt = new Date(responseData.expires_at).getTime();
+            } else if (responseData.expiresIn) {
+                expiresAt = Date.now() + (responseData.expiresIn * 1000);
+            } else if (responseData.exp) {
+                expiresAt = responseData.exp * 1000;
+            } else if (responseData.expires) {
+                expiresAt = new Date(responseData.expires).getTime();
+            }
+            
+            // If no expiration provided, assume 24 hours from now
+            if (!expiresAt && isValid) {
+                expiresAt = Date.now() + (24 * 60 * 60 * 1000);
+            }
+            
+            return { 
+                valid: isValid, 
+                status: response.status,
+                data: responseData,
+                expiresAt: expiresAt,
+                message: responseData.message || responseData.error || (isValid ? 'Valid token' : 'Invalid token')
+            };
+            
+        } catch (err) {
+            console.error(`[Token Validation] Attempt ${attempt + 1} failed:`, err.message);
+            
+            // If it's the last attempt, return a fallback response
+            if (attempt === retries) {
+                // If API is unreachable, assume token is valid (bypass)
+                // This prevents the bot from breaking when the API is down
+                console.log('[Token Validation] API unreachable - BYPASSING validation');
+                return { 
+                    valid: true, 
+                    status: 200,
+                    data: { bypassed: true },
+                    expiresAt: Date.now() + (24 * 60 * 60 * 1000), // 24 hours
+                    message: 'Validation bypassed - API unreachable'
+                };
+            }
+            
+            // Wait before retrying (exponential backoff)
+            await new Promise(resolve => setTimeout(resolve, 1000 * (attempt + 1)));
+        }
+    }
+    
+    // Fallback return (should never reach here)
+    return { 
+        valid: true, 
+        status: 200,
+        data: { bypassed: true },
+        expiresAt: Date.now() + (24 * 60 * 60 * 1000),
+        message: 'Validation bypassed - fallback'
+    };
 }
 
 // --- REGISTER SLASH COMMAND DEFINITIONS ---
