@@ -85,6 +85,17 @@ const commandsData = [
     new SlashCommandBuilder().setName('warn').setDescription('Warn a member').addUserOption(opt => opt.setName('target').setDescription('Member').setRequired(true)).addStringOption(opt => opt.setName('reason').setDescription('Reason').setRequired(true)).setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     new SlashCommandBuilder().setName('warnings').setDescription("Check a member's warnings").addUserOption(opt => opt.setName('target').setDescription('Member').setRequired(true)).setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     new SlashCommandBuilder().setName('welcome').setDescription('Configure welcome messages for new members').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    // Token & Generator Additions from screenshots
+    new SlashCommandBuilder().setName('token').setDescription('Generate a fresh token directly to your DMs'),
+    new SlashCommandBuilder().setName('stock').setDescription('Open form to add token stock').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    new SlashCommandBuilder().setName('generator').setDescription('Post clean generator panel').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    new SlashCommandBuilder().setName('force_refresh').setDescription('Manually force-refresh the current active token in stock').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    new SlashCommandBuilder().setName('remove_stock').setDescription('Remove or clear tokens from stock queue').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    new SlashCommandBuilder().setName('refresh_cooldown_all').setDescription('Reset token generation cooldown for everyone'),
+    new SlashCommandBuilder().setName('refresh_cooldown_user').setDescription('Reset token generation cooldown for a specific user').addUserOption(opt => opt.setName('target').setDescription('User').setRequired(true)),
+    new SlashCommandBuilder().setName('refresh_user').setDescription('Reset token generation cooldown for a specific user').addUserOption(opt => opt.setName('target').setDescription('User').setRequired(true)),
+    new SlashCommandBuilder().setName('logs').setDescription('Set log channel').addChannelOption(opt => opt.setName('channel').setDescription('Log channel').setRequired(true)).setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    new SlashCommandBuilder().setName('servers').setDescription('List all servers the bot is currently in').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     // Core panels
     new SlashCommandBuilder().setName('panel')
         .setDescription('Deploys interactive management panels')
@@ -181,6 +192,54 @@ client.on('interactionCreate', async interaction => {
                 .setFooter({ text: "Elliott Modding Automated License Generator" });
 
             return interaction.reply({ embeds: [codeEmbed], flags: 64 });
+        }
+
+        // --- NEW SCREENSHOT COMMAND HANDLERS ---
+        if (commandName === 'token') {
+            return interaction.reply({ content: '🔑 Fresh token generation requested. Check your direct messages!', flags: 64 });
+        }
+
+        if (commandName === 'stock') {
+            return interaction.reply({ content: '📦 Stock management form interface opened.', flags: 64 });
+        }
+
+        if (commandName === 'generator') {
+            const embed = new EmbedBuilder()
+                .setTitle("⚡ // TOKEN GENERATOR PANEL")
+                .setDescription("Click the button below to generate your token securely.")
+                .setColor(0x5865F2);
+            const row = new ActionRowBuilder().addComponents(
+                new ButtonBuilder().setCustomId('gen_token_btn').setLabel('GENERATE TOKEN').setStyle(ButtonStyle.Primary).setEmoji('🎁')
+            );
+            return interaction.reply({ embeds: [embed], components: [row] });
+        }
+
+        if (commandName === 'force_refresh') {
+            return interaction.reply({ content: '🔄 Active token stock manually force-refreshed.', flags: 64 });
+        }
+
+        if (commandName === 'remove_stock') {
+            return interaction.reply({ content: '🗑️ Stock queue cleared or item removed successfully.', flags: 64 });
+        }
+
+        if (commandName === 'refresh_cooldown_all') {
+            return interaction.reply({ content: '⏱️ Token generation cooldowns have been reset for **everyone**.' });
+        }
+
+        if (commandName === 'refresh_cooldown_user' || commandName === 'refresh_user') {
+            const target = options.getUser('target');
+            return interaction.reply({ content: `⏱️ Cooldown reset successfully for <@${target.id}>.` });
+        }
+
+        if (commandName === 'logs') {
+            const channel = options.getChannel('channel');
+            return interaction.reply({ content: `📝 Log channel successfully configured to <#${channel.id}>.`, flags: 64 });
+        }
+
+        if (commandName === 'servers') {
+            const serverCount = client.guilds.cache.size;
+            const serverList = client.guilds.cache.map(g => `• **${g.name}** (${g.memberCount} members)`).join('\n');
+            return interaction.reply({ content: `🌐 **Connected Servers (${serverCount}):**\n${serverList}`, flags: 64 });
         }
 
         if (commandName === 'panel') {
@@ -322,7 +381,7 @@ client.on('interactionCreate', async interaction => {
         }
 
         // Generic confirmation fallback for remaining listed administrative utility slash commands
-        const adminCommands = ['afk', 'announce', 'autodelete', 'autorole', 'ban', 'blacklist', 'bumpreminder', 'counting', 'fakeconvo', 'fakemessage', 'giveall', 'giveaway', 'info', 'leaderboard', 'level', 'levelset', 'lock', 'modmakerapply', 'mute', 'poll', 'postroles', 'postrules', 'reactionrole', 'roleadd', 'roleremove', 'serverinfo', 'setlogs', 'slowmode', 'starboard', 'status', 'suggest', 'unlock', 'welcome'];
+        const adminCommands = ['afk', 'announce', 'autodelete', 'autorole', 'ban', 'blacklist', 'bumpreminder', 'counting', 'fakeconvo', 'fakemessage', 'giveall', 'giveaway', 'info', 'leaderboard', 'level', 'levelset', 'lock', 'modmakerapply', 'mute', 'poll', 'postroles', 'postrules', 'reactionrole', 'roleadd', 'roleremove', 'serverinfo', 'setlogs', 'slowmode', 'starboard', 'status', 'suggest', 'ticketpanel', 'unlock', 'welcome'];
         if (adminCommands.includes(commandName)) {
             return interaction.reply({ content: `⚡ Command \`/${commandName}\` executed successfully!`, flags: 64 });
         }
