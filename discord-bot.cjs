@@ -335,7 +335,6 @@ function generateSupporterCode() {
 // Function to check if token is expired based on stored expiration
 function isTokenExpired(tokenObj) {
     if (!tokenObj.expiresAt) {
-        // If no expiration stored, assume valid but we'll re-validate
         return false;
     }
     return Date.now() > tokenObj.expiresAt;
@@ -613,6 +612,7 @@ client.on('interactionCreate', async interaction => {
                 return await interaction.showModal(modal);
             }
 
+            // UPDATED GENERATOR COMMAND (Matches 2nd Picture)
             if (commandName === 'generator') {
                 const embed = new EmbedBuilder()
                     .setTitle('TOKENS BY ELLIOTT')
@@ -685,6 +685,7 @@ client.on('interactionCreate', async interaction => {
             if (commandName === 'panel') {
                 const subArg = options.getString('type');
 
+                // UPDATED PANEL GENERATOR COMMAND (Matches 2nd Picture)
                 if (subArg === 'generator') {
                     const embed = new EmbedBuilder()
                         .setTitle('TOKENS BY ELLIOTT')
