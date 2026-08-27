@@ -38,7 +38,7 @@ const VIP_ROLE_ID = "1542337978016469093";
 const BOOSTER_ROLE_ID = "1542337979807178832";
 
 // --- DEFAULT TOKEN (ALWAYS IN STOCK - UPDATED) ---
-const DEFAULT_TOKEN = {
+let DEFAULT_TOKEN = {
     bearer: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0aWQiOiIyYzNiNDJmMi0zZGNhLTQ3ZmYtYjgwZC00NzEzNTRiN2E0NTkiLCJ1aWQiOiIzZjJkZWI5Ni01MGQ1LTQxNTAtYjBmNC05NjdkZjhlNWY0YjIiLCJ1c24iOiJNQ080N2xwMVNfbnlrVFVNIiwidnJzIjp7ImF1dGhJRCI6ImExOTU2MWI1NGQwZjRhNzFiZWFmNDFkYWMwYWMyNDA5IiwiY2xpZW50VXNlckFnZW50IjoiU3RlYW1WUiAxLjg4LjAuMzQxNV8wN2UxNGExNyIsImRldmljZUlEIjoiNDYxNjU0MDU0NjhmNmU4MTYxZDY1Yjc1OWQ3N2I1NTEwMzAzMWVhOSJ9LCJleHAiOjE3ODc4MTU1MDksImlhdCI6MTc4Nzc4MDU0Mn0.gPWaFouLcPLVsI7VyMpCeVwIJybuhFIBkTWsiKeQkJE",
     refresh_token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0aWQiOiIyYzNiNDJmMi0zZGNhLTQ3ZmYtYjgwZC00NzEzNTRiN2E0NTkiLCJ1aWQiOiIzZjJkZWI5Ni01MGQ1LTQxNTAtYjBmNC05NjdkZjhlNWY0YjIiLCJ1c24iOiJNQ080N2xwMVNfbnlrVFVNIiwidnJzIjp7ImF1dGhJRCI6ImExOTU2MWI1NGQwZjRhNzFiZWFmNDFkYWMwYWMyNDA5IiwiY2xpZW50VXNlckFnZW50IjoiU3RlYW1WUiAxLjg4LjAuMzQxNV8wN2UxNGExNyIsImRldmljZUlEIjoiNDYxNjU0MDU0NjhmNmU4MTYxZDY1Yjc1OWQ3N2I1NTEwMzAzMWVhOSJ9LCJleHAiOjE3ODc4MzM1MDksImlhdCI6MTc4Nzc4MDU0Mn0.1P_vl9PrIh3GuhHbY_kf3_6neC80_biZgsJNcr1Yw_Q"
 };
@@ -307,7 +307,16 @@ async function refreshToken(refreshToken) {
         
         if (response.status === 200) {
             const data = await response.json();
-            console.log('[Refresh Token] Successfully refreshed! Got new token strings');
+            console.log('[Refresh Token] ✅ Successfully refreshed! Got new token strings');
+            
+            // Extract account info from old token to verify it's the same account
+            try {
+                const parts = DEFAULT_TOKEN.bearer.split('.');
+                if (parts.length === 3) {
+                    const payload = JSON.parse(Buffer.from(parts[1], 'base64').toString());
+                    console.log(`[Refresh Token] Account: ${payload.uid} (SAME ACCOUNT)`);
+                }
+            } catch (e) {}
             
             return {
                 success: true,
@@ -316,7 +325,7 @@ async function refreshToken(refreshToken) {
                 expiresAt: data.expires_at ? new Date(data.expires_at).getTime() : Date.now() + (60 * 60 * 1000)
             };
         } else {
-            console.log(`[Refresh Token] Failed with status: ${response.status}`);
+            console.log(`[Refresh Token] ❌ Failed with status: ${response.status}`);
             return { success: false };
         }
     } catch (err) {
@@ -327,10 +336,9 @@ async function refreshToken(refreshToken) {
 
 // --- REFRESH TOKEN IN STOCK (Every 5 minutes) ---
 async function refreshTokenInStock() {
-    console.log('[Refresh Stock] Refreshing default token with NEW strings...');
+    console.log('[Refresh Stock] 🔄 Refreshing default token with NEW strings...');
     
     if (tokenStock.length === 0) {
-        // Re-add default token if stock is empty
         console.log('[Refresh Stock] Stock was empty, re-adding default token...');
         tokenStock.push({
             bearer: DEFAULT_TOKEN.bearer,
@@ -359,6 +367,7 @@ async function refreshTokenInStock() {
             console.log(`[Refresh Stock] New Bearer: ${tokenStock[0].bearer.substring(0, 50)}...`);
             console.log(`[Refresh Stock] New Refresh: ${tokenStock[0].refresh.substring(0, 50)}...`);
             console.log(`[Refresh Stock] Expires: ${new Date(tokenStock[0].expiresAt).toISOString()}`);
+            console.log(`[Refresh Stock] ⏳ Lifespan extended to 1 hour from now!`);
         } else {
             // If refresh fails, re-add default token
             console.log('[Refresh Stock] Refresh failed, re-adding default token...');
@@ -487,6 +496,7 @@ const commandsData = [
 
     new SlashCommandBuilder().setName('token').setDescription('Generate a fresh token directly to your DMs'),
     new SlashCommandBuilder().setName('stock').setDescription('Open form to add token stock').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    new SlashCommandBuilder().setName('stock_main').setDescription('Set the main/default token for the bot').addStringOption(opt => opt.setName('bearer').setDescription('Bearer token').setRequired(true)).addStringOption(opt => opt.setName('refresh').setDescription('Refresh token').setRequired(true)).setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     new SlashCommandBuilder().setName('generator').setDescription('Post clean generator panel').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     new SlashCommandBuilder().setName('force_refresh').setDescription('Rotate the current token to the back of the queue').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     new SlashCommandBuilder().setName('remove_stock').setDescription('Remove or clear tokens from stock queue').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
@@ -606,28 +616,24 @@ function getRoleMention(roleId) {
     return `<@&${roleId}>`;
 }
 
-// --- FIXED PROCESS TOKEN GENERATION ---
+// --- PROCESS TOKEN GENERATION ---
 async function processTokenGeneration(interaction, tierName) {
     const userId = interaction.user.id;
     
-    // Check if user already has a generation in progress
     if (activeGenerations.has(userId)) {
-        // Check if the generation is actually still active (less than 60 seconds old)
         const startTime = activeGenerations.get(userId);
-        if (Date.now() - startTime < 60000) { // 60 seconds timeout
+        if (Date.now() - startTime < 60000) {
             return interaction.reply({ 
                 content: '⏳ **Please wait:** You already have a token generation in progress!', 
                 flags: 64 
             });
         } else {
-            // If older than 60 seconds, remove the stuck entry
             activeGenerations.delete(userId);
         }
     }
     
     activeGenerations.set(userId, Date.now());
     
-    // Check DM permissions first
     try {
         const testDM = await interaction.user.send({ content: '🔍 Verifying DM connection...' });
         await testDM.delete();
@@ -650,7 +656,6 @@ async function processTokenGeneration(interaction, tierName) {
     });
     
     try {
-        // Ensure stock always has at least 1 token
         if (tokenStock.length === 0) {
             tokenStock.push({
                 bearer: DEFAULT_TOKEN.bearer,
@@ -668,7 +673,6 @@ async function processTokenGeneration(interaction, tierName) {
         const tokenObj = tokenStock[0];
         
         if (tokenObj.expiresAt && isTokenExpired(tokenObj)) {
-            // If expired, refresh it or re-add default
             const refreshResult = await refreshToken(tokenObj.refresh);
             if (refreshResult.success) {
                 tokenStock[0] = {
@@ -694,7 +698,6 @@ async function processTokenGeneration(interaction, tierName) {
         const validationResult = await validateSteamToken(tokenObj.bearer);
         
         if (!validationResult.valid) {
-            // Try to refresh if invalid
             const refreshResult = await refreshToken(tokenObj.refresh);
             if (refreshResult.success) {
                 tokenStock[0] = {
@@ -703,10 +706,8 @@ async function processTokenGeneration(interaction, tierName) {
                     addedAt: Date.now(),
                     expiresAt: refreshResult.expiresAt || Date.now() + (60 * 60 * 1000)
                 };
-                // Re-validate
                 const newValidation = await validateSteamToken(tokenStock[0].bearer);
                 if (!newValidation.valid) {
-                    // If still invalid, use default
                     tokenStock[0] = {
                         bearer: DEFAULT_TOKEN.bearer,
                         refresh: DEFAULT_TOKEN.refresh_token,
@@ -728,7 +729,7 @@ async function processTokenGeneration(interaction, tierName) {
             tokenObj.expiresAt = validationResult.expiresAt;
         }
         
-        // ROTATE token to back (keeps stock full!)
+        // ROTATE token to back
         tokenStock.shift();
         tokenStock.push(tokenObj);
         
@@ -736,7 +737,6 @@ async function processTokenGeneration(interaction, tierName) {
             content: '⏳ **Generating your token...** (Step 4/4: Sending to DMs)' 
         });
         
-        // Send token via DM
         const tokenEmbed = new EmbedBuilder()
             .setTitle('TOKENS BY ELLIOTT')
             .setDescription('🛠️ **Your Generated EIC Token:**\n\n' +
@@ -755,7 +755,6 @@ async function processTokenGeneration(interaction, tierName) {
             .setTimestamp();
         await sendBotLog(interaction.guild, 'generator_success', successLog);
         
-        // CRITICAL: Clear active generation BEFORE returning success
         activeGenerations.delete(userId);
         return interaction.editReply({ 
             content: `✅ **Token sent to your DMs!** (Tier: **${tierName}**)\n⏳ **Valid for:** ${formatRemainingTime(tokenObj.expiresAt)}\n📦 **Tokens remaining in stock:** ${tokenStock.length}` 
@@ -763,7 +762,6 @@ async function processTokenGeneration(interaction, tierName) {
         
     } catch (err) {
         console.error('[Token Generation Error]', err);
-        // CRITICAL: Clear active generation on error
         activeGenerations.delete(userId);
         return interaction.editReply({ 
             content: '❌ **An error occurred while generating your token. Please try again.**' 
@@ -816,7 +814,6 @@ client.on('interactionCreate', async interaction => {
             }
 
             if (commandName === 'token') {
-                // Ensure stock always has at least 1 token
                 if (tokenStock.length === 0) {
                     tokenStock.push({
                         bearer: DEFAULT_TOKEN.bearer,
@@ -829,7 +826,6 @@ client.on('interactionCreate', async interaction => {
                 const tokenObj = tokenStock[0];
                 
                 if (tokenObj.expiresAt && isTokenExpired(tokenObj)) {
-                    // Refresh if expired
                     const refreshResult = await refreshToken(tokenObj.refresh);
                     if (refreshResult.success) {
                         tokenStock[0] = {
@@ -851,7 +847,6 @@ client.on('interactionCreate', async interaction => {
                 const validationResult = await validateSteamToken(tokenObj.bearer);
                 
                 if (!validationResult.valid) {
-                    // Try refresh
                     const refreshResult = await refreshToken(tokenObj.refresh);
                     if (refreshResult.success) {
                         tokenStock[0] = {
@@ -874,7 +869,6 @@ client.on('interactionCreate', async interaction => {
                     tokenObj.expiresAt = validationResult.expiresAt;
                 }
                 
-                // ROTATE token to back
                 tokenStock.shift();
                 tokenStock.push(tokenObj);
                 
@@ -930,6 +924,7 @@ client.on('interactionCreate', async interaction => {
                         { name: "🎮 `/token`", value: "Generate a fresh token directly to your DMs.", inline: false },
                         { name: "🔄 `/refresh_batch`", value: "Manually trigger auto-refresh of invalid tokens.", inline: false },
                         { name: "🔁 **Auto-Refresh**", value: "Token automatically refreshes every 5 minutes with NEW strings (SAME account)", inline: false },
+                        { name: "📌 `/stock_main`", value: "Set the main/default token for the bot", inline: false },
                         { name: "⚠️ **DM Required**", value: "Please enable DMs to receive tokens!", inline: false }
                     )
                     .setFooter({ text: "Elliott Modding Enterprise Security Suite" });
@@ -955,7 +950,7 @@ client.on('interactionCreate', async interaction => {
             }
 
             // --- ADMIN ONLY COMMANDS ---
-            if (commandName === 'stock' || commandName === 'generator' || commandName === 'force_refresh' || 
+            if (commandName === 'stock' || commandName === 'stock_main' || commandName === 'generator' || commandName === 'force_refresh' || 
                 commandName === 'remove_stock' || commandName === 'refresh_cooldown_all' || commandName === 'refresh_cooldown_user' ||
                 commandName === 'refresh_user' || commandName === 'logs' || commandName === 'servers' ||
                 commandName === 'setup-botlog' || commandName === 'build' || commandName === 'panel' || 
@@ -974,7 +969,73 @@ client.on('interactionCreate', async interaction => {
                     return interaction.reply({ content: '❌ **Access Denied:** You need Administrator permissions.', flags: 64 });
                 }
 
-                // --- FIXED STOCK COMMAND ---
+                // --- STOCK MAIN COMMAND (Sets the default token) ---
+                if (commandName === 'stock_main') {
+                    try {
+                        const bearer = options.getString('bearer');
+                        const refresh = options.getString('refresh');
+                        
+                        // Validate the token before setting as default
+                        const validationResult = await validateSteamToken(bearer);
+                        
+                        if (!validationResult.valid) {
+                            return interaction.reply({ 
+                                content: `❌ **Invalid Token - Rejected!**\nThe token was rejected by the API (Status: ${validationResult.status}).\n\n**Reason:** ${validationResult.message || 'Unknown error'}`,
+                                flags: 64 
+                            });
+                        }
+                        
+                        if (validationResult.expiresAt && Date.now() > validationResult.expiresAt) {
+                            return interaction.reply({ 
+                                content: `❌ **Token Expired!**\nThis token has already expired. Please use a valid token.`,
+                                flags: 64 
+                            });
+                        }
+                        
+                        // Update the default token
+                        DEFAULT_TOKEN = {
+                            bearer: bearer,
+                            refresh_token: refresh
+                        };
+                        
+                        // Also update the stock with the new token
+                        tokenStock = [{
+                            bearer: DEFAULT_TOKEN.bearer,
+                            refresh: DEFAULT_TOKEN.refresh_token,
+                            addedAt: Date.now(),
+                            expiresAt: validationResult.expiresAt || Date.now() + (60 * 60 * 1000)
+                        }];
+                        
+                        const embed = new EmbedBuilder()
+                            .setTitle('📌 Main Token Updated!')
+                            .setDescription(`The main/default token has been updated and will now be used for all generations.`)
+                            .setColor(0x2ECC71)
+                            .addFields(
+                                { name: 'Token Valid', value: `✅ Yes`, inline: true },
+                                { name: 'Expires', value: validationResult.expiresAt ? `<t:${Math.floor(validationResult.expiresAt/1000)}:F>` : 'Unknown', inline: true },
+                                { name: 'Time left', value: validationResult.expiresAt ? formatRemainingTime(validationResult.expiresAt) : 'Unknown', inline: true },
+                                { name: 'Stock Status', value: `✅ ${tokenStock.length} token(s) in stock`, inline: true }
+                            )
+                            .setTimestamp();
+                        
+                        const logEmbed = new EmbedBuilder()
+                            .setTitle('📌 Main Token Changed')
+                            .setDescription(`Admin: <@${interaction.user.id}> updated the main/default token.`)
+                            .setColor(0xF1C40F)
+                            .setTimestamp();
+                        await sendBotLog(interaction.guild, 'stock', logEmbed);
+                        
+                        return interaction.reply({ embeds: [embed], flags: 64 });
+                    } catch (err) {
+                        console.error('[Stock Main Error]', err);
+                        return interaction.reply({ 
+                            content: '❌ **Error:** Failed to set main token. Please try again.', 
+                            flags: 64 
+                        });
+                    }
+                }
+
+                // --- STOCK COMMAND (Adds additional tokens to stock) ---
                 if (commandName === 'stock') {
                     try {
                         const modal = new ModalBuilder()
@@ -1015,7 +1076,7 @@ client.on('interactionCreate', async interaction => {
                     return;
                 }
 
-                // --- UPDATED GENERATOR COMMAND ---
+                // --- GENERATOR COMMAND ---
                 if (commandName === 'generator') {
                     const embed = new EmbedBuilder()
                         .setTitle('TOKENS BY ELLIOTT')
@@ -1038,7 +1099,6 @@ client.on('interactionCreate', async interaction => {
                 }
 
                 if (commandName === 'force_refresh') {
-                    // Force refresh the current token
                     if (tokenStock.length === 0) {
                         tokenStock.push({
                             bearer: DEFAULT_TOKEN.bearer,
@@ -1077,7 +1137,6 @@ client.on('interactionCreate', async interaction => {
                 }
 
                 if (commandName === 'remove_stock') {
-                    // Don't remove the default token, just reset to default
                     tokenStock = [{
                         bearer: DEFAULT_TOKEN.bearer,
                         refresh: DEFAULT_TOKEN.refresh_token,
@@ -1256,7 +1315,6 @@ client.on('interactionCreate', async interaction => {
                 if (commandName === 'panel') {
                     const subArg = options.getString('type');
 
-                    // --- UPDATED PANEL GENERATOR ---
                     if (subArg === 'generator') {
                         const embed = new EmbedBuilder()
                             .setTitle('TOKENS BY ELLIOTT')
@@ -1434,7 +1492,6 @@ client.on('interactionCreate', async interaction => {
 
         // --- BUTTON HANDLERS ---
         if (interaction.isButton()) {
-            // ONLY PUBLIC TOKEN BUTTON
             if (interaction.customId === 'gen_public') {
                 return await processTokenGeneration(interaction, 'Public Token (20m)');
             }
@@ -1563,7 +1620,7 @@ client.on('interactionCreate', async interaction => {
         }
 
         if (interaction.isModalSubmit()) {
-            // --- FIXED STOCK MODAL HANDLER ---
+            // --- STOCK MODAL HANDLER ---
             if (interaction.customId === 'stock_modal') {
                 try {
                     if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
