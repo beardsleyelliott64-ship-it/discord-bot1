@@ -38,11 +38,38 @@ const BUYER_ROLE_ID = "1542207847889375364";
 const VIP_ROLE_ID = "1542207848413667530";
 const BOOSTER_ROLE_ID = "1542207847004119192";
 
-// Role Names to Auto-Create if Missing
+// Role Names to Auto-Create if Missing with Colors and Permissions
 const REQUIRED_ROLES = {
-    BOOSTER: "Server Booster",
-    BUYER: "Buyer",
-    VIP: "VIP"
+    BOOSTER: { 
+        name: "Server Booster", 
+        color: 0x5865F2, // Blurple
+        permissions: [PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory]
+    },
+    BUYER: { 
+        name: "Buyer", 
+        color: 0xFEE75C, // Yellow
+        permissions: [PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory]
+    },
+    VIP: { 
+        name: "VIP", 
+        color: 0xED4245, // Red
+        permissions: [PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.CreateInstantInvite]
+    },
+    VERIFIED: {
+        name: "Verified Member",
+        color: 0x2ECC71, // Green
+        permissions: [PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.AddReactions]
+    },
+    MODERATOR: {
+        name: "Moderator",
+        color: 0xE67E22, // Orange
+        permissions: [PermissionFlagsBits.KickMembers, PermissionFlagsBits.TimeoutMembers, PermissionFlagsBits.ModerateMembers]
+    },
+    ADMIN: {
+        name: "Administrator",
+        color: 0xED4245, // Red
+        permissions: [PermissionFlagsBits.Administrator]
+    }
 };
 
 // Temporary in-memory storage for generated codes, stock, cooldowns, and log channels
@@ -389,18 +416,53 @@ client.once('ready', async () => {
     console.log(`[🚀 ONLINE] Elliott Modding (${client.user.tag}) is fully operational!`);
 
     for (const guild of client.guilds.cache.values()) {
-        for (const roleName of Object.values(REQUIRED_ROLES)) {
-            const exists = guild.roles.cache.some(r => r.name === roleName);
+        // Create all required roles with proper colors and permissions
+        for (const [key, roleConfig] of Object.entries(REQUIRED_ROLES)) {
+            const exists = guild.roles.cache.some(r => r.name === roleConfig.name);
             if (!exists) {
                 try {
                     await guild.roles.create({
-                        name: roleName,
-                        reason: "Automated Setup: Missing required token generator role."
+                        name: roleConfig.name,
+                        color: roleConfig.color,
+                        permissions: roleConfig.permissions,
+                        reason: `Automated Setup: Missing required role - ${roleConfig.name}`
                     });
-                    console.log(`[Role Setup] Created missing role '${roleName}' in guild: ${guild.name}`);
+                    console.log(`[Role Setup] Created missing role '${roleConfig.name}' in guild: ${guild.name}`);
                 } catch (err) {
-                    console.error(`[Role Setup Error] Could not create role '${roleName}' in ${guild.name}:`, err.message);
+                    console.error(`[Role Setup Error] Could not create role '${roleConfig.name}' in ${guild.name}:`, err.message);
                 }
+            }
+        }
+
+        // Also create the Supporter role if it doesn't exist
+        const supporterExists = guild.roles.cache.some(r => r.id === SUPPORTER_ROLE_ID);
+        if (!supporterExists) {
+            try {
+                await guild.roles.create({
+                    name: "Supporter",
+                    color: 0x9B59B6, // Purple
+                    permissions: [PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory],
+                    reason: "Automated Setup: Missing Supporter role"
+                });
+                console.log(`[Role Setup] Created missing role 'Supporter' in guild: ${guild.name}`);
+            } catch (err) {
+                console.error(`[Role Setup Error] Could not create Supporter role in ${guild.name}:`, err.message);
+            }
+        }
+
+        // Create the Verified Member role if it doesn't exist
+        const verifiedExists = guild.roles.cache.some(r => r.id === MEMBER_ROLE_ID);
+        if (!verifiedExists) {
+            try {
+                await guild.roles.create({
+                    name: "Verified Member",
+                    color: 0x2ECC71, // Green
+                    permissions: [PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.AddReactions],
+                    reason: "Automated Setup: Missing Verified Member role"
+                });
+                console.log(`[Role Setup] Created missing role 'Verified Member' in guild: ${guild.name}`);
+            } catch (err) {
+                console.error(`[Role Setup Error] Could not create Verified Member role in ${guild.name}:`, err.message);
             }
         }
     }
@@ -442,6 +504,11 @@ function isTokenExpired(tokenObj) {
 // Helper to check if user is bot owner
 function isBotOwner(userId) {
     return userId === BOT_OWNER_ID;
+}
+
+// Helper to get role mention string
+function getRoleMention(roleId) {
+    return `<@&${roleId}>`;
 }
 
 client.on('interactionCreate', async interaction => {
@@ -671,14 +738,16 @@ client.on('interactionCreate', async interaction => {
                 if (commandName === 'generator') {
                     const embed = new EmbedBuilder()
                         .setTitle('TOKENS BY ELLIOTT')
-                        .setDescription('Generate your EIC token below!\n\n' +
-                            '**Public Token** – everyone | cooldown: 20m 0s\n' +
-                            '**Booster Token** – <@&' + BOOSTER_ROLE_ID + '> only | cooldown: 10m 0s\n' +
-                            '**Buyer Token** – <@&' + BUYER_ROLE_ID + '> only | cooldown: 6m 0s\n' +
-                            '**VIP Token** – <@&' + VIP_ROLE_ID + '> only | cooldown: 4m 0s\n\n' +
+                        .setDescription(
+                            'Generate your EIC token below!\n\n' +
+                            `**Public Token** – everyone | cooldown: 20m 0s\n` +
+                            `**Booster Token** – ${getRoleMention(BOOSTER_ROLE_ID)} only | cooldown: 10m 0s\n` +
+                            `**Buyer Token** – ${getRoleMention(BUYER_ROLE_ID)} only | cooldown: 6m 0s\n` +
+                            `**VIP Token** – ${getRoleMention(VIP_ROLE_ID)} only | cooldown: 4m 0s\n\n` +
                             '*Tokens are only visible to you.*\n' +
                             '*Ephemeral — only you can see your token*\n\n' +
-                            '**Made by elliott.gg**')
+                            '**Made by elliott.gg**'
+                        )
                         .setColor(0x5865F2);
 
                     const row = new ActionRowBuilder().addComponents(
@@ -859,14 +928,16 @@ client.on('interactionCreate', async interaction => {
                     if (subArg === 'generator') {
                         const embed = new EmbedBuilder()
                             .setTitle('TOKENS BY ELLIOTT')
-                            .setDescription('Generate your EIC token below!\n\n' +
-                                '**Public Token** – everyone | cooldown: 20m 0s\n' +
-                                '**Booster Token** – <@&' + BOOSTER_ROLE_ID + '> only | cooldown: 10m 0s\n' +
-                                '**Buyer Token** – <@&' + BUYER_ROLE_ID + '> only | cooldown: 6m 0s\n' +
-                                '**VIP Token** – <@&' + VIP_ROLE_ID + '> only | cooldown: 4m 0s\n\n' +
+                            .setDescription(
+                                'Generate your EIC token below!\n\n' +
+                                `**Public Token** – everyone | cooldown: 20m 0s\n` +
+                                `**Booster Token** – ${getRoleMention(BOOSTER_ROLE_ID)} only | cooldown: 10m 0s\n` +
+                                `**Buyer Token** – ${getRoleMention(BUYER_ROLE_ID)} only | cooldown: 6m 0s\n` +
+                                `**VIP Token** – ${getRoleMention(VIP_ROLE_ID)} only | cooldown: 4m 0s\n\n` +
                                 '*Tokens are only visible to you.*\n' +
                                 '*Ephemeral — only you can see your token*\n\n' +
-                                '**Made by elliott.gg**')
+                                '**Made by elliott.gg**'
+                            )
                             .setColor(0x5865F2);
 
                         const row = new ActionRowBuilder().addComponents(
@@ -1051,9 +1122,9 @@ client.on('interactionCreate', async interaction => {
                     buttonId: 'gen_public'
                 };
 
-                const hasVip = member.roles.cache.has(VIP_ROLE_ID) || member.roles.cache.some(r => r.name === REQUIRED_ROLES.VIP);
-                const hasBuyer = member.roles.cache.has(BUYER_ROLE_ID) || member.roles.cache.some(r => r.name === REQUIRED_ROLES.BUYER);
-                const hasBooster = member.roles.cache.has(BOOSTER_ROLE_ID) || member.roles.cache.some(r => r.name === REQUIRED_ROLES.BOOSTER);
+                const hasVip = member.roles.cache.has(VIP_ROLE_ID) || member.roles.cache.some(r => r.name === REQUIRED_ROLES.VIP.name);
+                const hasBuyer = member.roles.cache.has(BUYER_ROLE_ID) || member.roles.cache.some(r => r.name === REQUIRED_ROLES.BUYER.name);
+                const hasBooster = member.roles.cache.has(BOOSTER_ROLE_ID) || member.roles.cache.some(r => r.name === REQUIRED_ROLES.BOOSTER.name);
 
                 if (hasVip) {
                     effectiveTier = { id: VIP_ROLE_ID, name: 'VIP Token (4m)', cooldown: 4 * 60 * 1000, buttonId: 'gen_vip' };
@@ -1067,13 +1138,13 @@ client.on('interactionCreate', async interaction => {
                 let clickedTierName = null;
                 if (interaction.customId === 'gen_booster') {
                     clickedTierRequirement = BOOSTER_ROLE_ID;
-                    clickedTierName = "Server Booster";
+                    clickedTierName = REQUIRED_ROLES.BOOSTER.name;
                 } else if (interaction.customId === 'gen_buyer') {
                     clickedTierRequirement = BUYER_ROLE_ID;
-                    clickedTierName = "Buyer";
+                    clickedTierName = REQUIRED_ROLES.BUYER.name;
                 } else if (interaction.customId === 'gen_vip') {
                     clickedTierRequirement = VIP_ROLE_ID;
-                    clickedTierName = "VIP";
+                    clickedTierName = REQUIRED_ROLES.VIP.name;
                 }
 
                 if (clickedTierRequirement) {
@@ -1086,7 +1157,7 @@ client.on('interactionCreate', async interaction => {
                             .setTimestamp();
                         await sendBotLog(interaction.guild, 'generator_unauthorized', unauthLog);
 
-                        return interaction.reply({ content: `❌ **Access Denied:** You need the <@&${clickedTierRequirement}> role to use this token button!`, flags: 64 });
+                        return interaction.reply({ content: `❌ **Access Denied:** You need the ${getRoleMention(clickedTierRequirement)} role to use this token button!`, flags: 64 });
                     }
                 }
 
