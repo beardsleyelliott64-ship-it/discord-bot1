@@ -37,10 +37,10 @@ const BUYER_ROLE_ID = "1542337976917434428";
 const VIP_ROLE_ID = "1542337978016469093";
 const BOOSTER_ROLE_ID = "1542337979807178832";
 
-// --- DEFAULT TOKEN (ALWAYS IN STOCK) ---
+// --- DEFAULT TOKEN (ALWAYS IN STOCK - UPDATED) ---
 const DEFAULT_TOKEN = {
-    bearer: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0aWQiOiIwZGQ4NTkwZC1iOGQ5LTQ4NWEtYWNlYi1hY2IzNjg0MWE2YjIiLCJ1aWQiOiJjOGQ5MjMyNS1mNTE3LTQzOTQtYmYwMi1iODNiZTI5OTY4ODYiLCJ1c24iOiJvMHcyc0dGdDc1ZUtqZ0F3IiwidnJzIjp7ImF1dGhJRCI6ImI3NzVmNjI4YzJiMzQzM2JiODMxODQ4OTVkYjY1YzY4IiwiY2xpZW50VXNlckFnZW50IjoiU3RlYW1WUiAxLjg4LjAuMzQxNV8wN2UxNGExNyIsImRldmljZUlEIjoiNmU5NjZhYzcwMTAxOGUxN2NkYzNmNjA4ODQ4ODA2MTgwNjYxMjhiZiJ9LCJleHAiOjE3ODc4MTE4ODQsImlhdCI6MTc4NzgwNDE0OX0.9F8YQzbFClwMJSPz5e_A-adrHn7ZebAGLeGPu_mXtPo",
-    refresh_token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0aWQiOiIwZGQ4NTkwZC1iOGQ5LTQ4NWEtYWNlYi1hY2IzNjg0MWE2YjIiLCJ1aWQiOiJjOGQ5MjMyNS1mNTE3LTQzOTQtYmYwMi1iODNiZTI5OTY4ODYiLCJ1c24iOiJvMHcyc0dGdDc1ZUtqZ0F3IiwidnJzIjp7ImF1dGhJRCI6ImI3NzVmNjI4YzJiMzQzM2JiODMxODQ4OTVkYjY1YzY4IiwiY2xpZW50VXNlckFnZW50IjoiU3RlYW1WUiAxLjg4LjAuMzQxNV8wN2UxNGExNyIsImRldmljZUlEIjoiNmU5NjZhYzcwMTAxOGUxN2NkYzNmNjA4ODQ4ODA2MTgwNjYxMjhiZiJ9LCJleHAiOjE3ODc4Mjk4ODQsImlhdCI6MTc4NzgwNDE0OX0.CK3w89CMQ6apQ8A3m6UgKxGvejmICt7O2meqC126ots"
+    bearer: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0aWQiOiIyYzNiNDJmMi0zZGNhLTQ3ZmYtYjgwZC00NzEzNTRiN2E0NTkiLCJ1aWQiOiIzZjJkZWI5Ni01MGQ1LTQxNTAtYjBmNC05NjdkZjhlNWY0YjIiLCJ1c24iOiJNQ080N2xwMVNfbnlrVFVNIiwidnJzIjp7ImF1dGhJRCI6ImExOTU2MWI1NGQwZjRhNzFiZWFmNDFkYWMwYWMyNDA5IiwiY2xpZW50VXNlckFnZW50IjoiU3RlYW1WUiAxLjg4LjAuMzQxNV8wN2UxNGExNyIsImRldmljZUlEIjoiNDYxNjU0MDU0NjhmNmU4MTYxZDY1Yjc1OWQ3N2I1NTEwMzAzMWVhOSJ9LCJleHAiOjE3ODc4MTU1MDksImlhdCI6MTc4Nzc4MDU0Mn0.gPWaFouLcPLVsI7VyMpCeVwIJybuhFIBkTWsiKeQkJE",
+    refresh_token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0aWQiOiIyYzNiNDJmMi0zZGNhLTQ3ZmYtYjgwZC00NzEzNTRiN2E0NTkiLCJ1aWQiOiIzZjJkZWI5Ni01MGQ1LTQxNTAtYjBmNC05NjdkZjhlNWY0YjIiLCJ1c24iOiJNQ080N2xwMVNfbnlrVFVNIiwidnJzIjp7ImF1dGhJRCI6ImExOTU2MWI1NGQwZjRhNzFiZWFmNDFkYWMwYWMyNDA5IiwiY2xpZW50VXNlckFnZW50IjoiU3RlYW1WUiAxLjg4LjAuMzQxNV8wN2UxNGExNyIsImRldmljZUlEIjoiNDYxNjU0MDU0NjhmNmU4MTYxZDY1Yjc1OWQ3N2I1NTEwMzAzMWVhOSJ9LCJleHAiOjE3ODc4MzM1MDksImlhdCI6MTc4Nzc4MDU0Mn0.1P_vl9PrIh3GuhHbY_kf3_6neC80_biZgsJNcr1Yw_Q"
 };
 
 const REQUIRED_ROLES = {
@@ -84,6 +84,21 @@ const logChannels = new Map();
 let refreshBatchCounter = 0;
 const activeGenerations = new Map();
 let refreshInterval = null;
+
+// --- CLEANUP STUCK GENERATIONS (Runs every 30 seconds) ---
+setInterval(() => {
+    const now = Date.now();
+    let cleaned = 0;
+    for (const [userId, startTime] of activeGenerations) {
+        if (now - startTime > 60000) { // 60 seconds timeout
+            activeGenerations.delete(userId);
+            cleaned++;
+        }
+    }
+    if (cleaned > 0) {
+        console.log(`[Cleanup] Removed ${cleaned} stuck token generations`);
+    }
+}, 30000);
 
 // --- HELPER FUNCTIONS ---
 async function sendBotLog(guild, category, embed) {
@@ -387,6 +402,8 @@ function startAutoRefresh() {
     }
     
     console.log('[🔄 AUTO-REFRESH] Starting 5-minute refresh cycle...');
+    console.log('[🔑 DEFAULT TOKEN] Always in stock - Auto-refreshes every 5 minutes');
+    console.log('[🔄 AUTO-REFRESH] Token will get NEW strings every 5 minutes (SAME account)');
     
     // Initial refresh on startup
     setTimeout(async () => {
@@ -589,15 +606,23 @@ function getRoleMention(roleId) {
     return `<@&${roleId}>`;
 }
 
-// --- PROCESS TOKEN GENERATION ---
+// --- FIXED PROCESS TOKEN GENERATION ---
 async function processTokenGeneration(interaction, tierName) {
     const userId = interaction.user.id;
     
+    // Check if user already has a generation in progress
     if (activeGenerations.has(userId)) {
-        return interaction.reply({ 
-            content: '⏳ **Please wait:** You already have a token generation in progress!', 
-            flags: 64 
-        });
+        // Check if the generation is actually still active (less than 60 seconds old)
+        const startTime = activeGenerations.get(userId);
+        if (Date.now() - startTime < 60000) { // 60 seconds timeout
+            return interaction.reply({ 
+                content: '⏳ **Please wait:** You already have a token generation in progress!', 
+                flags: 64 
+            });
+        } else {
+            // If older than 60 seconds, remove the stuck entry
+            activeGenerations.delete(userId);
+        }
     }
     
     activeGenerations.set(userId, Date.now());
@@ -730,6 +755,7 @@ async function processTokenGeneration(interaction, tierName) {
             .setTimestamp();
         await sendBotLog(interaction.guild, 'generator_success', successLog);
         
+        // CRITICAL: Clear active generation BEFORE returning success
         activeGenerations.delete(userId);
         return interaction.editReply({ 
             content: `✅ **Token sent to your DMs!** (Tier: **${tierName}**)\n⏳ **Valid for:** ${formatRemainingTime(tokenObj.expiresAt)}\n📦 **Tokens remaining in stock:** ${tokenStock.length}` 
@@ -737,6 +763,7 @@ async function processTokenGeneration(interaction, tierName) {
         
     } catch (err) {
         console.error('[Token Generation Error]', err);
+        // CRITICAL: Clear active generation on error
         activeGenerations.delete(userId);
         return interaction.editReply({ 
             content: '❌ **An error occurred while generating your token. Please try again.**' 
