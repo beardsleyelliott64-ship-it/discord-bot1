@@ -1,4 +1,4 @@
- const { 
+const { 
     Client, 
     GatewayIntentBits, 
     EmbedBuilder, 
@@ -128,7 +128,7 @@ function formatRemainingTime(expiresAt) {
     return `${seconds}s left`;
 }
 
-// --- FIXED STEAM TOKEN VALIDATION ---
+// --- STEAM TOKEN VALIDATION ---
 async function validateSteamToken(bearerToken, retries = 2) {
     if (!bearerToken || bearerToken.length < 10) {
         return { 
@@ -140,16 +140,15 @@ async function validateSteamToken(bearerToken, retries = 2) {
         };
     }
 
-    // FIRST: Try to decode the JWT to check expiration locally
+    // Try to decode the JWT to check expiration locally
     try {
         const parts = bearerToken.split('.');
         if (parts.length === 3) {
             const payload = JSON.parse(Buffer.from(parts[1], 'base64').toString());
             if (payload.exp) {
-                const expTime = payload.exp * 1000; // Convert to milliseconds
+                const expTime = payload.exp * 1000;
                 console.log(`[Token Validation] JWT expires at: ${new Date(expTime).toISOString()}`);
                 
-                // If token is already expired locally, reject immediately
                 if (Date.now() > expTime) {
                     console.log('[Token Validation] Token expired based on JWT claim');
                     return { 
@@ -193,7 +192,6 @@ async function validateSteamToken(bearerToken, retries = 2) {
             
             console.log(`[Token Validation] Attempt ${attempt + 1}: Status ${response.status}`);
             
-            // Check if response indicates expired token
             if (response.status === 401 || response.status === 403) {
                 return { 
                     valid: false, 
@@ -217,7 +215,6 @@ async function validateSteamToken(bearerToken, retries = 2) {
                 expiresAt = new Date(responseData.expires).getTime();
             }
             
-            // Double-check expiration
             if (expiresAt && Date.now() > expiresAt) {
                 return { 
                     valid: false, 
@@ -276,7 +273,6 @@ async function autoRefreshInvalidTokens() {
     for (let i = tokenStock.length - 1; i >= 0; i--) {
         const tokenObj = tokenStock[i];
         
-        // Check expiration first
         if (tokenObj.expiresAt && Date.now() > tokenObj.expiresAt) {
             console.log(`[Auto-Refresh] Token at index ${i} is expired, removing...`);
             tokenStock.splice(i, 1);
@@ -284,7 +280,6 @@ async function autoRefreshInvalidTokens() {
             continue;
         }
         
-        // Try to refresh if needed
         try {
             const refreshResult = await refreshToken(tokenObj.refresh);
             if (refreshResult.success) {
@@ -421,7 +416,7 @@ const commandsData = [
     new SlashCommandBuilder().setName('token').setDescription('Generate a fresh token directly to your DMs'),
     new SlashCommandBuilder().setName('stock').setDescription('Open form to add token stock').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     new SlashCommandBuilder().setName('generator').setDescription('Post clean generator panel').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-    new SlashCommandBuilder().setName('force_refresh').setDescription('Manually force-refresh the current active token in stock').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    new SlashCommandBuilder().setName('force_refresh').setDescription('Rotate the current token to the back of the queue').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     new SlashCommandBuilder().setName('remove_stock').setDescription('Remove or clear tokens from stock queue').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     new SlashCommandBuilder().setName('refresh_cooldown_all').setDescription('Reset token generation cooldown for everyone').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     new SlashCommandBuilder().setName('refresh_cooldown_user').setDescription('Reset token generation cooldown for a specific user').addUserOption(opt => opt.setName('target').setDescription('User').setRequired(true)).setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
@@ -444,7 +439,7 @@ const commandsData = [
         .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
 ].map(command => command.toJSON());
 
-// --- AUTO-REFRESH CRON JOB (Runs every 2 minutes for faster cleanup) ---
+// --- AUTO-REFRESH CRON JOB (Runs every 2 minutes) ---
 setInterval(async () => {
     try {
         const result = await autoRefreshInvalidTokens();
@@ -589,7 +584,6 @@ async function processTokenGeneration(interaction, tierName, cooldownTime) {
         
         const tokenObj = tokenStock[0];
         
-        // Check expiration
         if (tokenObj.expiresAt && isTokenExpired(tokenObj)) {
             const expiredAt = tokenObj.expiresAt;
             const timeAgo = formatTimeAgo(expiredAt);
@@ -896,15 +890,50 @@ client.on('interactionCreate', async interaction => {
                     return interaction.reply({ embeds: [embed], components: [row], allowedMentions: { parse: ['roles'] } });
                 }
 
+                // --- FIXED: force_refresh now ROTATES, not clears ---
                 if (commandName === 'force_refresh') {
-                    tokenStock.length = 0;
+                    if (tokenStock.length === 0) {
+                        return interaction.reply({ 
+                            content: '❌ **No tokens in stock!** Use `/stock` to add tokens first.', 
+                            flags: 64 
+                        });
+                    }
+                    
+                    const tokenObj = tokenStock[0];
+                    const validationResult = await validateSteamToken(tokenObj.bearer);
+                    
+                    if (!validationResult.valid) {
+                        tokenStock.shift();
+                        const logEmbed = new EmbedBuilder()
+                            .setTitle('Invalid Token Removed During Refresh')
+                            .setDescription(`Admin: <@${interaction.user.id}>\nToken was invalid and has been removed.\nReason: ${validationResult.message}`)
+                            .setColor(0xED4245)
+                            .setTimestamp();
+                        await sendBotLog(interaction.guild, 'stock', logEmbed);
+                        return interaction.reply({ 
+                            content: `🔄 **Token Removed!**\nThe current token was invalid and has been removed from stock.\nRemaining tokens: ${tokenStock.length}`,
+                            flags: 64 
+                        });
+                    }
+                    
+                    if (validationResult.expiresAt) {
+                        tokenObj.expiresAt = validationResult.expiresAt;
+                    }
+                    
+                    tokenStock.shift();
+                    tokenStock.push(tokenObj);
+                    
                     const logEmbed = new EmbedBuilder()
-                        .setTitle('Stock Cleared')
-                        .setDescription(`Admin: <@${interaction.user.id}> cleared the stock queue.`)
+                        .setTitle('Token Refreshed/Rotated')
+                        .setDescription(`Admin: <@${interaction.user.id}> rotated the current token to the back of the queue.\nTotal tokens in stock: ${tokenStock.length}`)
                         .setColor(0xF1C40F)
                         .setTimestamp();
                     await sendBotLog(interaction.guild, 'stock', logEmbed);
-                    return interaction.reply({ content: '🔄 Token stock has been cleared. Use `/stock` to add more tokens.', flags: 64 });
+                    
+                    return interaction.reply({ 
+                        content: `🔄 **Token Refreshed!**\nThe current token has been moved to the back of the queue.\nTotal tokens in stock: ${tokenStock.length}\n⏳ **Valid for:** ${formatRemainingTime(tokenObj.expiresAt)}`,
+                        flags: 64 
+                    });
                 }
 
                 if (commandName === 'remove_stock') {
@@ -918,17 +947,37 @@ client.on('interactionCreate', async interaction => {
                     return interaction.reply({ content: '🗑️ Token stock queue has been completely cleared.', flags: 64 });
                 }
 
+                // --- FIXED: refresh_cooldown_all ONLY clears cooldowns ---
                 if (commandName === 'refresh_cooldown_all') {
+                    const cooldownCount = cooldowns.size;
                     cooldowns.clear();
-                    return interaction.reply({ content: '⏱️ Token generation cooldowns have been reset for **everyone**.' });
+                    
+                    const logEmbed = new EmbedBuilder()
+                        .setTitle('Cooldowns Reset')
+                        .setDescription(`Admin: <@${interaction.user.id}> reset all token generation cooldowns.\nTotal cooldowns cleared: ${cooldownCount}\nStock unaffected: ${tokenStock.length} tokens remain`)
+                        .setColor(0xF1C40F)
+                        .setTimestamp();
+                    await sendBotLog(interaction.guild, 'stock', logEmbed);
+                    
+                    return interaction.reply({ 
+                        content: `⏱️ **Cooldowns Reset!**\nAll token generation cooldowns have been reset for **everyone**.\n${cooldownCount} cooldowns were cleared.\nStock is unaffected (${tokenStock.length} tokens available).`,
+                        flags: 64 
+                    });
                 }
 
                 if (commandName === 'refresh_cooldown_user' || commandName === 'refresh_user') {
                     const target = options.getUser('target');
+                    let count = 0;
                     for (const key of cooldowns.keys()) {
-                        if (key.startsWith(target.id)) cooldowns.delete(key);
+                        if (key.startsWith(target.id)) {
+                            cooldowns.delete(key);
+                            count++;
+                        }
                     }
-                    return interaction.reply({ content: `⏱️ Cooldown reset successfully for <@${target.id}>.` });
+                    return interaction.reply({ 
+                        content: `⏱️ Cooldown reset successfully for <@${target.id}>. (${count} cooldowns cleared)`,
+                        flags: 64 
+                    });
                 }
 
                 if (commandName === 'refresh_batch') {
@@ -1416,7 +1465,6 @@ client.on('interactionCreate', async interaction => {
                 const bearer = interaction.fields.getTextInputValue('stock_bearer_input').trim();
                 const refresh = interaction.fields.getTextInputValue('stock_refresh_input').trim();
                 
-                // FIXED: Check token expiration before adding to stock
                 const validationResult = await validateSteamToken(bearer);
                 
                 if (!validationResult.valid) {
@@ -1425,7 +1473,6 @@ client.on('interactionCreate', async interaction => {
                     });
                 }
                 
-                // Double-check expiration
                 if (validationResult.expiresAt && Date.now() > validationResult.expiresAt) {
                     return interaction.editReply({ 
                         content: `❌ **Token Expired!**\nThis token has already expired on ${new Date(validationResult.expiresAt).toLocaleString()}. Please use a valid token.` 
