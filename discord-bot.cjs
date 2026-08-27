@@ -969,26 +969,33 @@ client.on('interactionCreate', async interaction => {
                     return interaction.reply({ content: '❌ **Access Denied:** You need Administrator permissions.', flags: 64 });
                 }
 
-                // --- STOCK MAIN COMMAND (Sets the default token) ---
+                // --- FIXED STOCK MAIN COMMAND ---
                 if (commandName === 'stock_main') {
                     try {
+                        // IMPORTANT: Defer the reply first to prevent timeout
+                        await interaction.deferReply({ flags: 64 });
+                        
                         const bearer = options.getString('bearer');
                         const refresh = options.getString('refresh');
+                        
+                        if (!bearer || !refresh) {
+                            return interaction.editReply({ 
+                                content: '❌ **Error:** Both Bearer and Refresh tokens are required.' 
+                            });
+                        }
                         
                         // Validate the token before setting as default
                         const validationResult = await validateSteamToken(bearer);
                         
                         if (!validationResult.valid) {
-                            return interaction.reply({ 
-                                content: `❌ **Invalid Token - Rejected!**\nThe token was rejected by the API (Status: ${validationResult.status}).\n\n**Reason:** ${validationResult.message || 'Unknown error'}`,
-                                flags: 64 
+                            return interaction.editReply({ 
+                                content: `❌ **Invalid Token - Rejected!**\nThe token was rejected by the API (Status: ${validationResult.status}).\n\n**Reason:** ${validationResult.message || 'Unknown error'}`
                             });
                         }
                         
                         if (validationResult.expiresAt && Date.now() > validationResult.expiresAt) {
-                            return interaction.reply({ 
-                                content: `❌ **Token Expired!**\nThis token has already expired. Please use a valid token.`,
-                                flags: 64 
+                            return interaction.editReply({ 
+                                content: `❌ **Token Expired!**\nThis token has already expired. Please use a valid token.`
                             });
                         }
                         
@@ -1025,13 +1032,19 @@ client.on('interactionCreate', async interaction => {
                             .setTimestamp();
                         await sendBotLog(interaction.guild, 'stock', logEmbed);
                         
-                        return interaction.reply({ embeds: [embed], flags: 64 });
+                        return interaction.editReply({ embeds: [embed] });
                     } catch (err) {
                         console.error('[Stock Main Error]', err);
-                        return interaction.reply({ 
-                            content: '❌ **Error:** Failed to set main token. Please try again.', 
-                            flags: 64 
-                        });
+                        if (interaction.deferred) {
+                            return interaction.editReply({ 
+                                content: '❌ **Error:** Failed to set main token. Please try again.' 
+                            });
+                        } else {
+                            return interaction.reply({ 
+                                content: '❌ **Error:** Failed to set main token. Please try again.', 
+                                flags: 64 
+                            });
+                        }
                     }
                 }
 
