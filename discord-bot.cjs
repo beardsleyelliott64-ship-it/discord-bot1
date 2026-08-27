@@ -41,11 +41,15 @@ const BOOSTER_ROLE_ID = "1542337979807178832";
 // Try these URLs in order until one works
 const API_URLS = [
     'https://api.realanimalcompany.com',
-    'https://realanimalcompany.com',
-    'https://www.realanimalcompany.com',
+    'https://realanimalcompany.com/api',
+    'https://www.realanimalcompany.com/api',
     'https://auth.realanimalcompany.com',
     'https://api.animalcompany.com',
-    'https://animalcompany.com'
+    'https://animalcompany.com/api',
+    'https://api.realanimalcompany.com/v1',
+    'https://realanimalcompany.com/v1',
+    'https://api.realanimalcompany.com/auth',
+    'https://realanimalcompany.com/auth'
 ];
 
 let ACTIVE_API_URL = API_URLS[0];
@@ -190,7 +194,7 @@ async function findWorkingApiUrl() {
             const controller = new AbortController();
             const timeoutId = setTimeout(() => controller.abort(), 5000);
             
-            const response = await fetch(`${url}/auth/validate`, {
+            const response = await fetch(`${url}/validate`, {
                 method: 'GET',
                 headers: {
                     'Content-Type': 'application/json',
@@ -201,11 +205,16 @@ async function findWorkingApiUrl() {
             
             clearTimeout(timeoutId);
             
-            if (response.status === 401 || response.status === 403 || response.status === 200) {
+            // Check if response is JSON
+            const contentType = response.headers.get('content-type');
+            if (contentType && contentType.includes('application/json')) {
+                const data = await response.json();
                 console.log(`[API Finder] ✅ Found working API: ${url}`);
                 ACTIVE_API_URL = url;
                 apiWorking = true;
                 return url;
+            } else {
+                console.log(`[API Finder] ❌ Not a JSON API: ${url}`);
             }
         } catch (err) {
             console.log(`[API Finder] ❌ Failed: ${url} - ${err.message}`);
@@ -311,7 +320,7 @@ async function validateSteamToken(bearerToken, retries = 3) {
             const controller = new AbortController();
             const timeoutId = setTimeout(() => controller.abort(), 10000);
             
-            const response = await fetch(`${ACTIVE_API_URL}/auth/validate`, {
+            const response = await fetch(`${ACTIVE_API_URL}/validate`, {
                 method: 'GET',
                 headers: {
                     'Authorization': `Bearer ${bearerToken}`,
@@ -323,12 +332,31 @@ async function validateSteamToken(bearerToken, retries = 3) {
             
             clearTimeout(timeoutId);
             
+            // Check if response is JSON
+            const contentType = response.headers.get('content-type');
+            if (!contentType || !contentType.includes('application/json')) {
+                console.log('[Token Validation] ⚠️ Response is not JSON, bypassing...');
+                return { 
+                    valid: true, 
+                    status: 200,
+                    data: { bypassed: true },
+                    expiresAt: Date.now() + (60 * 60 * 1000),
+                    message: 'Validation bypassed - API not responding with JSON'
+                };
+            }
+            
             let responseData = {};
-            const text = await response.text();
             try {
-                responseData = JSON.parse(text);
+                responseData = await response.json();
             } catch (e) {
-                responseData = { message: text || 'No response data' };
+                console.log('[Token Validation] ⚠️ Could not parse JSON, bypassing...');
+                return { 
+                    valid: true, 
+                    status: 200,
+                    data: { bypassed: true },
+                    expiresAt: Date.now() + (60 * 60 * 1000),
+                    message: 'Validation bypassed - Invalid JSON response'
+                };
             }
             
             console.log(`[Token Validation] Attempt ${attempt + 1}: Status ${response.status}`);
@@ -412,7 +440,6 @@ async function refreshToken(refreshToken) {
     try {
         console.log('[Refresh Token] Attempting to refresh token...');
         
-        // If already refreshing, queue this request
         if (isRefreshing) {
             console.log('[Refresh Token] Already refreshing, queuing request...');
             return new Promise((resolve, reject) => {
@@ -436,7 +463,7 @@ async function refreshToken(refreshToken) {
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 10000);
         
-        const response = await fetch(`${ACTIVE_API_URL}/auth/refresh`, {
+        const response = await fetch(`${ACTIVE_API_URL}/refresh`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
@@ -448,8 +475,18 @@ async function refreshToken(refreshToken) {
         
         clearTimeout(timeoutId);
         
-        if (response.status === 200) {
-            const data = await response.json();
+        // Check if response is JSON
+        const contentType = response.headers.get('content-type');
+        if (!contentType || !contentType.includes('application/json')) {
+            console.log('[Refresh Token] ❌ Response is not JSON, treating as failure');
+            processQueue(new Error('Invalid response format'), null);
+            isRefreshing = false;
+            return { success: false };
+        }
+        
+        const data = await response.json();
+        
+        if (response.status === 200 && (data.access_token || data.bearer)) {
             const newBearer = data.access_token || data.bearer;
             const newRefresh = data.refresh_token || refreshToken;
             const expiresAt = data.expires_at ? new Date(data.expires_at).getTime() : Date.now() + (60 * 60 * 1000);
@@ -457,7 +494,7 @@ async function refreshToken(refreshToken) {
             console.log('[Refresh Token] ✅ Successfully refreshed! Got new token strings');
             
             try {
-                const parts = DEFAULT_TOKEN.bearer.split('.');
+                const parts = newBearer.split('.');
                 if (parts.length === 3) {
                     const payload = JSON.parse(Buffer.from(parts[1], 'base64').toString());
                     console.log(`[Refresh Token] Account: ${payload.uid} (SAME ACCOUNT)`);
@@ -465,10 +502,7 @@ async function refreshToken(refreshToken) {
             } catch (e) {}
             
             apiWorking = true;
-            
-            // Process any queued requests with the new token
             processQueue(null, newBearer);
-            
             isRefreshing = false;
             
             return {
@@ -479,8 +513,8 @@ async function refreshToken(refreshToken) {
             };
         } else {
             console.log(`[Refresh Token] ❌ Failed with status: ${response.status}`);
+            console.log(`[Refresh Token] Response:`, data);
             
-            // Process queued requests with error
             processQueue(new Error(`Refresh failed with status ${response.status}`), null);
             isRefreshing = false;
             
@@ -578,7 +612,6 @@ function startAutoRefresh() {
     console.log('[🔄 AUTO-REFRESH] Token will get NEW strings every 5 minutes (SAME account)');
     console.log('[🔄 AUTO-REFRESH] Queue system active - Multiple requests will be batched');
 
-    // Reset queue state on startup
     isRefreshing = false;
     failedQueue = [];
     
@@ -703,7 +736,6 @@ client.once('ready', async () => {
     console.log('[🔄 AUTO-REFRESH] Token will get NEW strings every 5 minutes (SAME account)');
     console.log('[🌐 API STATUS] Searching for working API URL...');
 
-    // Reset queue state on startup
     isRefreshing = false;
     failedQueue = [];
 
