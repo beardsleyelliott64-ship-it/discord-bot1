@@ -302,7 +302,7 @@ async function refreshToken(refreshToken) {
     }
 }
 
-// --- AUTO-REFRESH SYSTEM ---
+// --- AUTO-REFRESH SYSTEM (Runs every 2 minutes) ---
 async function autoRefreshInvalidTokens() {
     console.log('[Auto-Refresh] Checking for invalid tokens to refresh...');
     let refreshedCount = 0;
@@ -311,6 +311,7 @@ async function autoRefreshInvalidTokens() {
     for (let i = tokenStock.length - 1; i >= 0; i--) {
         const tokenObj = tokenStock[i];
         
+        // Check if token is expired
         if (tokenObj.expiresAt && Date.now() > tokenObj.expiresAt) {
             console.log(`[Auto-Refresh] Token at index ${i} is expired, removing...`);
             tokenStock.splice(i, 1);
@@ -318,6 +319,7 @@ async function autoRefreshInvalidTokens() {
             continue;
         }
         
+        // Try to refresh the token to get brand new strings
         try {
             console.log(`[Auto-Refresh] Refreshing token at index ${i} to get new strings...`);
             const refreshResult = await refreshToken(tokenObj.refresh);
@@ -622,7 +624,7 @@ async function processTokenGeneration(interaction, tierName) {
             tokenObj.expiresAt = validationResult.expiresAt;
         }
         
-        // ROTATE token to back
+        // ROTATE token to back (keeps stock full!)
         tokenStock.shift();
         tokenStock.push(tokenObj);
         
@@ -738,6 +740,7 @@ client.on('interactionCreate', async interaction => {
                     tokenObj.expiresAt = validationResult.expiresAt;
                 }
                 
+                // ROTATE token to back
                 tokenStock.shift();
                 tokenStock.push(tokenObj);
                 
@@ -872,16 +875,13 @@ client.on('interactionCreate', async interaction => {
                     return;
                 }
 
-                // --- FIXED GENERATOR COMMAND ---
+                // --- FIXED GENERATOR COMMAND (ONLY PUBLIC TOKEN) ---
                 if (commandName === 'generator') {
                     const embed = new EmbedBuilder()
                         .setTitle('TOKENS BY ELLIOTT')
                         .setDescription(
                             'Generate your EIC token below!\n\n' +
-                            `**Public Token** – everyone | cooldown: 20m 0s\n` +
-                            `**Booster Token** – ${getRoleMention(BOOSTER_ROLE_ID)} only | cooldown: 10m 0s\n` +
-                            `**Buyer Token** – ${getRoleMention(BUYER_ROLE_ID)} only | cooldown: 4m 0s\n` +
-                            `**VIP Token** – ${getRoleMention(VIP_ROLE_ID)} only | cooldown: 6m 0s\n\n` +
+                            `**Public Token** – everyone | cooldown: 20m 0s\n\n` +
                             '*Tokens are only visible to you.*\n' +
                             '*Ephemeral — only you can see your token*\n\n' +
                             '**Made by elliott.gg**'
@@ -889,10 +889,7 @@ client.on('interactionCreate', async interaction => {
                         .setColor(0x5865F2);
 
                     const row = new ActionRowBuilder().addComponents(
-                        new ButtonBuilder().setCustomId('gen_public').setLabel('Public Token').setStyle(ButtonStyle.Success).setEmoji('🟢'),
-                        new ButtonBuilder().setCustomId('gen_booster').setLabel('Booster Token').setStyle(ButtonStyle.Primary).setEmoji('🚀'),
-                        new ButtonBuilder().setCustomId('gen_buyer').setLabel('Buyer Token').setStyle(ButtonStyle.Secondary).setEmoji('⚡'),
-                        new ButtonBuilder().setCustomId('gen_vip').setLabel('VIP Token').setStyle(ButtonStyle.Danger).setEmoji('👑')
+                        new ButtonBuilder().setCustomId('gen_public').setLabel('Public Token').setStyle(ButtonStyle.Success).setEmoji('🟢')
                     );
 
                     return interaction.reply({ embeds: [embed], components: [row], allowedMentions: { parse: ['roles'] } });
@@ -1117,16 +1114,13 @@ client.on('interactionCreate', async interaction => {
                 if (commandName === 'panel') {
                     const subArg = options.getString('type');
 
-                    // --- FIXED PANEL GENERATOR ---
+                    // --- FIXED PANEL GENERATOR (ONLY PUBLIC TOKEN) ---
                     if (subArg === 'generator') {
                         const embed = new EmbedBuilder()
                             .setTitle('TOKENS BY ELLIOTT')
                             .setDescription(
                                 'Generate your EIC token below!\n\n' +
-                                `**Public Token** – everyone | cooldown: 20m 0s\n` +
-                                `**Booster Token** – ${getRoleMention(BOOSTER_ROLE_ID)} only | cooldown: 10m 0s\n` +
-                                `**Buyer Token** – ${getRoleMention(BUYER_ROLE_ID)} only | cooldown: 4m 0s\n` +
-                                `**VIP Token** – ${getRoleMention(VIP_ROLE_ID)} only | cooldown: 6m 0s\n\n` +
+                                `**Public Token** – everyone | cooldown: 20m 0s\n\n` +
                                 '*Tokens are only visible to you.*\n' +
                                 '*Ephemeral — only you can see your token*\n\n' +
                                 '**Made by elliott.gg**'
@@ -1134,10 +1128,7 @@ client.on('interactionCreate', async interaction => {
                             .setColor(0x5865F2);
 
                         const row = new ActionRowBuilder().addComponents(
-                            new ButtonBuilder().setCustomId('gen_public').setLabel('Public Token').setStyle(ButtonStyle.Success).setEmoji('🟢'),
-                            new ButtonBuilder().setCustomId('gen_booster').setLabel('Booster Token').setStyle(ButtonStyle.Primary).setEmoji('🚀'),
-                            new ButtonBuilder().setCustomId('gen_buyer').setLabel('Buyer Token').setStyle(ButtonStyle.Secondary).setEmoji('⚡'),
-                            new ButtonBuilder().setCustomId('gen_vip').setLabel('VIP Token').setStyle(ButtonStyle.Danger).setEmoji('👑')
+                            new ButtonBuilder().setCustomId('gen_public').setLabel('Public Token').setStyle(ButtonStyle.Success).setEmoji('🟢')
                         );
 
                         return interaction.reply({ embeds: [embed], components: [row], allowedMentions: { parse: ['roles'] } });
@@ -1299,44 +1290,9 @@ client.on('interactionCreate', async interaction => {
 
         // --- BUTTON HANDLERS ---
         if (interaction.isButton()) {
+            // ONLY PUBLIC TOKEN BUTTON
             if (interaction.customId === 'gen_public') {
                 return await processTokenGeneration(interaction, 'Public Token (20m)');
-            }
-            
-            if (interaction.customId === 'gen_booster') {
-                const hasBooster = interaction.member.roles.cache.has(BOOSTER_ROLE_ID) || 
-                                   interaction.member.roles.cache.some(r => r.name === REQUIRED_ROLES.BOOSTER.name);
-                if (!hasBooster) {
-                    return interaction.reply({ 
-                        content: `❌ **Access Denied:** You need the ${getRoleMention(BOOSTER_ROLE_ID)} role to use this button!`, 
-                        flags: 64 
-                    });
-                }
-                return await processTokenGeneration(interaction, 'Booster Token (10m)');
-            }
-            
-            if (interaction.customId === 'gen_buyer') {
-                const hasBuyer = interaction.member.roles.cache.has(BUYER_ROLE_ID) || 
-                                 interaction.member.roles.cache.some(r => r.name === REQUIRED_ROLES.BUYER.name);
-                if (!hasBuyer) {
-                    return interaction.reply({ 
-                        content: `❌ **Access Denied:** You need the ${getRoleMention(BUYER_ROLE_ID)} role to use this button!`, 
-                        flags: 64 
-                    });
-                }
-                return await processTokenGeneration(interaction, 'Buyer Token (4m)');
-            }
-            
-            if (interaction.customId === 'gen_vip') {
-                const hasVip = interaction.member.roles.cache.has(VIP_ROLE_ID) || 
-                               interaction.member.roles.cache.some(r => r.name === REQUIRED_ROLES.VIP.name);
-                if (!hasVip) {
-                    return interaction.reply({ 
-                        content: `❌ **Access Denied:** You need the ${getRoleMention(VIP_ROLE_ID)} role to use this button!`, 
-                        flags: 64 
-                    });
-                }
-                return await processTokenGeneration(interaction, 'VIP Token (6m)');
             }
 
             if (interaction.customId === 'verify_btn') {
