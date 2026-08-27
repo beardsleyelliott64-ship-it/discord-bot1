@@ -37,7 +37,37 @@ const BUYER_ROLE_ID = "1542337976917434428";
 const VIP_ROLE_ID = "1542337978016469093";
 const BOOSTER_ROLE_ID = "1542337979807178832";
 
-// --- DEFAULT TOKEN (ALWAYS IN STOCK - UPDATED) ---
+// --- API CONFIGURATION ---
+// Try these URLs in order until one works
+const API_URLS = [
+    'https://api.realanimalcompany.com',
+    'https://realanimalcompany.com',
+    'https://www.realanimalcompany.com',
+    'https://auth.realanimalcompany.com',
+    'https://api.animalcompany.com',
+    'https://animalcompany.com'
+];
+
+let ACTIVE_API_URL = API_URLS[0];
+let apiWorking = false;
+
+// --- Token refresh queue system ---
+let isRefreshing = false;
+let failedQueue = [];
+
+// Queue processor for pending requests
+function processQueue(error, token = null) {
+    failedQueue.forEach(prom => {
+        if (error) {
+            prom.reject(error);
+        } else {
+            prom.resolve(token);
+        }
+    });
+    failedQueue = [];
+}
+
+// --- DEFAULT TOKEN (ALWAYS IN STOCK) ---
 let DEFAULT_TOKEN = {
     bearer: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0aWQiOiIyYzNiNDJmMi0zZGNhLTQ3ZmYtYjgwZC00NzEzNTRiN2E0NTkiLCJ1aWQiOiIzZjJkZWI5Ni01MGQ1LTQxNTAtYjBmNC05NjdkZjhlNWY0YjIiLCJ1c24iOiJNQ080N2xwMVNfbnlrVFVNIiwidnJzIjp7ImF1dGhJRCI6ImExOTU2MWI1NGQwZjRhNzFiZWFmNDFkYWMwYWMyNDA5IiwiY2xpZW50VXNlckFnZW50IjoiU3RlYW1WUiAxLjg4LjAuMzQxNV8wN2UxNGExNyIsImRldmljZUlEIjoiNDYxNjU0MDU0NjhmNmU4MTYxZDY1Yjc1OWQ3N2I1NTEwMzAzMWVhOSJ9LCJleHAiOjE3ODc4MTU1MDksImlhdCI6MTc4Nzc4MDU0Mn0.gPWaFouLcPLVsI7VyMpCeVwIJybuhFIBkTWsiKeQkJE",
     refresh_token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0aWQiOiIyYzNiNDJmMi0zZGNhLTQ3ZmYtYjgwZC00NzEzNTRiN2E0NTkiLCJ1aWQiOiIzZjJkZWI5Ni01MGQ1LTQxNTAtYjBmNC05NjdkZjhlNWY0YjIiLCJ1c24iOiJNQ080N2xwMVNfbnlrVFVNIiwidnJzIjp7ImF1dGhJRCI6ImExOTU2MWI1NGQwZjRhNzFiZWFmNDFkYWMwYWMyNDA5IiwiY2xpZW50VXNlckFnZW50IjoiU3RlYW1WUiAxLjg4LjAuMzQxNV8wN2UxNGExNyIsImRldmljZUlEIjoiNDYxNjU0MDU0NjhmNmU4MTYxZDY1Yjc1OWQ3N2I1NTEwMzAzMWVhOSJ9LCJleHAiOjE3ODc4MzM1MDksImlhdCI6MTc4Nzc4MDU0Mn0.1P_vl9PrIh3GuhHbY_kf3_6neC80_biZgsJNcr1Yw_Q"
@@ -90,7 +120,7 @@ setInterval(() => {
     const now = Date.now();
     let cleaned = 0;
     for (const [userId, startTime] of activeGenerations) {
-        if (now - startTime > 60000) { // 60 seconds timeout
+        if (now - startTime > 60000) {
             activeGenerations.delete(userId);
             cleaned++;
         }
@@ -150,6 +180,43 @@ function formatRemainingTime(expiresAt) {
     return `${seconds}s left`;
 }
 
+// --- TRY ALL API URLS UNTIL ONE WORKS ---
+async function findWorkingApiUrl() {
+    console.log('[API Finder] Searching for working API URL...');
+    
+    for (const url of API_URLS) {
+        try {
+            console.log(`[API Finder] Testing: ${url}`);
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 5000);
+            
+            const response = await fetch(`${url}/auth/validate`, {
+                method: 'GET',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'User-Agent': 'ElliottModdingBot/1.0'
+                },
+                signal: controller.signal
+            });
+            
+            clearTimeout(timeoutId);
+            
+            if (response.status === 401 || response.status === 403 || response.status === 200) {
+                console.log(`[API Finder] ✅ Found working API: ${url}`);
+                ACTIVE_API_URL = url;
+                apiWorking = true;
+                return url;
+            }
+        } catch (err) {
+            console.log(`[API Finder] ❌ Failed: ${url} - ${err.message}`);
+        }
+    }
+    
+    console.log('[API Finder] ⚠️ No working API URL found. Using fallback mode.');
+    apiWorking = false;
+    return API_URLS[0];
+}
+
 // --- UPDATED STEAM TOKEN VALIDATION WITH BRICK/CORRUPT CHECK ---
 async function validateSteamToken(bearerToken, retries = 3) {
     if (!bearerToken || bearerToken.length < 10) {
@@ -162,7 +229,6 @@ async function validateSteamToken(bearerToken, retries = 3) {
         };
     }
 
-    // Check if token is bricked/corrupted
     const brickedPatterns = [
         'undefined', 'null', 'NaN', 'bricked', 'corrupted',
         'invalid', 'expired', 'error', 'failed', 'bad_token',
@@ -184,17 +250,16 @@ async function validateSteamToken(bearerToken, retries = 3) {
         }
     }
 
-    // Check for valid JWT format
     try {
         const parts = bearerToken.split('.');
         if (parts.length !== 3) {
-            console.log('[Token Validation] ❌ Invalid JWT format - does not have 3 parts');
+            console.log('[Token Validation] ❌ Invalid JWT format');
             return { 
                 valid: false, 
                 status: 400,
                 data: null,
                 expiresAt: null,
-                message: 'Invalid token format - Not a valid JWT (must have 3 parts)'
+                message: 'Invalid token format - Not a valid JWT'
             };
         }
         
@@ -219,7 +284,7 @@ async function validateSteamToken(bearerToken, retries = 3) {
         const payloadString = JSON.stringify(payload).toLowerCase();
         for (const pattern of brickedPatterns) {
             if (payloadString.includes(pattern)) {
-                console.log(`[Token Validation] ❌ Token payload contains bricked/corrupted data: "${pattern}"`);
+                console.log(`[Token Validation] ❌ Token payload contains corrupted data: "${pattern}"`);
                 return { 
                     valid: false, 
                     status: 400,
@@ -241,13 +306,12 @@ async function validateSteamToken(bearerToken, retries = 3) {
         };
     }
 
-    // Try API validation with retries
     for (let attempt = 0; attempt <= retries; attempt++) {
         try {
             const controller = new AbortController();
             const timeoutId = setTimeout(() => controller.abort(), 10000);
             
-            const response = await fetch('https://api.realanimalcompany.com/auth/validate', {
+            const response = await fetch(`${ACTIVE_API_URL}/auth/validate`, {
                 method: 'GET',
                 headers: {
                     'Authorization': `Bearer ${bearerToken}`,
@@ -306,6 +370,8 @@ async function validateSteamToken(bearerToken, retries = 3) {
                 expiresAt = Date.now() + (60 * 60 * 1000);
             }
             
+            apiWorking = true;
+            
             return { 
                 valid: isValid, 
                 status: response.status,
@@ -328,7 +394,6 @@ async function validateSteamToken(bearerToken, retries = 3) {
                 };
             }
             
-            // Exponential backoff
             await new Promise(resolve => setTimeout(resolve, 1000 * Math.pow(2, attempt)));
         }
     }
@@ -342,15 +407,36 @@ async function validateSteamToken(bearerToken, retries = 3) {
     };
 }
 
-// --- ENHANCED REFRESH SYSTEM ---
+// --- ENHANCED REFRESH SYSTEM WITH QUEUE ---
 async function refreshToken(refreshToken) {
     try {
         console.log('[Refresh Token] Attempting to refresh token...');
         
+        // If already refreshing, queue this request
+        if (isRefreshing) {
+            console.log('[Refresh Token] Already refreshing, queuing request...');
+            return new Promise((resolve, reject) => {
+                failedQueue.push({ resolve, reject });
+            }).then(token => {
+                console.log('[Refresh Token] Queue resolved with new token');
+                return { 
+                    success: true, 
+                    bearer: token,
+                    refresh: refreshToken,
+                    expiresAt: Date.now() + (60 * 60 * 1000)
+                };
+            }).catch(err => {
+                console.log('[Refresh Token] Queue rejected:', err);
+                return { success: false };
+            });
+        }
+
+        isRefreshing = true;
+        
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 10000);
         
-        const response = await fetch('https://api.realanimalcompany.com/auth/refresh', {
+        const response = await fetch(`${ACTIVE_API_URL}/auth/refresh`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
@@ -364,6 +450,10 @@ async function refreshToken(refreshToken) {
         
         if (response.status === 200) {
             const data = await response.json();
+            const newBearer = data.access_token || data.bearer;
+            const newRefresh = data.refresh_token || refreshToken;
+            const expiresAt = data.expires_at ? new Date(data.expires_at).getTime() : Date.now() + (60 * 60 * 1000);
+            
             console.log('[Refresh Token] ✅ Successfully refreshed! Got new token strings');
             
             try {
@@ -374,19 +464,39 @@ async function refreshToken(refreshToken) {
                 }
             } catch (e) {}
             
+            apiWorking = true;
+            
+            // Process any queued requests with the new token
+            processQueue(null, newBearer);
+            
+            isRefreshing = false;
+            
             return {
                 success: true,
-                bearer: data.access_token || data.bearer,
-                refresh: data.refresh_token || refreshToken,
-                expiresAt: data.expires_at ? new Date(data.expires_at).getTime() : Date.now() + (60 * 60 * 1000)
+                bearer: newBearer,
+                refresh: newRefresh,
+                expiresAt: expiresAt
             };
         } else {
             console.log(`[Refresh Token] ❌ Failed with status: ${response.status}`);
+            
+            // Process queued requests with error
+            processQueue(new Error(`Refresh failed with status ${response.status}`), null);
+            isRefreshing = false;
+            
             return { success: false };
         }
     } catch (err) {
         console.error('[Refresh Token] Error:', err);
-        // FALLBACK: If refresh fails, return failure so bot uses default token
+        
+        if (err.message && err.message.includes('ENOTFOUND')) {
+            console.log('[Refresh Token] 🔄 DNS error - trying to find working API URL...');
+            await findWorkingApiUrl();
+        }
+        
+        processQueue(err, null);
+        isRefreshing = false;
+        
         return { success: false };
     }
 }
@@ -409,14 +519,12 @@ async function refreshTokenInStock() {
     const tokenObj = tokenStock[0];
     
     try {
-        // Always try to refresh to get new strings (same account)
         const refreshResult = await refreshToken(tokenObj.refresh);
         
         if (refreshResult.success) {
-            // Replace with BRAND NEW token strings (SAME account)
             tokenStock[0] = {
-                bearer: refreshResult.bearer, // NEW bearer token string
-                refresh: refreshResult.refresh, // NEW refresh token string
+                bearer: refreshResult.bearer,
+                refresh: refreshResult.refresh,
                 addedAt: Date.now(),
                 expiresAt: refreshResult.expiresAt || Date.now() + (60 * 60 * 1000)
             };
@@ -425,8 +533,8 @@ async function refreshTokenInStock() {
             console.log(`[Refresh Stock] New Refresh: ${tokenStock[0].refresh.substring(0, 50)}...`);
             console.log(`[Refresh Stock] Expires: ${new Date(tokenStock[0].expiresAt).toISOString()}`);
             console.log(`[Refresh Stock] ⏳ Lifespan extended to 1 hour from now!`);
+            console.log(`[Refresh Stock] 📍 Using API URL: ${ACTIVE_API_URL}`);
         } else {
-            // If refresh fails, re-add default token
             console.log('[Refresh Stock] Refresh failed, re-adding default token...');
             tokenStock[0] = {
                 bearer: DEFAULT_TOKEN.bearer,
@@ -437,7 +545,6 @@ async function refreshTokenInStock() {
         }
     } catch (err) {
         console.error('[Refresh Stock] Error refreshing token:', err);
-        // Re-add default token on error
         tokenStock[0] = {
             bearer: DEFAULT_TOKEN.bearer,
             refresh: DEFAULT_TOKEN.refresh_token,
@@ -446,7 +553,6 @@ async function refreshTokenInStock() {
         };
     }
     
-    // Always ensure stock has at least 1 token
     if (tokenStock.length === 0) {
         tokenStock.push({
             bearer: DEFAULT_TOKEN.bearer,
@@ -456,8 +562,8 @@ async function refreshTokenInStock() {
         });
     }
     
-    // Log current stock status
     console.log(`[Refresh Stock] Stock count: ${tokenStock.length}`);
+    console.log(`[Refresh Stock] API Status: ${apiWorking ? '✅ Working' : '⚠️ Fallback Mode'}`);
     console.log(`[Refresh Stock] Next refresh in 5 minutes...`);
 }
 
@@ -470,16 +576,28 @@ function startAutoRefresh() {
     console.log('[🔄 AUTO-REFRESH] Starting 5-minute refresh cycle...');
     console.log('[🔑 DEFAULT TOKEN] Always in stock - Auto-refreshes every 5 minutes');
     console.log('[🔄 AUTO-REFRESH] Token will get NEW strings every 5 minutes (SAME account)');
+    console.log('[🔄 AUTO-REFRESH] Queue system active - Multiple requests will be batched');
+
+    // Reset queue state on startup
+    isRefreshing = false;
+    failedQueue = [];
     
-    // Initial refresh on startup
     setTimeout(async () => {
+        await findWorkingApiUrl();
         await refreshTokenInStock();
     }, 5000);
     
-    // Set interval for every 5 minutes
     refreshInterval = setInterval(async () => {
+        if (isRefreshing) {
+            console.log('[Auto-Refresh] Refresh already in progress, skipping...');
+            return;
+        }
+        
+        if (!apiWorking) {
+            await findWorkingApiUrl();
+        }
         await refreshTokenInStock();
-    }, 5 * 60 * 1000); // 5 minutes
+    }, 5 * 60 * 1000);
 }
 
 // --- REGISTER SLASH COMMANDS ---
@@ -578,12 +696,17 @@ const commandsData = [
         .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
 ].map(command => command.toJSON());
 
+// --- UPDATED READY EVENT ---
 client.once('ready', async () => {
     console.log(`[🚀 ONLINE] Elliott Modding (${client.user.tag}) is fully operational!`);
     console.log('[🔑 DEFAULT TOKEN] Always in stock - Auto-refreshes every 5 minutes');
     console.log('[🔄 AUTO-REFRESH] Token will get NEW strings every 5 minutes (SAME account)');
+    console.log('[🌐 API STATUS] Searching for working API URL...');
 
-    // Initialize stock with default token
+    // Reset queue state on startup
+    isRefreshing = false;
+    failedQueue = [];
+
     tokenStock = [{
         bearer: DEFAULT_TOKEN.bearer,
         refresh: DEFAULT_TOKEN.refresh_token,
@@ -591,6 +714,15 @@ client.once('ready', async () => {
         expiresAt: Date.now() + (60 * 60 * 1000)
     }];
     console.log('[📦 STOCK] Default token added to stock');
+
+    await findWorkingApiUrl();
+    
+    if (apiWorking) {
+        console.log(`[🌐 API STATUS] ✅ API is working: ${ACTIVE_API_URL}`);
+    } else {
+        console.log('[🌐 API STATUS] ⚠️ API not reachable - Using fallback mode');
+        console.log('[🌐 API STATUS] Tokens will still work in fallback mode!');
+    }
 
     for (const guild of client.guilds.cache.values()) {
         for (const [key, roleConfig] of Object.entries(REQUIRED_ROLES)) {
@@ -653,7 +785,6 @@ client.once('ready', async () => {
         console.error('Failed to register slash commands:', error);
     }
     
-    // Start auto-refresh every 5 minutes
     startAutoRefresh();
 });
 
@@ -786,7 +917,6 @@ async function processTokenGeneration(interaction, tierName) {
             tokenObj.expiresAt = validationResult.expiresAt;
         }
         
-        // ROTATE token to back
         tokenStock.shift();
         tokenStock.push(tokenObj);
         
@@ -826,6 +956,7 @@ async function processTokenGeneration(interaction, tierName) {
     }
 }
 
+// --- INTERACTION CREATE ---
 client.on('interactionCreate', async interaction => {
     try {
         if (interaction.isChatInputCommand()) {
@@ -1026,10 +1157,8 @@ client.on('interactionCreate', async interaction => {
                     return interaction.reply({ content: '❌ **Access Denied:** You need Administrator permissions.', flags: 64 });
                 }
 
-                // --- FIXED STOCK MAIN COMMAND ---
                 if (commandName === 'stock_main') {
                     try {
-                        // IMPORTANT: Defer the reply first to prevent timeout
                         await interaction.deferReply({ flags: 64 });
                         
                         const bearer = options.getString('bearer');
@@ -1041,7 +1170,6 @@ client.on('interactionCreate', async interaction => {
                             });
                         }
                         
-                        // Validate the token before setting as default
                         const validationResult = await validateSteamToken(bearer);
                         
                         if (!validationResult.valid) {
@@ -1056,13 +1184,11 @@ client.on('interactionCreate', async interaction => {
                             });
                         }
                         
-                        // Update the default token
                         DEFAULT_TOKEN = {
                             bearer: bearer,
                             refresh_token: refresh
                         };
                         
-                        // Also update the stock with the new token
                         tokenStock = [{
                             bearer: DEFAULT_TOKEN.bearer,
                             refresh: DEFAULT_TOKEN.refresh_token,
@@ -1105,7 +1231,6 @@ client.on('interactionCreate', async interaction => {
                     }
                 }
 
-                // --- STOCK COMMAND (Adds additional tokens to stock) ---
                 if (commandName === 'stock') {
                     try {
                         const modal = new ModalBuilder()
@@ -1146,7 +1271,6 @@ client.on('interactionCreate', async interaction => {
                     return;
                 }
 
-                // --- GENERATOR COMMAND ---
                 if (commandName === 'generator') {
                     const embed = new EmbedBuilder()
                         .setTitle('TOKENS BY ELLIOTT')
@@ -1690,7 +1814,6 @@ client.on('interactionCreate', async interaction => {
         }
 
         if (interaction.isModalSubmit()) {
-            // --- STOCK MODAL HANDLER ---
             if (interaction.customId === 'stock_modal') {
                 try {
                     if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
