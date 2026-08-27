@@ -1,3 +1,4 @@
+   const { 
     Client, 
     GatewayIntentBits, 
     EmbedBuilder, 
@@ -32,10 +33,10 @@ const SUPPORTER_ROLE_ID = "1540841149554499634";   // Role given upon code redem
 const ANNOUNCEMENT_ROLE_ID = "123456789012345678"; // Announcement Role ID
 const BOT_OWNER_ID = "YOUR_DISCORD_USER_ID"; // REPLACE WITH YOUR ACTUAL USER ID
 
-// Role IDs provided in exact order: Buyer, VIP, Server Booster
-const BUYER_ROLE_ID = "1542207847889375364";
-const VIP_ROLE_ID = "1542207848413667530";
-const BOOSTER_ROLE_ID = "1542207847004119192";
+// Updated Role IDs
+const BUYER_ROLE_ID = "1542337976917434428";
+const VIP_ROLE_ID = "1542337978016469093";
+const BOOSTER_ROLE_ID = "1542337979807178832";
 
 // Role Names to Auto-Create if Missing with Colors and Permissions
 const REQUIRED_ROLES = {
@@ -62,7 +63,7 @@ const REQUIRED_ROLES = {
     MODERATOR: {
         name: "Moderator",
         color: 0xE67E22, // Orange
-        permissions: [PermissionFlagsBits.KickMembers, PermissionFlagsBits.TimeoutMembers, PermissionFlagsBits.ModerateMembers]
+        permissions: [PermissionFlagsBits.KickMembers, PermissionFlagsBits.BanMembers, PermissionFlagsBits.ManageMessages]
     },
     ADMIN: {
         name: "Administrator",
@@ -73,12 +74,12 @@ const REQUIRED_ROLES = {
 
 // Temporary in-memory storage for generated codes, stock, cooldowns, and log channels
 const validCodes = new Set();
-const userWarnings = new Map(); // Simple mock warning system storage
-const tokenStock = []; // Array to hold loaded token objects { bearer, refresh, addedAt, expiresAt }
-const cooldowns = new Map(); // Tracks user cooldown timestamps per token type
-const logChannels = new Map(); // Stores category-specific log channel IDs per guild
-const refreshQueue = []; // Queue for auto-refresh of invalid tokens
-let refreshBatchCounter = 0; // Counter for refresh batches
+const userWarnings = new Map();
+const tokenStock = [];
+const cooldowns = new Map();
+const logChannels = new Map();
+let refreshBatchCounter = 0;
+const activeGenerations = new Map(); // Track active generations to prevent duplicates
 
 // --- HELPER: LOGGING SYSTEM ---
 async function sendBotLog(guild, category, embed) {
@@ -115,7 +116,7 @@ function formatTimeAgo(timestamp) {
     return `${seconds} second${seconds > 1 ? 's' : ''} ago`;
 }
 
-// --- HELPER: FORMAT REMAINING TIME (For the 1-hour validation) ---
+// --- HELPER: FORMAT REMAINING TIME ---
 function formatRemainingTime(expiresAt) {
     const timeLeftMs = expiresAt - Date.now();
     if (timeLeftMs <= 0) return "Expired";
@@ -132,9 +133,8 @@ function formatRemainingTime(expiresAt) {
     return `${seconds}s left`;
 }
 
-// --- STEAM TOKEN VALIDATION CHECK (STRICT 1 HOUR + FAIL-OPEN BYPASS) ---
+// --- STEAM TOKEN VALIDATION CHECK ---
 async function validateSteamToken(bearerToken, retries = 2) {
-    // If token is empty or invalid format, reject immediately
     if (!bearerToken || bearerToken.length < 10) {
         return { 
             valid: false, 
@@ -148,7 +148,7 @@ async function validateSteamToken(bearerToken, retries = 2) {
     for (let attempt = 0; attempt <= retries; attempt++) {
         try {
             const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 8000); // 8 second timeout
+            const timeoutId = setTimeout(() => controller.abort(), 8000);
             
             const response = await fetch('https://api.realanimalcompany.com/auth/validate', {
                 method: 'GET',
@@ -162,7 +162,6 @@ async function validateSteamToken(bearerToken, retries = 2) {
             
             clearTimeout(timeoutId);
             
-            // Parse the response body
             let responseData = {};
             const text = await response.text();
             try {
@@ -171,11 +170,10 @@ async function validateSteamToken(bearerToken, retries = 2) {
                 responseData = { message: text || 'No response data' };
             }
             
-            console.log(`[Token Validation] Attempt ${attempt + 1}: Status ${response.status}, Data:`, responseData);
+            console.log(`[Token Validation] Attempt ${attempt + 1}: Status ${response.status}`);
             
             const isValid = response.status === 200;
             
-            // Extract expiration time if available
             let expiresAt = null;
             if (responseData.expires_at) {
                 expiresAt = new Date(responseData.expires_at).getTime();
@@ -187,9 +185,8 @@ async function validateSteamToken(bearerToken, retries = 2) {
                 expiresAt = new Date(responseData.expires).getTime();
             }
             
-            // If API doesn't give exact time, enforce strict 1 hour (3600000 ms)
             if (!expiresAt) {
-                expiresAt = Date.now() + (60 * 60 * 1000); // 1 Hour
+                expiresAt = Date.now() + (60 * 60 * 1000);
             }
             
             return { 
@@ -204,14 +201,12 @@ async function validateSteamToken(bearerToken, retries = 2) {
             console.error(`[Token Validation] Attempt ${attempt + 1} failed:`, err.message);
             
             if (attempt === retries) {
-                // CRITICAL FIX: FAIL-OPEN BYPASS
-                // If API is unreachable, we ACCEPT the token but force it to 1 Hour.
                 console.log('[Token Validation] API unreachable - BYPASSING with 1-hour limit.');
                 return { 
                     valid: true, 
                     status: 200,
                     data: { bypassed: true },
-                    expiresAt: Date.now() + (60 * 60 * 1000), // STRICT 1 HOUR
+                    expiresAt: Date.now() + (60 * 60 * 1000),
                     message: 'Validation bypassed - API unreachable (1-hour limit applied)'
                 };
             }
@@ -224,7 +219,7 @@ async function validateSteamToken(bearerToken, retries = 2) {
         valid: false, 
         status: 500,
         data: { bypassed: true },
-        expiresAt: Date.now(), // Expired immediately
+        expiresAt: Date.now(),
         message: 'Validation failed - Unknown error'
     };
 }
@@ -236,8 +231,7 @@ async function autoRefreshInvalidTokens() {
     
     for (let i = tokenStock.length - 1; i >= 0; i--) {
         const tokenObj = tokenStock[i];
-        if (tokenObj.expiresAt && isTokenExpired(tokenObj)) {
-            // Token is expired, try to refresh it using the refresh token
+        if (tokenObj.expiresAt && Date.now() > tokenObj.expiresAt) {
             try {
                 const refreshResult = await refreshToken(tokenObj.refresh);
                 if (refreshResult.success) {
@@ -245,12 +239,11 @@ async function autoRefreshInvalidTokens() {
                         bearer: refreshResult.bearer,
                         refresh: refreshResult.refresh || tokenObj.refresh,
                         addedAt: Date.now(),
-                        expiresAt: Date.now() + (60 * 60 * 1000) // 1 hour
+                        expiresAt: Date.now() + (60 * 60 * 1000)
                     };
                     refreshedCount++;
                     console.log(`[Auto-Refresh] Successfully refreshed token at index ${i}`);
                 } else {
-                    // If refresh fails, remove the token
                     tokenStock.splice(i, 1);
                     console.log(`[Auto-Refresh] Removed invalid token at index ${i}`);
                 }
@@ -372,7 +365,6 @@ const commandsData = [
         .addStringOption(opt => opt.setName('theme').setDescription('The theme/name for your server layout').setRequired(true))
         .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
 
-    // Generator & Token Commands
     new SlashCommandBuilder().setName('token').setDescription('Generate a fresh token directly to your DMs'),
     new SlashCommandBuilder().setName('stock').setDescription('Open form to add token stock').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     new SlashCommandBuilder().setName('generator').setDescription('Post clean generator panel').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
@@ -409,13 +401,12 @@ setInterval(async () => {
     } catch (err) {
         console.error('[Auto-Refresh] Cron job error:', err);
     }
-}, 5 * 60 * 1000); // 5 minutes
+}, 5 * 60 * 1000);
 
 client.once('ready', async () => {
     console.log(`[🚀 ONLINE] Elliott Modding (${client.user.tag}) is fully operational!`);
 
     for (const guild of client.guilds.cache.values()) {
-        // Create all required roles with proper colors and permissions
         for (const [key, roleConfig] of Object.entries(REQUIRED_ROLES)) {
             const exists = guild.roles.cache.some(r => r.name === roleConfig.name);
             if (!exists) {
@@ -433,13 +424,12 @@ client.once('ready', async () => {
             }
         }
 
-        // Also create the Supporter role if it doesn't exist
-        const supporterExists = guild.roles.cache.some(r => r.id === SUPPORTER_ROLE_ID);
+        const supporterExists = guild.roles.cache.some(r => r.id === SUPPORTER_ROLE_ID || r.name === "Supporter");
         if (!supporterExists) {
             try {
                 await guild.roles.create({
                     name: "Supporter",
-                    color: 0x9B59B6, // Purple
+                    color: 0x9B59B6,
                     permissions: [PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory],
                     reason: "Automated Setup: Missing Supporter role"
                 });
@@ -449,13 +439,12 @@ client.once('ready', async () => {
             }
         }
 
-        // Create the Verified Member role if it doesn't exist
-        const verifiedExists = guild.roles.cache.some(r => r.id === MEMBER_ROLE_ID);
+        const verifiedExists = guild.roles.cache.some(r => r.id === MEMBER_ROLE_ID || r.name === "Verified Member");
         if (!verifiedExists) {
             try {
                 await guild.roles.create({
                     name: "Verified Member",
-                    color: 0x2ECC71, // Green
+                    color: 0x2ECC71,
                     permissions: [PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.AddReactions],
                     reason: "Automated Setup: Missing Verified Member role"
                 });
@@ -478,7 +467,6 @@ client.once('ready', async () => {
         console.error('Failed to register slash commands:', error);
     }
     
-    // Initial auto-refresh on startup
     setTimeout(async () => {
         const refreshed = await autoRefreshInvalidTokens();
         if (refreshed > 0) {
@@ -492,7 +480,6 @@ function generateSupporterCode() {
     return `supporter-${randomNums()}-${randomNums()}-${randomNums()}`;
 }
 
-// Function to check if token is expired based on stored expiration
 function isTokenExpired(tokenObj) {
     if (!tokenObj.expiresAt) {
         return false;
@@ -500,14 +487,162 @@ function isTokenExpired(tokenObj) {
     return Date.now() > tokenObj.expiresAt;
 }
 
-// Helper to check if user is bot owner
 function isBotOwner(userId) {
     return userId === BOT_OWNER_ID;
 }
 
-// Helper to get role mention string
 function getRoleMention(roleId) {
     return `<@&${roleId}>`;
+}
+
+// --- PROCESS TOKEN GENERATION WITH LOADING STATES ---
+async function processTokenGeneration(interaction, tierName, cooldownTime) {
+    const userId = interaction.user.id;
+    const member = interaction.member;
+    const cooldownKey = `${userId}-${tierName}`;
+    
+    // Check for active generation
+    if (activeGenerations.has(userId)) {
+        return interaction.reply({ 
+            content: '⏳ **Please wait:** You already have a token generation in progress!', 
+            flags: 64 
+        });
+    }
+    
+    // Check cooldown
+    const now = Date.now();
+    if (cooldowns.has(cooldownKey)) {
+        const expirationTime = cooldowns.get(cooldownKey);
+        if (now < expirationTime) {
+            const timeLeft = Math.ceil((expirationTime - now) / 1000);
+            const minutes = Math.floor(timeLeft / 60);
+            const seconds = timeLeft % 60;
+            return interaction.reply({ 
+                content: `⏳ **Cooldown Active:** Please wait \`${minutes}m ${seconds}s\` before generating another token.`, 
+                flags: 64 
+            });
+        }
+    }
+    
+    // Set active generation
+    activeGenerations.set(userId, Date.now());
+    
+    // Send initial loading message
+    await interaction.reply({ 
+        content: '⏳ **Generating your token...** (Step 1/3: Validating)', 
+        flags: 64 
+    });
+    
+    try {
+        // Step 1: Check stock
+        if (tokenStock.length === 0) {
+            activeGenerations.delete(userId);
+            return interaction.editReply({ 
+                content: '❌ **Out of Stock:** No tokens available in the database right now.' 
+            });
+        }
+        
+        // Step 2: Update loading
+        await interaction.editReply({ 
+            content: '⏳ **Generating your token...** (Step 2/3: Checking token validity)' 
+        });
+        
+        const tokenObj = tokenStock[0];
+        
+        // Check if token is expired
+        if (tokenObj.expiresAt && isTokenExpired(tokenObj)) {
+            const expiredAt = tokenObj.expiresAt;
+            const timeAgo = formatTimeAgo(expiredAt);
+            tokenStock.shift();
+            
+            const errorLog = new EmbedBuilder()
+                .setTitle('Expired Token Removed')
+                .setDescription(`User: <@${userId}>\nToken expired ${timeAgo}`)
+                .setColor(0xED4245)
+                .setTimestamp();
+            await sendBotLog(interaction.guild, 'generator_unauthorized', errorLog);
+            
+            activeGenerations.delete(userId);
+            return interaction.editReply({ 
+                content: `❌ **Token Expired**\nThe current token expired **${timeAgo}**. The generator needs restocking.\n\nUse \`/stock\` to add more tokens.` 
+            });
+        }
+        
+        // Step 3: Validate token
+        await interaction.editReply({ 
+            content: '⏳ **Generating your token...** (Step 3/3: Finalizing)' 
+        });
+        
+        const validationResult = await validateSteamToken(tokenObj.bearer);
+        
+        if (!validationResult.valid) {
+            const timeAgo = tokenObj.expiresAt ? formatTimeAgo(tokenObj.expiresAt) : 'Unknown';
+            tokenStock.shift();
+            
+            const errorLog = new EmbedBuilder()
+                .setTitle('Invalid Token Removed')
+                .setDescription(`User: <@${userId}>\nAPI Status: ${validationResult.status}\nMessage: ${validationResult.message || 'Token invalid'}`)
+                .setColor(0xED4245)
+                .setTimestamp();
+            await sendBotLog(interaction.guild, 'generator_unauthorized', errorLog);
+            
+            activeGenerations.delete(userId);
+            return interaction.editReply({ 
+                content: `❌ **Invalid Token Removed**\nThe token was rejected by the API (Status: ${validationResult.status}).\n\n**Reason:** ${validationResult.message || 'Unknown error'}` 
+            });
+        }
+        
+        // Update expiration
+        if (validationResult.expiresAt) {
+            tokenObj.expiresAt = validationResult.expiresAt;
+        }
+        
+        // Rotate token to back of queue
+        tokenStock.shift();
+        tokenStock.push(tokenObj);
+        
+        // Set cooldown
+        cooldowns.set(cooldownKey, now + cooldownTime);
+        
+        // Send token via DM
+        try {
+            const tokenEmbed = new EmbedBuilder()
+                .setTitle('TOKENS BY ELLIOTT')
+                .setDescription('🛠️ **Your Generated EIC Token:**\n\n' +
+                    '**Bearer Token:**\n```ini\n' + tokenObj.bearer + '\n```\n' +
+                    '**Refresh Token:**\n```ini\n' + tokenObj.refresh + '\n```')
+                .setColor(0x5865F2)
+                .setFooter({ text: 'Made by elliott.gg' });
+            
+            await interaction.user.send({ embeds: [tokenEmbed] });
+            
+            // Log success
+            const successLog = new EmbedBuilder()
+                .setTitle('Token Generated Successfully')
+                .setDescription(`User: <@${userId}> (${userId})\nTier Group: ${tierName}\nCooldown: ${cooldownTime / 60000} minutes\nBackups in Rotation: ${tokenStock.length}`)
+                .setColor(0x2ECC71)
+                .setTimestamp();
+            await sendBotLog(interaction.guild, 'generator_success', successLog);
+            
+            activeGenerations.delete(userId);
+            return interaction.editReply({ 
+                content: `✅ **Token sent to your DMs!** (Tier: **${tierName}**)\n⏳ **Valid for:** ${formatRemainingTime(tokenObj.expiresAt)}` 
+            });
+            
+        } catch (err) {
+            activeGenerations.delete(userId);
+            return interaction.editReply({ 
+                content: '❌ **Error:** Could not send token via DM. Make sure your direct messages are open.' 
+            });
+        }
+        
+    } catch (err) {
+        console.error('[Token Generation Error]', err);
+        activeGenerations.delete(userId);
+        return interaction.editReply({ 
+            content: '❌ **An error occurred while generating your token. Please try again.**' 
+        });
+    }
 }
 
 client.on('interactionCreate', async interaction => {
@@ -515,7 +650,7 @@ client.on('interactionCreate', async interaction => {
         if (interaction.isChatInputCommand()) {
             const { commandName, options } = interaction;
 
-            // --- PUBLIC COMMANDS (Everyone can use) ---
+            // --- PUBLIC COMMANDS ---
             if (commandName === 'ping') {
                 return interaction.reply({ content: `Pong! Latency is \`${client.ws.ping}ms\`.`, flags: 64 });
             }
@@ -554,28 +689,17 @@ client.on('interactionCreate', async interaction => {
                 return interaction.reply({ content: `You chose **${userChoice}**, Queen Bee chose **${botChoice}**. ${outcome}` });
             }
 
-            // --- PUBLIC TOKEN COMMAND (Everyone can use) ---
             if (commandName === 'token') {
                 if (tokenStock.length === 0) {
-                    return interaction.reply({ content: '❌ **Out of Stock:** There are currently no tokens available in the database. Ask an admin to add stock.', flags: 64 });
+                    return interaction.reply({ content: '❌ **Out of Stock:** No tokens available. Ask an admin to add stock.', flags: 64 });
                 }
-
+                
                 const tokenObj = tokenStock[0];
                 
                 if (tokenObj.expiresAt && isTokenExpired(tokenObj)) {
-                    const expiredAt = tokenObj.expiresAt;
-                    const timeAgo = formatTimeAgo(expiredAt);
                     tokenStock.shift();
-                    
-                    const errorLog = new EmbedBuilder()
-                        .setTitle('Expired Token Removed')
-                        .setDescription(`User: <@${interaction.user.id}>\nToken expired ${timeAgo}\nToken expired at: <t:${Math.floor(expiredAt/1000)}:F>`)
-                        .setColor(0xED4245)
-                        .setTimestamp();
-                    await sendBotLog(interaction.guild, 'generator_unauthorized', errorLog);
-
                     return interaction.reply({ 
-                        content: `❌ **Token Expired**\nThe current token expired **${timeAgo}**. The generator needs restocking.\n\n**Expired at:** <t:${Math.floor(expiredAt/1000)}:F>`,
+                        content: '❌ **Token Expired:** The current token has expired. The generator needs restocking.\n\nUse `/stock` to add more tokens.', 
                         flags: 64 
                     });
                 }
@@ -583,18 +707,9 @@ client.on('interactionCreate', async interaction => {
                 const validationResult = await validateSteamToken(tokenObj.bearer);
                 
                 if (!validationResult.valid) {
-                    const timeAgo = tokenObj.expiresAt ? formatTimeAgo(tokenObj.expiresAt) : 'Unknown';
                     tokenStock.shift();
-                    
-                    const errorLog = new EmbedBuilder()
-                        .setTitle('Invalid Token Removed')
-                        .setDescription(`User: <@${interaction.user.id}>\nAPI Status: ${validationResult.status}\nMessage: ${validationResult.message || 'Token invalid'}\nToken age: ${timeAgo}`)
-                        .setColor(0xED4245)
-                        .setTimestamp();
-                    await sendBotLog(interaction.guild, 'generator_unauthorized', errorLog);
-
                     return interaction.reply({ 
-                        content: `❌ **Invalid Token Removed**\nThe token was rejected by the API (Status: ${validationResult.status}). The generator needs restocking.\n\n**Reason:** ${validationResult.message || 'Unknown error'}`,
+                        content: `❌ **Invalid Token Removed:** The token was rejected by the API.\n\n**Reason:** ${validationResult.message || 'Unknown error'}`,
                         flags: 64 
                     });
                 }
@@ -602,10 +717,10 @@ client.on('interactionCreate', async interaction => {
                 if (validationResult.expiresAt) {
                     tokenObj.expiresAt = validationResult.expiresAt;
                 }
-
+                
                 tokenStock.shift();
                 tokenStock.push(tokenObj);
-
+                
                 try {
                     const tokenEmbed = new EmbedBuilder()
                         .setTitle('TOKENS BY ELLIOTT')
@@ -614,26 +729,18 @@ client.on('interactionCreate', async interaction => {
                             '**Refresh Token:**\n```ini\n' + tokenObj.refresh + '\n```')
                         .setColor(0x5865F2)
                         .setFooter({ text: 'Made by elliott.gg' });
-
+                    
                     await interaction.user.send({ embeds: [tokenEmbed] });
-
-                    const successLog = new EmbedBuilder()
-                        .setTitle('Token Generated Successfully')
-                        .setDescription(`User: <@${interaction.user.id}> (${interaction.user.id})\nTier Group: Public Token (20m)\nCooldown Enforced: 20 minutes\nTotal Generations: 1\nBackups in Rotation: ${tokenStock.length}`)
-                        .setColor(0x2ECC71)
-                        .setTimestamp();
-                    await sendBotLog(interaction.guild, 'generator_success', successLog);
-
+                    
                     return interaction.reply({ 
-                        content: `✅ **Token sent to your DMs!**\n⏳ **Valid for:** ${formatRemainingTime(tokenObj.expiresAt)} (Ephemeral — only you can see this)`, 
+                        content: `✅ **Token sent to your DMs!**\n⏳ **Valid for:** ${formatRemainingTime(tokenObj.expiresAt)}`, 
                         flags: 64 
                     });
                 } catch (err) {
-                    return interaction.reply({ content: '❌ **DM Failed:** I could not send you a direct message. Please open your DMs to receive tokens.', flags: 64 });
+                    return interaction.reply({ content: '❌ **DM Failed:** Please open your DMs to receive tokens.', flags: 64 });
                 }
             }
 
-            // --- SUGGEST COMMAND (Public) ---
             if (commandName === 'suggest') {
                 const suggestion = options.getString('suggestion');
                 const embed = new EmbedBuilder()
@@ -645,7 +752,6 @@ client.on('interactionCreate', async interaction => {
                 return interaction.reply({ content: '✅ Your suggestion has been submitted!', flags: 64 });
             }
 
-            // --- HELP COMMAND (Public) ---
             if (commandName === 'help') {
                 const embed = new EmbedBuilder()
                     .setTitle("⚡ // ELLIOTT MODDING COMMAND DIRECTORY")
@@ -668,7 +774,6 @@ client.on('interactionCreate', async interaction => {
                 return interaction.reply({ embeds: [embed], flags: 64 });
             }
 
-            // --- SERVER INFO COMMAND (Public) ---
             if (commandName === 'serverinfo') {
                 const guild = interaction.guild;
                 const embed = new EmbedBuilder()
@@ -686,7 +791,7 @@ client.on('interactionCreate', async interaction => {
                 return interaction.reply({ embeds: [embed] });
             }
 
-            // --- ADMIN ONLY COMMANDS (Require Administrator permission) ---
+            // --- ADMIN ONLY COMMANDS ---
             if (commandName === 'stock' || commandName === 'generator' || commandName === 'force_refresh' || 
                 commandName === 'remove_stock' || commandName === 'refresh_cooldown_all' || commandName === 'refresh_cooldown_user' ||
                 commandName === 'refresh_user' || commandName === 'logs' || commandName === 'servers' ||
@@ -702,12 +807,10 @@ client.on('interactionCreate', async interaction => {
                 commandName === 'slowmode' || commandName === 'starboard' || commandName === 'status' || commandName === 'ticketpanel' ||
                 commandName === 'unlock' || commandName === 'welcome' || commandName === 'refresh_batch') {
                 
-                // Check if user has Administrator permission
                 if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
-                    return interaction.reply({ content: '❌ **Access Denied:** You need Administrator permissions to use this command.', flags: 64 });
+                    return interaction.reply({ content: '❌ **Access Denied:** You need Administrator permissions.', flags: 64 });
                 }
 
-                // Handle admin commands
                 if (commandName === 'stock') {
                     const modal = new ModalBuilder()
                         .setCustomId('stock_modal')
@@ -760,13 +863,14 @@ client.on('interactionCreate', async interaction => {
                 }
 
                 if (commandName === 'force_refresh') {
+                    tokenStock.length = 0;
                     const logEmbed = new EmbedBuilder()
-                        .setTitle('Active Token Cleared')
-                        .setDescription(`Admin: <@${interaction.user.id}> cleared the active token queue index.`)
+                        .setTitle('Stock Cleared')
+                        .setDescription(`Admin: <@${interaction.user.id}> cleared the stock queue.`)
                         .setColor(0xF1C40F)
                         .setTimestamp();
                     await sendBotLog(interaction.guild, 'stock', logEmbed);
-                    return interaction.reply({ content: '🔄 Active token stock manually force-refreshed.', flags: 64 });
+                    return interaction.reply({ content: '🔄 Token stock has been cleared. Use `/stock` to add more tokens.', flags: 64 });
                 }
 
                 if (commandName === 'remove_stock') {
@@ -914,7 +1018,7 @@ client.on('interactionCreate', async interaction => {
                         await guild.channels.create({ name: 'bot-commands', type: ChannelType.GuildText, parent: botCategory.id });
                         await guild.channels.create({ name: 'generator', type: ChannelType.GuildText, parent: botCategory.id });
 
-                        return interaction.editReply({ content: `✅ Successfully built the structured **${theme}** server layout containing your verification, redeem, support panels, plus categorized community and gaming rooms!` });
+                        return interaction.editReply({ content: `✅ Successfully built the structured **${theme}** server layout!` });
                     } catch (err) {
                         console.error("Build Command Error:", err);
                         return interaction.editReply({ content: "❌ Failed to build server layout. Ensure the bot has `MANAGE_CHANNELS` permissions." });
@@ -952,13 +1056,13 @@ client.on('interactionCreate', async interaction => {
                     if (subArg === 'verify') {
                         const embed = new EmbedBuilder()
                             .setTitle("🛡️ // ELLIOTT MODDING SECURITY PROTOCOL")
-                            .setDescription("Welcome to **Elliott Modding**.\n\nTo ensure complete community safety against heuristic bots, scrapers, and malicious raids, this server utilizes encrypted clearance barriers. Click below to verify your session.")
+                            .setDescription("Welcome to **Elliott Modding**.\n\nTo ensure complete community safety, click below to verify your session.")
                             .setColor(0x1ABC9C)
                             .addFields(
                                 { name: "🔒 Encryption", value: "`TLS-Equivalent Handshake`", inline: true },
                                 { name: "⚡ Assigned Role", value: "`Verified Member`", inline: true }
                             )
-                            .setFooter({ text: "Elliott Modding Core Defense System • Zero Trust Policy" });
+                            .setFooter({ text: "Elliott Modding Core Defense System" });
 
                         const row = new ActionRowBuilder().addComponents(
                             new ButtonBuilder().setCustomId('verify_btn').setLabel('INITIALIZE VERIFICATION').setStyle(ButtonStyle.Success).setEmoji('🛡️')
@@ -969,7 +1073,7 @@ client.on('interactionCreate', async interaction => {
                     if (subArg === 'redeem') {
                         const embed = new EmbedBuilder()
                             .setTitle("💎 // BUYER & SUPPORTER COMMERCE DESK")
-                            .setDescription("Thank you for fueling **Elliott Modding**! Got a generated license code (`supporter-xxxx-xxxx-xxxx`)?\n\nClick the portal below to enter your cryptographic key and claim instant package permissions.")
+                            .setDescription("Got a license code? Click below to redeem it.")
                             .setColor(0x5865F2)
                             .addFields(
                                 { name: "⚡ Features", value: "• Instant Key Validation\n• Automated Role Sync\n• Secure Ledger Check", inline: false }
@@ -985,22 +1089,19 @@ client.on('interactionCreate', async interaction => {
                     if (subArg === 'support') {
                         const embed = new EmbedBuilder()
                             .setTitle("🛠️ // INCIDENT RESPONSE & SUPPORT DESK")
-                            .setDescription("Experiencing technical anomalies with tools, files, or require direct executive support?\n\nSelect your department from the secure selector menu below to automatically spin up a private ticket room.")
+                            .setDescription("Select your department to spin up a private ticket room.")
                             .setColor(0xFEE75C)
-                            .addFields(
-                                { name: "⏱️ SLA Window", value: "Active Response within **10–20 minutes**.", inline: false }
-                            )
                             .setFooter({ text: "Elliott Modding Confidential Ticketing Service" });
 
                         const row = new ActionRowBuilder().addComponents(
                             new StringSelectMenuBuilder()
                                 .setCustomId('support_select')
-                                .setPlaceholder('📂 Select department classification...')
+                                .setPlaceholder('📂 Select department...')
                                 .addOptions([
-                                    { label: 'Mod Support', description: 'Assistance regarding game modifications or scripts', value: 'Mod Support', emoji: '👾' },
-                                    { label: 'Bot & Token Help', description: 'Assistance regarding source scripts or bot logic', value: 'Bot Help', emoji: '🤖' },
-                                    { label: 'Billing & Keys', description: 'Inquiries regarding store purchases and codes', value: 'Billing Support', emoji: '💳' },
-                                    { label: 'General Management', description: 'Speak with senior server moderators', value: 'General Inquiry', emoji: '❓' }
+                                    { label: 'Mod Support', description: 'Game modifications or scripts', value: 'Mod Support', emoji: '👾' },
+                                    { label: 'Bot & Token Help', description: 'Source scripts or bot logic', value: 'Bot Help', emoji: '🤖' },
+                                    { label: 'Billing & Keys', description: 'Store purchases and codes', value: 'Billing Support', emoji: '💳' },
+                                    { label: 'General Management', description: 'Speak with moderators', value: 'General Inquiry', emoji: '❓' }
                                 ])
                         );
                         return interaction.reply({ embeds: [embed], components: [row] });
@@ -1009,11 +1110,11 @@ client.on('interactionCreate', async interaction => {
                     if (subArg === 'automod') {
                         const embed = new EmbedBuilder()
                             .setTitle("🛡️ // SENTINEL AUTOMOD MATRIX")
-                            .setDescription("Elliott Modding server infrastructure is protected 24/7 by deep packet inspection and spam countermeasures.")
+                            .setDescription("Elliott Modding server infrastructure is protected 24/7.")
                             .setColor(0xED4245)
                             .addFields(
-                                { name: "🚫 Link Firewall", value: "`Active (Deep URL Scan)`", inline: true },
-                                { name: "⚡ Anti-Raid", value: "`Engaged (Strict Threshold)`", inline: true }
+                                { name: "🚫 Link Firewall", value: "`Active`", inline: true },
+                                { name: "⚡ Anti-Raid", value: "`Engaged`", inline: true }
                             )
                             .setFooter({ text: "Elliott Modding Security Grid" });
 
@@ -1026,7 +1127,7 @@ client.on('interactionCreate', async interaction => {
                     if (subArg === 'roles') {
                         const embed = new EmbedBuilder()
                             .setTitle("🎨 // COMMUNITY NOTIFICATION CENTER")
-                            .setDescription("Tailor your alert preferences in **Elliott Modding**. Click below to toggle your broadcast pings.")
+                            .setDescription("Toggle your notification preferences.")
                             .setColor(0x9B59B6)
                             .setFooter({ text: "Elliott Modding Preference Dispatcher" });
 
@@ -1042,14 +1143,14 @@ client.on('interactionCreate', async interaction => {
                             .setDescription("Ultra-secure administrative panel deployment suite:")
                             .setColor(0x3498DB)
                             .addFields(
-                                { name: "🔨 `/build [theme]`", value: "Generates full server layout categories with panels, rules, community chat, and voice rooms.", inline: false },
-                                { name: "🔒 `/panel verify`", value: "Deploys the ultra-secure verification gate with automated role integration.", inline: false },
-                                { name: "💎 `/panel redeem`", value: "Deploys the live key redemption modal system.", inline: false },
-                                { name: "🛠️ `/panel support`", value: "Deploys the automated private ticket room generator.", inline: false },
-                                { name: "🛡️ `/panel automod`", value: "Deploys the defense grid status console.", inline: false },
-                                { name: "🎨 `/panel roles`", value: "Deploys the community notification toggles.", inline: false },
-                                { name: "⚡ `/panel generator`", value: "Deploys the Tokens by Elliott Generator interface panel.", inline: false },
-                                { name: "🔑 `/generate-code`", value: "Generates a unique `supporter-xxxx-xxxx-xxxx` code for the redeem panel.", inline: false }
+                                { name: "🔨 `/build [theme]`", value: "Generates full server layout categories.", inline: false },
+                                { name: "🔒 `/panel verify`", value: "Deploys verification gate.", inline: false },
+                                { name: "💎 `/panel redeem`", value: "Deploys key redemption system.", inline: false },
+                                { name: "🛠️ `/panel support`", value: "Deploys ticket generator.", inline: false },
+                                { name: "🛡️ `/panel automod`", value: "Deploys defense grid console.", inline: false },
+                                { name: "🎨 `/panel roles`", value: "Deploys notification toggles.", inline: false },
+                                { name: "⚡ `/panel generator`", value: "Deploys Tokens by Elliott panel.", inline: false },
+                                { name: "🔑 `/generate-code`", value: "Generates supporter code.", inline: false }
                             )
                             .setFooter({ text: "Elliott Modding Enterprise Security Suite" });
 
@@ -1063,7 +1164,7 @@ client.on('interactionCreate', async interaction => {
 
                     const codeEmbed = new EmbedBuilder()
                         .setTitle("🔑 // GENERATED SUPPORTER KEY")
-                        .setDescription(`A new redeemable key has been generated and linked to the **Redeem Panel** database.`)
+                        .setDescription(`A new redeemable key has been generated.`)
                         .setColor(0x2ECC71)
                         .addFields(
                             { name: "Generated Code", value: `\`\`\`${newCode}\`\`\``, inline: false },
@@ -1102,164 +1203,57 @@ client.on('interactionCreate', async interaction => {
                     return interaction.reply({ content: `🔇 Timed out <@${target.id}> for **${minutes}** minutes.`, flags: 64 });
                 }
 
-                // Other admin commands just return success
                 return interaction.reply({ content: `⚡ Command \`/${commandName}\` executed successfully!`, flags: 64 });
             }
         }
 
         // --- BUTTON HANDLERS ---
         if (interaction.isButton()) {
-            // Public/Booster/Buyer/VIP Token buttons - Available to everyone with role checks
-            if (['gen_public', 'gen_booster', 'gen_buyer', 'gen_vip'].includes(interaction.customId)) {
-                const userId = interaction.user.id;
-                const member = interaction.member;
-
-                let effectiveTier = {
-                    id: null,
-                    name: 'Public Token',
-                    cooldown: 20 * 60 * 1000,
-                    buttonId: 'gen_public'
-                };
-
-                const hasVip = member.roles.cache.has(VIP_ROLE_ID) || member.roles.cache.some(r => r.name === REQUIRED_ROLES.VIP.name);
-                const hasBuyer = member.roles.cache.has(BUYER_ROLE_ID) || member.roles.cache.some(r => r.name === REQUIRED_ROLES.BUYER.name);
-                const hasBooster = member.roles.cache.has(BOOSTER_ROLE_ID) || member.roles.cache.some(r => r.name === REQUIRED_ROLES.BOOSTER.name);
-
-                if (hasVip) {
-                    effectiveTier = { id: VIP_ROLE_ID, name: 'VIP Token (4m)', cooldown: 4 * 60 * 1000, buttonId: 'gen_vip' };
-                } else if (hasBuyer) {
-                    effectiveTier = { id: BUYER_ROLE_ID, name: 'Buyer Token (6m)', cooldown: 6 * 60 * 1000, buttonId: 'gen_buyer' };
-                } else if (hasBooster) {
-                    effectiveTier = { id: BOOSTER_ROLE_ID, name: 'Server Booster Token (10m)', cooldown: 10 * 60 * 1000, buttonId: 'gen_booster' };
-                }
-
-                let clickedTierRequirement = null;
-                let clickedTierName = null;
-                if (interaction.customId === 'gen_booster') {
-                    clickedTierRequirement = BOOSTER_ROLE_ID;
-                    clickedTierName = REQUIRED_ROLES.BOOSTER.name;
-                } else if (interaction.customId === 'gen_buyer') {
-                    clickedTierRequirement = BUYER_ROLE_ID;
-                    clickedTierName = REQUIRED_ROLES.BUYER.name;
-                } else if (interaction.customId === 'gen_vip') {
-                    clickedTierRequirement = VIP_ROLE_ID;
-                    clickedTierName = REQUIRED_ROLES.VIP.name;
-                }
-
-                if (clickedTierRequirement) {
-                    const hasClickedRole = member.roles.cache.has(clickedTierRequirement) || member.roles.cache.some(r => r.name === clickedTierName);
-                    if (!hasClickedRole) {
-                        const unauthLog = new EmbedBuilder()
-                            .setTitle('Unauthorized Button Access')
-                            .setDescription(`User: <@${userId}> (${userId}) tried using the ${clickedTierName} button without having the required role.`)
-                            .setColor(0xED4245)
-                            .setTimestamp();
-                        await sendBotLog(interaction.guild, 'generator_unauthorized', unauthLog);
-
-                        return interaction.reply({ content: `❌ **Access Denied:** You need the ${getRoleMention(clickedTierRequirement)} role to use this token button!`, flags: 64 });
-                    }
-                }
-
-                const cooldownKey = `${userId}-${effectiveTier.buttonId}`;
-                const now = Date.now();
-                if (cooldowns.has(cooldownKey)) {
-                    const expirationTime = cooldowns.get(cooldownKey);
-                    if (now < expirationTime) {
-                        const timeLeft = Math.ceil((expirationTime - now) / 1000);
-                        const minutes = Math.floor(timeLeft / 60);
-                        const seconds = timeLeft % 60;
-
-                        const cooldownLog = new EmbedBuilder()
-                            .setTitle('Unauthorized Button Access')
-                            .setDescription(`User: <@${userId}> (${userId}) tried generating a token while on cooldown for tier: ${effectiveTier.name}.`)
-                            .setColor(0xF1C40F)
-                            .setTimestamp();
-                        await sendBotLog(interaction.guild, 'generator_unauthorized', cooldownLog);
-
-                        return interaction.reply({ content: `⏳ **Cooldown Active:** Please wait \`${minutes}m ${seconds}s\` before generating another token. (Enforcing highest role cooldown: **${effectiveTier.name}**)`, flags: 64 });
-                    }
-                }
-
-                cooldowns.set(cooldownKey, now + effectiveTier.cooldown);
-
-                if (tokenStock.length === 0) {
-                    return interaction.reply({ content: '❌ **Out of Stock:** No tokens available in the database right now.', flags: 64 });
-                }
-
-                const tokenObj = tokenStock[0];
-                
-                if (tokenObj.expiresAt && isTokenExpired(tokenObj)) {
-                    const expiredAt = tokenObj.expiresAt;
-                    const timeAgo = formatTimeAgo(expiredAt);
-                    tokenStock.shift();
-                    
-                    const errorLog = new EmbedBuilder()
-                        .setTitle('Expired Token Removed')
-                        .setDescription(`User: <@${userId}>\nToken expired ${timeAgo}\nToken expired at: <t:${Math.floor(expiredAt/1000)}:F>`)
-                        .setColor(0xED4245)
-                        .setTimestamp();
-                    await sendBotLog(interaction.guild, 'generator_unauthorized', errorLog);
-
+            // Public Token Button
+            if (interaction.customId === 'gen_public') {
+                return await processTokenGeneration(interaction, 'Public Token (20m)', 20 * 60 * 1000);
+            }
+            
+            // Booster Token Button
+            if (interaction.customId === 'gen_booster') {
+                const hasBooster = interaction.member.roles.cache.has(BOOSTER_ROLE_ID) || 
+                                   interaction.member.roles.cache.some(r => r.name === REQUIRED_ROLES.BOOSTER.name);
+                if (!hasBooster) {
                     return interaction.reply({ 
-                        content: `❌ **Token Expired**\nThe current token expired **${timeAgo}**. The generator needs restocking.\n\n**Expired at:** <t:${Math.floor(expiredAt/1000)}:F>`,
+                        content: `❌ **Access Denied:** You need the ${getRoleMention(BOOSTER_ROLE_ID)} role to use this button!`, 
                         flags: 64 
                     });
                 }
-                
-                const validationResult = await validateSteamToken(tokenObj.bearer);
-                
-                if (!validationResult.valid) {
-                    const timeAgo = tokenObj.expiresAt ? formatTimeAgo(tokenObj.expiresAt) : 'Unknown';
-                    tokenStock.shift();
-                    
-                    const errorLog = new EmbedBuilder()
-                        .setTitle('Invalid Token Removed')
-                        .setDescription(`User: <@${userId}>\nAPI Status: ${validationResult.status}\nMessage: ${validationResult.message || 'Token invalid'}\nToken age: ${timeAgo}`)
-                        .setColor(0xED4245)
-                        .setTimestamp();
-                    await sendBotLog(interaction.guild, 'generator_unauthorized', errorLog);
-
+                return await processTokenGeneration(interaction, 'Booster Token (10m)', 10 * 60 * 1000);
+            }
+            
+            // Buyer Token Button
+            if (interaction.customId === 'gen_buyer') {
+                const hasBuyer = interaction.member.roles.cache.has(BUYER_ROLE_ID) || 
+                                 interaction.member.roles.cache.some(r => r.name === REQUIRED_ROLES.BUYER.name);
+                if (!hasBuyer) {
                     return interaction.reply({ 
-                        content: `❌ **Invalid Token Removed**\nThe token was rejected by the API (Status: ${validationResult.status}). The generator needs restocking.\n\n**Reason:** ${validationResult.message || 'Unknown error'}`,
+                        content: `❌ **Access Denied:** You need the ${getRoleMention(BUYER_ROLE_ID)} role to use this button!`, 
                         flags: 64 
                     });
                 }
-                
-                if (validationResult.expiresAt) {
-                    tokenObj.expiresAt = validationResult.expiresAt;
-                }
-
-                tokenStock.shift();
-                tokenStock.push(tokenObj);
-
-                try {
-                    const tokenEmbed = new EmbedBuilder()
-                        .setTitle('TOKENS BY ELLIOTT')
-                        .setDescription('🛠️ **Your Generated EIC Token:**\n\n' +
-                            '**Bearer Token:**\n```ini\n' + tokenObj.bearer + '\n```\n' +
-                            '**Refresh Token:**\n```ini\n' + tokenObj.refresh + '\n```')
-                        .setColor(0x5865F2)
-                        .setFooter({ text: 'Made by elliott.gg' });
-
-                    await interaction.user.send({ embeds: [tokenEmbed] });
-
-                    const successLog = new EmbedBuilder()
-                        .setTitle('Token Generated Successfully')
-                        .setDescription(`User: <@${userId}> (${userId})\nTier Group: ${effectiveTier.name}\nCooldown Enforced: ${effectiveTier.cooldown / 60000} minutes\nBackups in Rotation: ${tokenStock.length}`)
-                        .setColor(0x2ECC71)
-                        .setTimestamp();
-                    await sendBotLog(interaction.guild, 'generator_success', successLog);
-
+                return await processTokenGeneration(interaction, 'Buyer Token (6m)', 6 * 60 * 1000);
+            }
+            
+            // VIP Token Button
+            if (interaction.customId === 'gen_vip') {
+                const hasVip = interaction.member.roles.cache.has(VIP_ROLE_ID) || 
+                               interaction.member.roles.cache.some(r => r.name === REQUIRED_ROLES.VIP.name);
+                if (!hasVip) {
                     return interaction.reply({ 
-                        content: `✅ **Token sent to your DMs!** (Using highest active tier: **${effectiveTier.name}**)\n⏳ **Valid for:** ${formatRemainingTime(tokenObj.expiresAt)}`, 
+                        content: `❌ **Access Denied:** You need the ${getRoleMention(VIP_ROLE_ID)} role to use this button!`, 
                         flags: 64 
                     });
-                } catch (err) {
-                    return interaction.reply({ content: '❌ **Error:** Could not send token via DM. Make sure your direct messages are open.', flags: 64 });
                 }
+                return await processTokenGeneration(interaction, 'VIP Token (4m)', 4 * 60 * 1000);
             }
 
-            // Verify Button - Available to everyone
+            // Verify Button
             if (interaction.customId === 'verify_btn') {
                 await interaction.deferReply({ flags: 64 });
 
@@ -1268,30 +1262,28 @@ client.on('interactionCreate', async interaction => {
                 const role = guild.roles.cache.get(MEMBER_ROLE_ID);
 
                 if (!role) {
-                    return interaction.editReply({ content: "❌ **Security Error:** The designated verification role ID could not be found on this server. Contact an administrator." });
+                    return interaction.editReply({ content: "❌ Verification role could not be found." });
                 }
 
                 const botMember = guild.members.cache.get(client.user.id) || await guild.members.fetchMe();
                 if (botMember.roles.highest.position <= role.position) {
-                    return interaction.editReply({ content: "❌ **Hierarchy Error:** My bot role is lower than or equal to the verification role. Please move my role higher in Server Settings > Roles." });
+                    return interaction.editReply({ content: "❌ Hierarchy Error: My role is lower than the verification role." });
                 }
 
                 if (member.roles.cache.has(role.id)) {
-                    return interaction.editReply({ content: "⚠️ You are already fully verified and authenticated!" });
+                    return interaction.editReply({ content: "⚠️ You are already verified!" });
                 }
 
                 try {
                     await member.roles.add(role);
-                    return interaction.editReply({ 
-                        content: "✅ **Authentication Successful!**\nSecurity clearance granted. Your account has been bound to the verification ledger." 
-                    });
+                    return interaction.editReply({ content: "✅ **Authentication Successful!**" });
                 } catch (err) {
                     console.error("Role Assignment Error:", err);
-                    return interaction.editReply({ content: "❌ **Critical Error:** Failed to assign the verification role. Check bot permissions (`MANAGE_ROLES`)." });
+                    return interaction.editReply({ content: "❌ Failed to assign verification role." });
                 }
             }
 
-            // Redeem Button - Available to everyone
+            // Redeem Button
             if (interaction.customId === 'redeem_btn') {
                 const modal = new ModalBuilder()
                     .setCustomId('redeem_modal')
@@ -1308,34 +1300,34 @@ client.on('interactionCreate', async interaction => {
                 return await interaction.showModal(modal);
             }
 
-            // Role Announcements Button - Available to everyone
+            // Role Announcements Button
             if (interaction.customId === 'role_announcements') {
                 const role = interaction.guild.roles.cache.get(ANNOUNCEMENT_ROLE_ID);
-                if (!role) return interaction.reply({ content: "❌ **Error:** Announcement role is not configured.", flags: 64 });
+                if (!role) return interaction.reply({ content: "❌ Announcement role not configured.", flags: 64 });
 
                 if (interaction.member.roles.cache.has(role.id)) {
                     await interaction.member.roles.remove(role);
-                    return interaction.reply({ content: "🔕 Successfully **opted out** of Announcements.", flags: 64 });
+                    return interaction.reply({ content: "🔕 Opted out of Announcements.", flags: 64 });
                 } else {
                     await interaction.member.roles.add(role);
-                    return interaction.reply({ content: "🔔 Successfully **opted in** to Announcements!", flags: 64 });
+                    return interaction.reply({ content: "🔔 Opted in to Announcements!", flags: 64 });
                 }
             }
 
-            // Automod Toggle - Admin only
+            // Automod Toggle
             if (interaction.customId === 'automod_toggle') {
                 if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
-                    return interaction.reply({ content: "❌ **Access Denied:** Administrator clearance required to audit defense grids.", flags: 64 });
+                    return interaction.reply({ content: "❌ Administrator clearance required.", flags: 64 });
                 }
-                return interaction.reply({ content: "🛡️ **Automod Security Matrix:** All parameters are fully active. Intercepting heuristic threats, malicious hyperlinks, and mass-join vectors seamlessly.", flags: 64 });
+                return interaction.reply({ content: "🛡️ **Automod Security Matrix:** All parameters active.", flags: 64 });
             }
 
-            // Close Ticket Button - Admin only
+            // Close Ticket Button
             if (interaction.customId === 'close_ticket_btn') {
                 if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
-                    return interaction.reply({ content: "❌ Only staff members can close active tickets.", flags: 64 });
+                    return interaction.reply({ content: "❌ Only staff can close tickets.", flags: 64 });
                 }
-                await interaction.reply({ content: "🔒 **Archiving ticket and destroying channel in 5 seconds...**" });
+                await interaction.reply({ content: "🔒 Archiving ticket in 5 seconds..." });
                 setTimeout(() => interaction.channel.delete().catch(() => {}), 5000);
             }
         }
@@ -1371,7 +1363,7 @@ client.on('interactionCreate', async interaction => {
 
                     const ticketEmbed = new EmbedBuilder()
                         .setTitle(`🎫 // SECURE TICKET: ${category.toUpperCase()}`)
-                        .setDescription(`Welcome, <@${user.id}>. Staff has been notified of your inquiry regarding **${category}**.\n\nPlease describe your issue in detail below. An administrator will review your case shortly.`)
+                        .setDescription(`Welcome, <@${user.id}>. Staff has been notified.`)
                         .setColor(0xFEE75C)
                         .setTimestamp()
                         .setFooter({ text: "Incident Resolution Desk" });
@@ -1382,17 +1374,17 @@ client.on('interactionCreate', async interaction => {
 
                     await ticketChannel.send({ content: `<@${user.id}> | Staff Alert`, embeds: [ticketEmbed], components: [closeButton] });
 
-                    return interaction.editReply({ content: `✅ **Ticket Created Successfully!** Check out your private channel: <#${ticketChannel.id}>` });
+                    return interaction.editReply({ content: `✅ Ticket created: <#${ticketChannel.id}>` });
                 } catch (err) {
                     console.error("Ticket Creation Error:", err);
-                    return interaction.editReply({ content: "❌ Failed to spin up a private ticket channel. Ensure the bot has `MANAGE_CHANNELS` permissions." });
+                    return interaction.editReply({ content: "❌ Failed to create ticket." });
                 }
             }
         }
 
         // --- MODAL SUBMIT HANDLERS ---
         if (interaction.isModalSubmit()) {
-            // Stock Modal - Admin only
+            // Stock Modal
             if (interaction.customId === 'stock_modal') {
                 if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
                     return interaction.reply({ content: '❌ **Access Denied:** You need Administrator permissions.', flags: 64 });
@@ -1405,13 +1397,6 @@ client.on('interactionCreate', async interaction => {
                 const validationResult = await validateSteamToken(bearer);
                 
                 if (!validationResult.valid) {
-                    const stockLog = new EmbedBuilder()
-                        .setTitle('❌ Invalid Token Rejected')
-                        .setDescription(`Admin: <@${interaction.user.id}> tried to add an invalid token.\nAPI Status: ${validationResult.status}\nMessage: ${validationResult.message || 'Token invalid'}`)
-                        .setColor(0xED4245)
-                        .setTimestamp();
-                    await sendBotLog(interaction.guild, 'stock', stockLog);
-                    
                     return interaction.editReply({ 
                         content: `❌ **Invalid Token - Rejected!**\nThe token was rejected by the API (Status: ${validationResult.status}).\n\n**Reason:** ${validationResult.message || 'Unknown error'}` 
                     });
@@ -1426,17 +1411,17 @@ client.on('interactionCreate', async interaction => {
 
                 const stockLog = new EmbedBuilder()
                     .setTitle('Stock Restocked & Verified')
-                    .setDescription(`Admin: <@${interaction.user.id}> added a verified fresh stock token.\nTotal Stock Rotation Pool: ${tokenStock.length}\nExpires: ${validationResult.expiresAt ? `<t:${Math.floor(validationResult.expiresAt/1000)}:R>` : 'Unknown'}`)
+                    .setDescription(`Admin: <@${interaction.user.id}> added a verified token.\nTotal Stock: ${tokenStock.length}\nExpires: ${validationResult.expiresAt ? `<t:${Math.floor(validationResult.expiresAt/1000)}:R>` : 'Unknown'}`)
                     .setColor(0x2ECC71)
                     .setTimestamp();
                 await sendBotLog(interaction.guild, 'stock', stockLog);
 
                 return interaction.editReply({ 
-                    content: `📦 Successfully added token pair to stock rotation queue! Total tokens in pool: \`${tokenStock.length}\`\n\n**Token expires:** ${validationResult.expiresAt ? `<t:${Math.floor(validationResult.expiresAt/1000)}:F>` : 'Unknown'}\n\n**Time left:** ${validationResult.expiresAt ? formatRemainingTime(validationResult.expiresAt) : 'Unknown'}` 
+                    content: `📦 Successfully added token to stock! Total tokens: \`${tokenStock.length}\`\n\n**Expires:** ${validationResult.expiresAt ? `<t:${Math.floor(validationResult.expiresAt/1000)}:F>` : 'Unknown'}\n**Time left:** ${validationResult.expiresAt ? formatRemainingTime(validationResult.expiresAt) : 'Unknown'}` 
                 });
             }
 
-            // Redeem Modal - Available to everyone
+            // Redeem Modal
             if (interaction.customId === 'redeem_modal') {
                 await interaction.deferReply({ flags: 64 });
                 const code = interaction.fields.getTextInputValue('redeem_code_input').trim();
@@ -1449,18 +1434,18 @@ client.on('interactionCreate', async interaction => {
                     const supporterRole = guild.roles.cache.get(SUPPORTER_ROLE_ID);
 
                     if (!supporterRole) {
-                        return interaction.editReply({ content: `🎉 **Code Validated!** However, the Supporter Role ID (\`${SUPPORTER_ROLE_ID}\`) could not be found in this server. Please contact an admin.` });
+                        return interaction.editReply({ content: `🎉 **Code Validated!** However, the Supporter Role couldn't be found.` });
                     }
 
                     try {
                         await member.roles.add(supporterRole);
-                        return interaction.editReply({ content: `🎉 **Redemption Successful!** Code \`${code}\` verified. The Supporter role has been assigned to your profile!` });
+                        return interaction.editReply({ content: `🎉 **Redemption Successful!** Code \`${code}\` verified. Supporter role assigned!` });
                     } catch (err) {
                         console.error("Supporter Role Assignment Error:", err);
-                        return interaction.editReply({ content: `⚠️ Code was valid, but I failed to assign the Supporter role due to a permission error (\`MANAGE_ROLES\`).` });
+                        return interaction.editReply({ content: `⚠️ Code valid, but failed to assign role due to permissions.` });
                     }
                 } else {
-                    return interaction.editReply({ content: `❌ **Invalid Code:** \`${code}\` does not exist in the active database or has already been claimed.` });
+                    return interaction.editReply({ content: `❌ **Invalid Code:** \`${code}\` does not exist or has been claimed.` });
                 }
             }
         }
