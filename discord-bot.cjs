@@ -150,7 +150,7 @@ function formatRemainingTime(expiresAt) {
     return `${seconds}s left`;
 }
 
-// --- STEAM TOKEN VALIDATION ---
+// --- UPDATED STEAM TOKEN VALIDATION WITH BRICK/CORRUPT CHECK ---
 async function validateSteamToken(bearerToken, retries = 2) {
     if (!bearerToken || bearerToken.length < 10) {
         return { 
@@ -158,32 +158,110 @@ async function validateSteamToken(bearerToken, retries = 2) {
             status: 400,
             data: null,
             expiresAt: null,
-            message: 'Invalid token format'
+            message: 'Invalid token format - Token is empty or too short'
         };
     }
 
+    // Check if token is bricked/corrupted (starts with invalid patterns)
+    const brickedPatterns = [
+        'undefined',
+        'null',
+        'NaN',
+        'bricked',
+        'corrupted',
+        'invalid',
+        'expired',
+        'error',
+        'failed',
+        'bad_token',
+        'token_error',
+        'invalid_token',
+        'malformed',
+        'broken',
+        'dead',
+        'revoked',
+        'blacklisted',
+        'banned'
+    ];
+    
+    const lowerToken = bearerToken.toLowerCase();
+    for (const pattern of brickedPatterns) {
+        if (lowerToken.includes(pattern)) {
+            console.log(`[Token Validation] ❌ Token appears bricked/corrupted: contains "${pattern}"`);
+            return { 
+                valid: false, 
+                status: 400,
+                data: null,
+                expiresAt: null,
+                message: `Token appears bricked/corrupted - Contains "${pattern}"`
+            };
+        }
+    }
+
+    // Check for valid JWT format (should have 3 parts)
     try {
         const parts = bearerToken.split('.');
-        if (parts.length === 3) {
-            const payload = JSON.parse(Buffer.from(parts[1], 'base64').toString());
-            if (payload.exp) {
-                const expTime = payload.exp * 1000;
-                console.log(`[Token Validation] JWT expires at: ${new Date(expTime).toISOString()}`);
-                
-                if (Date.now() > expTime) {
-                    console.log('[Token Validation] Token expired based on JWT claim');
-                    return { 
-                        valid: false, 
-                        status: 401,
-                        data: payload,
-                        expiresAt: expTime,
-                        message: 'Token expired - JWT claim expired'
-                    };
-                }
+        if (parts.length !== 3) {
+            console.log('[Token Validation] ❌ Invalid JWT format - does not have 3 parts');
+            return { 
+                valid: false, 
+                status: 400,
+                data: null,
+                expiresAt: null,
+                message: 'Invalid token format - Not a valid JWT (must have 3 parts)'
+            };
+        }
+        
+        // Try to decode the payload
+        const payload = JSON.parse(Buffer.from(parts[1], 'base64').toString());
+        
+        // Check if payload has required fields
+        if (!payload.exp && !payload.expires) {
+            console.log('[Token Validation] ⚠️ Token payload missing expiration');
+            // Still continue, but log warning
+        }
+        
+        // Check if token is expired based on JWT claim
+        if (payload.exp) {
+            const expTime = payload.exp * 1000;
+            console.log(`[Token Validation] JWT expires at: ${new Date(expTime).toISOString()}`);
+            
+            if (Date.now() > expTime) {
+                console.log('[Token Validation] ❌ Token expired based on JWT claim');
+                return { 
+                    valid: false, 
+                    status: 401,
+                    data: payload,
+                    expiresAt: expTime,
+                    message: 'Token expired - JWT claim expired'
+                };
             }
         }
+        
+        // Check for bricked/corrupted payload values
+        const payloadString = JSON.stringify(payload).toLowerCase();
+        for (const pattern of brickedPatterns) {
+            if (payloadString.includes(pattern)) {
+                console.log(`[Token Validation] ❌ Token payload contains bricked/corrupted data: "${pattern}"`);
+                return { 
+                    valid: false, 
+                    status: 400,
+                    data: payload,
+                    expiresAt: null,
+                    message: `Token payload contains corrupted data - "${pattern}"`
+                };
+            }
+        }
+        
     } catch (err) {
-        console.log('[Token Validation] Could not decode JWT:', err.message);
+        console.log('[Token Validation] ❌ Could not decode JWT:', err.message);
+        return { 
+            valid: false, 
+            status: 400,
+            data: null,
+            expiresAt: null,
+            message: 'Invalid token format - Could not decode JWT'
+        };
     }
 
     for (let attempt = 0; attempt <= retries; attempt++) {
@@ -213,6 +291,7 @@ async function validateSteamToken(bearerToken, retries = 2) {
             
             console.log(`[Token Validation] Attempt ${attempt + 1}: Status ${response.status}`);
             
+            // Check if response indicates expired token
             if (response.status === 401 || response.status === 403) {
                 return { 
                     valid: false, 
@@ -236,6 +315,7 @@ async function validateSteamToken(bearerToken, retries = 2) {
                 expiresAt = new Date(responseData.expires).getTime();
             }
             
+            // Double-check expiration from API response
             if (expiresAt && Date.now() > expiresAt) {
                 return { 
                     valid: false, 
