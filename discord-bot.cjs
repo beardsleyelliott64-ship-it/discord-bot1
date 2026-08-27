@@ -140,7 +140,6 @@ async function validateSteamToken(bearerToken, retries = 2) {
         };
     }
 
-    // Decode JWT to check expiration locally
     try {
         const parts = bearerToken.split('.');
         if (parts.length === 3) {
@@ -265,9 +264,6 @@ async function validateSteamToken(bearerToken, retries = 2) {
 }
 
 // --- ENHANCED REFRESH SYSTEM ---
-// This system gives BRAND NEW token strings while keeping the SAME account
-// It works by using the refresh token to get a completely new bearer token
-
 async function refreshToken(refreshToken) {
     try {
         console.log('[Refresh Token] Attempting to refresh token...');
@@ -293,8 +289,8 @@ async function refreshToken(refreshToken) {
             
             return {
                 success: true,
-                bearer: data.access_token || data.bearer, // BRAND NEW bearer token string
-                refresh: data.refresh_token || refreshToken // NEW refresh token (or keep old one)
+                bearer: data.access_token || data.bearer,
+                refresh: data.refresh_token || refreshToken
             };
         } else {
             console.log(`[Refresh Token] Failed with status: ${response.status}`);
@@ -306,8 +302,7 @@ async function refreshToken(refreshToken) {
     }
 }
 
-// --- AUTO-REFRESH SYSTEM (Runs every 2 minutes) ---
-// This automatically refreshes tokens to give brand new strings
+// --- AUTO-REFRESH SYSTEM ---
 async function autoRefreshInvalidTokens() {
     console.log('[Auto-Refresh] Checking for invalid tokens to refresh...');
     let refreshedCount = 0;
@@ -316,7 +311,6 @@ async function autoRefreshInvalidTokens() {
     for (let i = tokenStock.length - 1; i >= 0; i--) {
         const tokenObj = tokenStock[i];
         
-        // Check if token is expired
         if (tokenObj.expiresAt && Date.now() > tokenObj.expiresAt) {
             console.log(`[Auto-Refresh] Token at index ${i} is expired, removing...`);
             tokenStock.splice(i, 1);
@@ -324,23 +318,20 @@ async function autoRefreshInvalidTokens() {
             continue;
         }
         
-        // Try to refresh the token to get brand new strings
         try {
             console.log(`[Auto-Refresh] Refreshing token at index ${i} to get new strings...`);
             const refreshResult = await refreshToken(tokenObj.refresh);
             
             if (refreshResult.success) {
-                // Replace with BRAND NEW token strings (same account)
                 tokenStock[i] = {
-                    bearer: refreshResult.bearer, // NEW bearer token string
-                    refresh: refreshResult.refresh || tokenObj.refresh, // NEW refresh token string
+                    bearer: refreshResult.bearer,
+                    refresh: refreshResult.refresh || tokenObj.refresh,
                     addedAt: Date.now(),
-                    expiresAt: Date.now() + (60 * 60 * 1000) // 1 hour
+                    expiresAt: Date.now() + (60 * 60 * 1000)
                 };
                 refreshedCount++;
                 console.log(`[Auto-Refresh] Successfully refreshed token at index ${i} - NEW strings generated!`);
             } else {
-                // Refresh failed, remove the token
                 tokenStock.splice(i, 1);
                 removedCount++;
                 console.log(`[Auto-Refresh] Removed invalid token at index ${i}`);
@@ -456,7 +447,6 @@ const commandsData = [
 ].map(command => command.toJSON());
 
 // --- AUTO-REFRESH CRON JOB (Runs every 2 minutes) ---
-// This gives BRAND NEW token strings while keeping the SAME account
 setInterval(async () => {
     try {
         const result = await autoRefreshInvalidTokens();
@@ -556,29 +546,14 @@ function getRoleMention(roleId) {
 }
 
 // --- PROCESS TOKEN GENERATION ---
-async function processTokenGeneration(interaction, tierName, cooldownTime) {
+async function processTokenGeneration(interaction, tierName) {
     const userId = interaction.user.id;
-    const cooldownKey = `${userId}-${tierName}`;
     
     if (activeGenerations.has(userId)) {
         return interaction.reply({ 
             content: '⏳ **Please wait:** You already have a token generation in progress!', 
             flags: 64 
         });
-    }
-    
-    const now = Date.now();
-    if (cooldowns.has(cooldownKey)) {
-        const expirationTime = cooldowns.get(cooldownKey);
-        if (now < expirationTime) {
-            const timeLeft = Math.ceil((expirationTime - now) / 1000);
-            const minutes = Math.floor(timeLeft / 60);
-            const seconds = timeLeft % 60;
-            return interaction.reply({ 
-                content: `⏳ **Cooldown Active:** Please wait \`${minutes}m ${seconds}s\` before generating another token.`, 
-                flags: 64 
-            });
-        }
     }
     
     activeGenerations.set(userId, Date.now());
@@ -647,10 +622,9 @@ async function processTokenGeneration(interaction, tierName, cooldownTime) {
             tokenObj.expiresAt = validationResult.expiresAt;
         }
         
+        // ROTATE token to back
         tokenStock.shift();
         tokenStock.push(tokenObj);
-        
-        cooldowns.set(cooldownKey, now + cooldownTime);
         
         try {
             const tokenEmbed = new EmbedBuilder()
@@ -665,14 +639,14 @@ async function processTokenGeneration(interaction, tierName, cooldownTime) {
             
             const successLog = new EmbedBuilder()
                 .setTitle('Token Generated Successfully')
-                .setDescription(`User: <@${userId}> (${userId})\nTier Group: ${tierName}\nCooldown: ${cooldownTime / 60000} minutes\nBackups in Rotation: ${tokenStock.length}`)
+                .setDescription(`User: <@${userId}> (${userId})\nTier Group: ${tierName}\nTokens in Rotation: ${tokenStock.length}`)
                 .setColor(0x2ECC71)
                 .setTimestamp();
             await sendBotLog(interaction.guild, 'generator_success', successLog);
             
             activeGenerations.delete(userId);
             return interaction.editReply({ 
-                content: `✅ **Token sent to your DMs!** (Tier: **${tierName}**)\n⏳ **Valid for:** ${formatRemainingTime(tokenObj.expiresAt)}` 
+                content: `✅ **Token sent to your DMs!** (Tier: **${tierName}**)\n⏳ **Valid for:** ${formatRemainingTime(tokenObj.expiresAt)}\n📦 **Tokens remaining in stock:** ${tokenStock.length}` 
             });
             
         } catch (err) {
@@ -779,7 +753,7 @@ client.on('interactionCreate', async interaction => {
                     await interaction.user.send({ embeds: [tokenEmbed] });
                     
                     return interaction.reply({ 
-                        content: `✅ **Token sent to your DMs!**\n⏳ **Valid for:** ${formatRemainingTime(tokenObj.expiresAt)}`, 
+                        content: `✅ **Token sent to your DMs!**\n⏳ **Valid for:** ${formatRemainingTime(tokenObj.expiresAt)}\n📦 **Tokens remaining in stock:** ${tokenStock.length}`, 
                         flags: 64 
                     });
                 } catch (err) {
@@ -857,30 +831,45 @@ client.on('interactionCreate', async interaction => {
                     return interaction.reply({ content: '❌ **Access Denied:** You need Administrator permissions.', flags: 64 });
                 }
 
+                // --- FIXED STOCK COMMAND ---
                 if (commandName === 'stock') {
-                    const modal = new ModalBuilder()
-                        .setCustomId('stock_modal')
-                        .setTitle('📦 Add Token Stock');
+                    try {
+                        const modal = new ModalBuilder()
+                            .setCustomId('stock_modal')
+                            .setTitle('📦 Add Token Stock');
 
-                    const bearerInput = new TextInputBuilder()
-                        .setCustomId('stock_bearer_input')
-                        .setLabel("ENTER BEARER TOKEN")
-                        .setStyle(TextInputStyle.Short)
-                        .setPlaceholder("ey3hG0...")
-                        .setRequired(true);
+                        const bearerInput = new TextInputBuilder()
+                            .setCustomId('stock_bearer_input')
+                            .setLabel("ENTER BEARER TOKEN")
+                            .setStyle(TextInputStyle.Paragraph)
+                            .setPlaceholder("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...")
+                            .setRequired(true)
+                            .setMinLength(10)
+                            .setMaxLength(2000);
 
-                    const refreshInput = new TextInputBuilder()
-                        .setCustomId('stock_refresh_input')
-                        .setLabel("ENTER REFRESH TOKEN")
-                        .setStyle(TextInputStyle.Short)
-                        .setPlaceholder("ey3hG0...")
-                        .setRequired(true);
+                        const refreshInput = new TextInputBuilder()
+                            .setCustomId('stock_refresh_input')
+                            .setLabel("ENTER REFRESH TOKEN")
+                            .setStyle(TextInputStyle.Paragraph)
+                            .setPlaceholder("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...")
+                            .setRequired(true)
+                            .setMinLength(10)
+                            .setMaxLength(2000);
 
-                    modal.addComponents(
-                        new ActionRowBuilder().addComponents(bearerInput),
-                        new ActionRowBuilder().addComponents(refreshInput)
-                    );
-                    return await interaction.showModal(modal);
+                        modal.addComponents(
+                            new ActionRowBuilder().addComponents(bearerInput),
+                            new ActionRowBuilder().addComponents(refreshInput)
+                        );
+
+                        await interaction.showModal(modal);
+                    } catch (err) {
+                        console.error('[Stock Command Error]', err);
+                        return interaction.reply({ 
+                            content: '❌ **Error:** Failed to open stock form. Please try again.', 
+                            flags: 64 
+                        });
+                    }
+                    return;
                 }
 
                 if (commandName === 'generator') {
@@ -1309,7 +1298,7 @@ client.on('interactionCreate', async interaction => {
         // --- BUTTON HANDLERS ---
         if (interaction.isButton()) {
             if (interaction.customId === 'gen_public') {
-                return await processTokenGeneration(interaction, 'Public Token (20m)', 20 * 60 * 1000);
+                return await processTokenGeneration(interaction, 'Public Token (20m)');
             }
             
             if (interaction.customId === 'gen_booster') {
@@ -1321,7 +1310,7 @@ client.on('interactionCreate', async interaction => {
                         flags: 64 
                     });
                 }
-                return await processTokenGeneration(interaction, 'Booster Token (10m)', 10 * 60 * 1000);
+                return await processTokenGeneration(interaction, 'Booster Token (10m)');
             }
             
             if (interaction.customId === 'gen_buyer') {
@@ -1333,7 +1322,7 @@ client.on('interactionCreate', async interaction => {
                         flags: 64 
                     });
                 }
-                return await processTokenGeneration(interaction, 'Buyer Token (4m)', 4 * 60 * 1000);
+                return await processTokenGeneration(interaction, 'Buyer Token (4m)');
             }
             
             if (interaction.customId === 'gen_vip') {
@@ -1345,7 +1334,7 @@ client.on('interactionCreate', async interaction => {
                         flags: 64 
                     });
                 }
-                return await processTokenGeneration(interaction, 'VIP Token (6m)', 6 * 60 * 1000);
+                return await processTokenGeneration(interaction, 'VIP Token (6m)');
             }
 
             if (interaction.customId === 'verify_btn') {
@@ -1472,46 +1461,75 @@ client.on('interactionCreate', async interaction => {
         }
 
         if (interaction.isModalSubmit()) {
+            // --- FIXED STOCK MODAL HANDLER ---
             if (interaction.customId === 'stock_modal') {
-                if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
-                    return interaction.reply({ content: '❌ **Access Denied:** You need Administrator permissions.', flags: 64 });
-                }
+                try {
+                    if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
+                        return interaction.reply({ 
+                            content: '❌ **Access Denied:** You need Administrator permissions.', 
+                            flags: 64 
+                        });
+                    }
 
-                await interaction.deferReply({ flags: 64 });
-                const bearer = interaction.fields.getTextInputValue('stock_bearer_input').trim();
-                const refresh = interaction.fields.getTextInputValue('stock_refresh_input').trim();
-                
-                const validationResult = await validateSteamToken(bearer);
-                
-                if (!validationResult.valid) {
-                    return interaction.editReply({ 
-                        content: `❌ **Invalid Token - Rejected!**\nThe token was rejected by the API (Status: ${validationResult.status}).\n\n**Reason:** ${validationResult.message || 'Unknown error'}` 
+                    await interaction.deferReply({ flags: 64 });
+                    
+                    const bearer = interaction.fields.getTextInputValue('stock_bearer_input').trim();
+                    const refresh = interaction.fields.getTextInputValue('stock_refresh_input').trim();
+                    
+                    if (!bearer || !refresh) {
+                        return interaction.editReply({ 
+                            content: '❌ **Error:** Both Bearer and Refresh tokens are required.' 
+                        });
+                    }
+                    
+                    const validationResult = await validateSteamToken(bearer);
+                    
+                    if (!validationResult.valid) {
+                        return interaction.editReply({ 
+                            content: `❌ **Invalid Token - Rejected!**\nThe token was rejected by the API (Status: ${validationResult.status}).\n\n**Reason:** ${validationResult.message || 'Unknown error'}` 
+                        });
+                    }
+                    
+                    if (validationResult.expiresAt && Date.now() > validationResult.expiresAt) {
+                        return interaction.editReply({ 
+                            content: `❌ **Token Expired!**\nThis token has already expired. Please use a valid token.` 
+                        });
+                    }
+                    
+                    tokenStock.push({ 
+                        bearer, 
+                        refresh,
+                        addedAt: Date.now(),
+                        expiresAt: validationResult.expiresAt
                     });
-                }
-                
-                if (validationResult.expiresAt && Date.now() > validationResult.expiresAt) {
+
+                    const stockLog = new EmbedBuilder()
+                        .setTitle('📦 Stock Restocked & Verified')
+                        .setDescription(`Admin: <@${interaction.user.id}> added a verified token.`)
+                        .addFields(
+                            { name: 'Total Stock', value: `${tokenStock.length}`, inline: true },
+                            { name: 'Expires', value: validationResult.expiresAt ? `<t:${Math.floor(validationResult.expiresAt/1000)}:R>` : 'Unknown', inline: true }
+                        )
+                        .setColor(0x2ECC71)
+                        .setTimestamp();
+                    await sendBotLog(interaction.guild, 'stock', stockLog);
+
                     return interaction.editReply({ 
-                        content: `❌ **Token Expired!**\nThis token has already expired on ${new Date(validationResult.expiresAt).toLocaleString()}. Please use a valid token.` 
+                        content: `📦 **Successfully added token to stock!**\n\nTotal tokens: \`${tokenStock.length}\`\n**Expires:** ${validationResult.expiresAt ? `<t:${Math.floor(validationResult.expiresAt/1000)}:F>` : 'Unknown'}\n**Time left:** ${validationResult.expiresAt ? formatRemainingTime(validationResult.expiresAt) : 'Unknown'}` 
                     });
+                } catch (err) {
+                    console.error('[Stock Modal Error]', err);
+                    if (interaction.deferred) {
+                        return interaction.editReply({ 
+                            content: '❌ **Error:** Failed to process token. Please try again.' 
+                        });
+                    } else {
+                        return interaction.reply({ 
+                            content: '❌ **Error:** Failed to process token. Please try again.', 
+                            flags: 64 
+                        });
+                    }
                 }
-                
-                tokenStock.push({ 
-                    bearer, 
-                    refresh,
-                    addedAt: Date.now(),
-                    expiresAt: validationResult.expiresAt
-                });
-
-                const stockLog = new EmbedBuilder()
-                    .setTitle('Stock Restocked & Verified')
-                    .setDescription(`Admin: <@${interaction.user.id}> added a verified token.\nTotal Stock: ${tokenStock.length}\nExpires: ${validationResult.expiresAt ? `<t:${Math.floor(validationResult.expiresAt/1000)}:R>` : 'Unknown'}`)
-                    .setColor(0x2ECC71)
-                    .setTimestamp();
-                await sendBotLog(interaction.guild, 'stock', stockLog);
-
-                return interaction.editReply({ 
-                    content: `📦 Successfully added token to stock! Total tokens: \`${tokenStock.length}\`\n\n**Expires:** ${validationResult.expiresAt ? `<t:${Math.floor(validationResult.expiresAt/1000)}:F>` : 'Unknown'}\n**Time left:** ${validationResult.expiresAt ? formatRemainingTime(validationResult.expiresAt) : 'Unknown'}` 
-                });
             }
 
             if (interaction.customId === 'redeem_modal') {
@@ -1559,3 +1577,4 @@ server.listen(PORT, () => {
     console.log(`[HTTP] Keep-alive server listening on port ${PORT}`);
 });
 
+client.login(process.env.DISCORD_TOKEN);
