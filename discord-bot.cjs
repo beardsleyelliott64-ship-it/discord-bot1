@@ -151,7 +151,7 @@ function formatRemainingTime(expiresAt) {
 }
 
 // --- UPDATED STEAM TOKEN VALIDATION WITH BRICK/CORRUPT CHECK ---
-async function validateSteamToken(bearerToken, retries = 2) {
+async function validateSteamToken(bearerToken, retries = 3) {
     if (!bearerToken || bearerToken.length < 10) {
         return { 
             valid: false, 
@@ -162,26 +162,12 @@ async function validateSteamToken(bearerToken, retries = 2) {
         };
     }
 
-    // Check if token is bricked/corrupted (starts with invalid patterns)
+    // Check if token is bricked/corrupted
     const brickedPatterns = [
-        'undefined',
-        'null',
-        'NaN',
-        'bricked',
-        'corrupted',
-        'invalid',
-        'expired',
-        'error',
-        'failed',
-        'bad_token',
-        'token_error',
-        'invalid_token',
-        'malformed',
-        'broken',
-        'dead',
-        'revoked',
-        'blacklisted',
-        'banned'
+        'undefined', 'null', 'NaN', 'bricked', 'corrupted',
+        'invalid', 'expired', 'error', 'failed', 'bad_token',
+        'token_error', 'invalid_token', 'malformed', 'broken',
+        'dead', 'revoked', 'blacklisted', 'banned'
     ];
     
     const lowerToken = bearerToken.toLowerCase();
@@ -198,7 +184,7 @@ async function validateSteamToken(bearerToken, retries = 2) {
         }
     }
 
-    // Check for valid JWT format (should have 3 parts)
+    // Check for valid JWT format
     try {
         const parts = bearerToken.split('.');
         if (parts.length !== 3) {
@@ -212,16 +198,8 @@ async function validateSteamToken(bearerToken, retries = 2) {
             };
         }
         
-        // Try to decode the payload
         const payload = JSON.parse(Buffer.from(parts[1], 'base64').toString());
         
-        // Check if payload has required fields
-        if (!payload.exp && !payload.expires) {
-            console.log('[Token Validation] ⚠️ Token payload missing expiration');
-            // Still continue, but log warning
-        }
-        
-        // Check if token is expired based on JWT claim
         if (payload.exp) {
             const expTime = payload.exp * 1000;
             console.log(`[Token Validation] JWT expires at: ${new Date(expTime).toISOString()}`);
@@ -238,7 +216,6 @@ async function validateSteamToken(bearerToken, retries = 2) {
             }
         }
         
-        // Check for bricked/corrupted payload values
         const payloadString = JSON.stringify(payload).toLowerCase();
         for (const pattern of brickedPatterns) {
             if (payloadString.includes(pattern)) {
@@ -264,10 +241,11 @@ async function validateSteamToken(bearerToken, retries = 2) {
         };
     }
 
+    // Try API validation with retries
     for (let attempt = 0; attempt <= retries; attempt++) {
         try {
             const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 8000);
+            const timeoutId = setTimeout(() => controller.abort(), 10000);
             
             const response = await fetch('https://api.realanimalcompany.com/auth/validate', {
                 method: 'GET',
@@ -291,7 +269,6 @@ async function validateSteamToken(bearerToken, retries = 2) {
             
             console.log(`[Token Validation] Attempt ${attempt + 1}: Status ${response.status}`);
             
-            // Check if response indicates expired token
             if (response.status === 401 || response.status === 403) {
                 return { 
                     valid: false, 
@@ -315,7 +292,6 @@ async function validateSteamToken(bearerToken, retries = 2) {
                 expiresAt = new Date(responseData.expires).getTime();
             }
             
-            // Double-check expiration from API response
             if (expiresAt && Date.now() > expiresAt) {
                 return { 
                     valid: false, 
@@ -342,7 +318,7 @@ async function validateSteamToken(bearerToken, retries = 2) {
             console.error(`[Token Validation] Attempt ${attempt + 1} failed:`, err.message);
             
             if (attempt === retries) {
-                console.log('[Token Validation] API unreachable - BYPASSING with 1-hour limit.');
+                console.log('[Token Validation] ⚠️ API unreachable - BYPASSING with 1-hour limit.');
                 return { 
                     valid: true, 
                     status: 200,
@@ -352,7 +328,8 @@ async function validateSteamToken(bearerToken, retries = 2) {
                 };
             }
             
-            await new Promise(resolve => setTimeout(resolve, 1000 * (attempt + 1)));
+            // Exponential backoff
+            await new Promise(resolve => setTimeout(resolve, 1000 * Math.pow(2, attempt)));
         }
     }
     
@@ -371,7 +348,7 @@ async function refreshToken(refreshToken) {
         console.log('[Refresh Token] Attempting to refresh token...');
         
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 8000);
+        const timeoutId = setTimeout(() => controller.abort(), 10000);
         
         const response = await fetch('https://api.realanimalcompany.com/auth/refresh', {
             method: 'POST',
@@ -389,7 +366,6 @@ async function refreshToken(refreshToken) {
             const data = await response.json();
             console.log('[Refresh Token] ✅ Successfully refreshed! Got new token strings');
             
-            // Extract account info from old token to verify it's the same account
             try {
                 const parts = DEFAULT_TOKEN.bearer.split('.');
                 if (parts.length === 3) {
@@ -410,6 +386,7 @@ async function refreshToken(refreshToken) {
         }
     } catch (err) {
         console.error('[Refresh Token] Error:', err);
+        // FALLBACK: If refresh fails, return failure so bot uses default token
         return { success: false };
     }
 }
