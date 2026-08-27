@@ -1559,4 +1559,3 @@ server.listen(PORT, () => {
     console.log(`[HTTP] Keep-alive server listening on port ${PORT}`);
 });
 
-client.login(process.env.DISCORD_TOKEN);
