@@ -872,6 +872,7 @@ client.on('interactionCreate', async interaction => {
                     return;
                 }
 
+                // --- FIXED GENERATOR COMMAND ---
                 if (commandName === 'generator') {
                     const embed = new EmbedBuilder()
                         .setTitle('TOKENS BY ELLIOTT')
@@ -1116,6 +1117,7 @@ client.on('interactionCreate', async interaction => {
                 if (commandName === 'panel') {
                     const subArg = options.getString('type');
 
+                    // --- FIXED PANEL GENERATOR ---
                     if (subArg === 'generator') {
                         const embed = new EmbedBuilder()
                             .setTitle('TOKENS BY ELLIOTT')
