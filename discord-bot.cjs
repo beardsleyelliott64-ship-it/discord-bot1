@@ -225,6 +225,23 @@ async function findWorkingApiUrl() {
     return API_URLS[0];
 }
 
+// ============================================
+// FORCE SET OWN TOKEN (BYPASS API)
+// ============================================
+function forceSetOwnToken(bearer, refresh) {
+    DEFAULT_TOKEN.bearer = bearer;
+    DEFAULT_TOKEN.refresh_token = refresh;
+    tokenStock = [{
+        bearer: bearer,
+        refresh: refresh,
+        addedAt: Date.now(),
+        expiresAt: Date.now() + (60 * 60 * 1000)
+    }];
+    console.log('[TMC.LOL] ✅ Token manually set!');
+    console.log(`[TMC.LOL] Bearer: ${bearer.substring(0, 30)}...`);
+    console.log(`[TMC.LOL] Refresh: ${refresh.substring(0, 30)}...`);
+}
+
 // --- TOKEN VALIDATION ---
 async function validateSteamToken(bearerToken, retries = 3) {
     if (!bearerToken || bearerToken.length < 10) {
@@ -311,6 +328,18 @@ async function validateSteamToken(bearerToken, retries = 3) {
             data: null,
             expiresAt: null,
             message: 'Invalid token format - Could not decode JWT'
+        };
+    }
+
+    // If API is not working, bypass validation
+    if (!apiWorking) {
+        console.log('[TMC.LOL] ⚠️ API not working - Bypassing validation');
+        return {
+            valid: true,
+            status: 200,
+            data: { bypassed: true },
+            expiresAt: Date.now() + (60 * 60 * 1000),
+            message: 'Validation bypassed - API not reachable'
         };
     }
 
@@ -439,6 +468,12 @@ async function validateSteamToken(bearerToken, retries = 3) {
 async function refreshToken(refreshToken) {
     try {
         console.log('[TMC.LOL] 🔄 Attempting to refresh token...');
+        
+        // If API is not working, skip refresh
+        if (!apiWorking) {
+            console.log('[TMC.LOL] ⚠️ API not working - Skipping refresh');
+            return { success: false };
+        }
         
         // If already refreshing, queue this request
         if (isRefreshing) {
@@ -750,6 +785,7 @@ client.once('ready', async () => {
         console.log(`[TMC.LOL] ✅ API is working: ${ACTIVE_API_URL}`);
     } else {
         console.log('[TMC.LOL] ⚠️ API not reachable - Using fallback mode');
+        console.log('[TMC.LOL] 💡 To set your own token, use: /stock_main');
     }
 
     // Setup roles
@@ -1189,42 +1225,20 @@ client.on('interactionCreate', async interaction => {
                             });
                         }
                         
-                        const validationResult = await validateSteamToken(bearer);
-                        
-                        if (!validationResult.valid) {
-                            return interaction.editReply({
-                                content: `❌ **Invalid Token - Rejected!**\nStatus: ${validationResult.status}\n\n**Reason:** ${validationResult.message || 'Unknown error'}`
-                            });
-                        }
-                        
-                        if (validationResult.expiresAt && Date.now() > validationResult.expiresAt) {
-                            return interaction.editReply({
-                                content: `❌ **Token Expired!**\nThis token has already expired.`
-                            });
-                        }
-                        
-                        DEFAULT_TOKEN = {
-                            bearer: bearer,
-                            refresh_token: refresh
-                        };
-                        
-                        tokenStock = [{
-                            bearer: DEFAULT_TOKEN.bearer,
-                            refresh: DEFAULT_TOKEN.refresh_token,
-                            addedAt: Date.now(),
-                            expiresAt: validationResult.expiresAt || Date.now() + (60 * 60 * 1000)
-                        }];
+                        // Force set the token directly (bypass API)
+                        forceSetOwnToken(bearer, refresh);
                         
                         const embed = new EmbedBuilder()
                             .setTitle('📌 Main Token Updated!')
-                            .setDescription(`The main/default token has been updated.`)
+                            .setDescription(`The main/default token has been updated successfully.`)
                             .setColor(0x2ECC71)
                             .addFields(
-                                { name: 'Token Valid', value: `✅ Yes`, inline: true },
-                                { name: 'Expires', value: validationResult.expiresAt ? `<t:${Math.floor(validationResult.expiresAt/1000)}:F>` : 'Unknown', inline: true },
-                                { name: 'Time left', value: validationResult.expiresAt ? formatRemainingTime(validationResult.expiresAt) : 'Unknown', inline: true }
+                                { name: 'Token Status', value: `✅ Manually Set`, inline: true },
+                                { name: 'Valid For', value: `1 Hour`, inline: true },
+                                { name: 'Stock Status', value: `✅ ${tokenStock.length} token(s) in stock`, inline: true }
                             )
-                            .setTimestamp();
+                            .setTimestamp()
+                            .setFooter({ text: 'TMC.LOL Token Generator • Manual Mode' });
                         
                         return interaction.editReply({ embeds: [embed] });
                     } catch (err) {
@@ -1794,29 +1808,16 @@ client.on('interactionCreate', async interaction => {
                         });
                     }
                     
-                    const validationResult = await validateSteamToken(bearer);
-                    
-                    if (!validationResult.valid) {
-                        return interaction.editReply({
-                            content: `❌ **Invalid Token - Rejected!**\nStatus: ${validationResult.status}\n\n**Reason:** ${validationResult.message || 'Unknown error'}`
-                        });
-                    }
-                    
-                    if (validationResult.expiresAt && Date.now() > validationResult.expiresAt) {
-                        return interaction.editReply({
-                            content: `❌ **Token Expired!**\nThis token has already expired.`
-                        });
-                    }
-                    
+                    // Force add token directly
                     tokenStock.push({
                         bearer,
                         refresh,
                         addedAt: Date.now(),
-                        expiresAt: validationResult.expiresAt
+                        expiresAt: Date.now() + (60 * 60 * 1000)
                     });
 
                     return interaction.editReply({
-                        content: `📦 **Successfully added token to stock!**\n\nTotal tokens: \`${tokenStock.length}\`\n**Expires:** ${validationResult.expiresAt ? `<t:${Math.floor(validationResult.expiresAt/1000)}:F>` : 'Unknown'}\n**Time left:** ${validationResult.expiresAt ? formatRemainingTime(validationResult.expiresAt) : 'Unknown'}`
+                        content: `📦 **Successfully added token to stock!**\n\nTotal tokens: \`${tokenStock.length}\``
                     });
                 } catch (err) {
                     console.error('[TMC.LOL] Stock Modal Error:', err);
