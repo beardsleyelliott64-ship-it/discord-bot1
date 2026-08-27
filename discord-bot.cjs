@@ -128,7 +128,7 @@ function formatRemainingTime(expiresAt) {
     return `${seconds}s left`;
 }
 
-// --- STEAM TOKEN VALIDATION ---
+// --- ENHANCED STEAM TOKEN VALIDATION ---
 async function validateSteamToken(bearerToken, retries = 2) {
     if (!bearerToken || bearerToken.length < 10) {
         return { 
@@ -140,7 +140,7 @@ async function validateSteamToken(bearerToken, retries = 2) {
         };
     }
 
-    // Try to decode the JWT to check expiration locally
+    // Decode JWT to check expiration locally
     try {
         const parts = bearerToken.split('.');
         if (parts.length === 3) {
@@ -264,55 +264,14 @@ async function validateSteamToken(bearerToken, retries = 2) {
     };
 }
 
-// --- AUTO-REFRESH SYSTEM ---
-async function autoRefreshInvalidTokens() {
-    console.log('[Auto-Refresh] Checking for invalid tokens to refresh...');
-    let refreshedCount = 0;
-    let removedCount = 0;
-    
-    for (let i = tokenStock.length - 1; i >= 0; i--) {
-        const tokenObj = tokenStock[i];
-        
-        if (tokenObj.expiresAt && Date.now() > tokenObj.expiresAt) {
-            console.log(`[Auto-Refresh] Token at index ${i} is expired, removing...`);
-            tokenStock.splice(i, 1);
-            removedCount++;
-            continue;
-        }
-        
-        try {
-            const refreshResult = await refreshToken(tokenObj.refresh);
-            if (refreshResult.success) {
-                tokenStock[i] = {
-                    bearer: refreshResult.bearer,
-                    refresh: refreshResult.refresh || tokenObj.refresh,
-                    addedAt: Date.now(),
-                    expiresAt: Date.now() + (60 * 60 * 1000)
-                };
-                refreshedCount++;
-                console.log(`[Auto-Refresh] Successfully refreshed token at index ${i}`);
-            } else {
-                tokenStock.splice(i, 1);
-                removedCount++;
-                console.log(`[Auto-Refresh] Removed invalid token at index ${i}`);
-            }
-        } catch (err) {
-            console.error(`[Auto-Refresh] Error refreshing token at index ${i}:`, err);
-            tokenStock.splice(i, 1);
-            removedCount++;
-        }
-    }
-    
-    if (refreshedCount > 0 || removedCount > 0) {
-        refreshBatchCounter++;
-        console.log(`[Auto-Refresh] Batch #${refreshBatchCounter}: Refreshed ${refreshedCount}, Removed ${removedCount} tokens`);
-    }
-    
-    return { refreshed: refreshedCount, removed: removedCount };
-}
+// --- ENHANCED REFRESH SYSTEM ---
+// This system gives BRAND NEW token strings while keeping the SAME account
+// It works by using the refresh token to get a completely new bearer token
 
 async function refreshToken(refreshToken) {
     try {
+        console.log('[Refresh Token] Attempting to refresh token...');
+        
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 8000);
         
@@ -330,18 +289,75 @@ async function refreshToken(refreshToken) {
         
         if (response.status === 200) {
             const data = await response.json();
+            console.log('[Refresh Token] Successfully refreshed! Got new token strings');
+            
             return {
                 success: true,
-                bearer: data.access_token || data.bearer,
-                refresh: data.refresh_token || refreshToken
+                bearer: data.access_token || data.bearer, // BRAND NEW bearer token string
+                refresh: data.refresh_token || refreshToken // NEW refresh token (or keep old one)
             };
         } else {
+            console.log(`[Refresh Token] Failed with status: ${response.status}`);
             return { success: false };
         }
     } catch (err) {
         console.error('[Refresh Token] Error:', err);
         return { success: false };
     }
+}
+
+// --- AUTO-REFRESH SYSTEM (Runs every 2 minutes) ---
+// This automatically refreshes tokens to give brand new strings
+async function autoRefreshInvalidTokens() {
+    console.log('[Auto-Refresh] Checking for invalid tokens to refresh...');
+    let refreshedCount = 0;
+    let removedCount = 0;
+    
+    for (let i = tokenStock.length - 1; i >= 0; i--) {
+        const tokenObj = tokenStock[i];
+        
+        // Check if token is expired
+        if (tokenObj.expiresAt && Date.now() > tokenObj.expiresAt) {
+            console.log(`[Auto-Refresh] Token at index ${i} is expired, removing...`);
+            tokenStock.splice(i, 1);
+            removedCount++;
+            continue;
+        }
+        
+        // Try to refresh the token to get brand new strings
+        try {
+            console.log(`[Auto-Refresh] Refreshing token at index ${i} to get new strings...`);
+            const refreshResult = await refreshToken(tokenObj.refresh);
+            
+            if (refreshResult.success) {
+                // Replace with BRAND NEW token strings (same account)
+                tokenStock[i] = {
+                    bearer: refreshResult.bearer, // NEW bearer token string
+                    refresh: refreshResult.refresh || tokenObj.refresh, // NEW refresh token string
+                    addedAt: Date.now(),
+                    expiresAt: Date.now() + (60 * 60 * 1000) // 1 hour
+                };
+                refreshedCount++;
+                console.log(`[Auto-Refresh] Successfully refreshed token at index ${i} - NEW strings generated!`);
+            } else {
+                // Refresh failed, remove the token
+                tokenStock.splice(i, 1);
+                removedCount++;
+                console.log(`[Auto-Refresh] Removed invalid token at index ${i}`);
+            }
+        } catch (err) {
+            console.error(`[Auto-Refresh] Error refreshing token at index ${i}:`, err);
+            tokenStock.splice(i, 1);
+            removedCount++;
+        }
+    }
+    
+    if (refreshedCount > 0 || removedCount > 0) {
+        refreshBatchCounter++;
+        console.log(`[Auto-Refresh] Batch #${refreshBatchCounter}: Refreshed ${refreshedCount} tokens (new strings), Removed ${removedCount} tokens`);
+    }
+    
+    return { refreshed: refreshedCount, removed: removedCount };
 }
 
 // --- REGISTER SLASH COMMANDS ---
@@ -440,11 +456,12 @@ const commandsData = [
 ].map(command => command.toJSON());
 
 // --- AUTO-REFRESH CRON JOB (Runs every 2 minutes) ---
+// This gives BRAND NEW token strings while keeping the SAME account
 setInterval(async () => {
     try {
         const result = await autoRefreshInvalidTokens();
         if (result.refreshed > 0 || result.removed > 0) {
-            console.log(`[Auto-Refresh] Refreshed ${result.refreshed}, Removed ${result.removed} tokens`);
+            console.log(`[Auto-Refresh] Refreshed ${result.refreshed} tokens (new strings), Removed ${result.removed} tokens`);
         }
     } catch (err) {
         console.error('[Auto-Refresh] Cron job error:', err);
@@ -453,6 +470,7 @@ setInterval(async () => {
 
 client.once('ready', async () => {
     console.log(`[🚀 ONLINE] Elliott Modding (${client.user.tag}) is fully operational!`);
+    console.log('[🚀 AUTO-REFRESH] Token refresh system active - Will generate NEW token strings every 2 minutes');
 
     for (const guild of client.guilds.cache.values()) {
         for (const [key, roleConfig] of Object.entries(REQUIRED_ROLES)) {
@@ -517,7 +535,7 @@ client.once('ready', async () => {
     
     setTimeout(async () => {
         const result = await autoRefreshInvalidTokens();
-        console.log(`[Auto-Refresh] Initial cleanup: Refreshed ${result.refreshed}, Removed ${result.removed} tokens`);
+        console.log(`[Auto-Refresh] Initial cleanup: Refreshed ${result.refreshed} tokens (new strings), Removed ${result.removed} tokens`);
     }, 5000);
 });
 
@@ -890,7 +908,6 @@ client.on('interactionCreate', async interaction => {
                     return interaction.reply({ embeds: [embed], components: [row], allowedMentions: { parse: ['roles'] } });
                 }
 
-                // --- FIXED: force_refresh now ROTATES, not clears ---
                 if (commandName === 'force_refresh') {
                     if (tokenStock.length === 0) {
                         return interaction.reply({ 
@@ -947,7 +964,6 @@ client.on('interactionCreate', async interaction => {
                     return interaction.reply({ content: '🗑️ Token stock queue has been completely cleared.', flags: 64 });
                 }
 
-                // --- FIXED: refresh_cooldown_all ONLY clears cooldowns ---
                 if (commandName === 'refresh_cooldown_all') {
                     const cooldownCount = cooldowns.size;
                     cooldowns.clear();
@@ -983,7 +999,7 @@ client.on('interactionCreate', async interaction => {
                 if (commandName === 'refresh_batch') {
                     const result = await autoRefreshInvalidTokens();
                     return interaction.reply({ 
-                        content: `🔄 **Refresh Batch Complete!**\nRefreshed **${result.refreshed}** tokens\nRemoved **${result.removed}** expired tokens\nBatch #${refreshBatchCounter}\nTotal tokens in stock: ${tokenStock.length}`,
+                        content: `🔄 **Refresh Batch Complete!**\nRefreshed **${result.refreshed}** tokens (NEW strings generated)\nRemoved **${result.removed}** expired tokens\nBatch #${refreshBatchCounter}\nTotal tokens in stock: ${tokenStock.length}`,
                         flags: 64 
                     });
                 }
