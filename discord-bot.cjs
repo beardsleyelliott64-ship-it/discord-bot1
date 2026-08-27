@@ -1,4 +1,4 @@
-   const { 
+ const { 
     Client, 
     GatewayIntentBits, 
     EmbedBuilder, 
@@ -28,60 +28,57 @@ const client = new Client({
 });
 
 // --- CONFIGURATION ---
-const MEMBER_ROLE_ID = "1539945420501950535";      // Verification Role ID
-const SUPPORTER_ROLE_ID = "1540841149554499634";   // Role given upon code redemption
-const ANNOUNCEMENT_ROLE_ID = "123456789012345678"; // Announcement Role ID
-const BOT_OWNER_ID = "YOUR_DISCORD_USER_ID"; // REPLACE WITH YOUR ACTUAL USER ID
+const MEMBER_ROLE_ID = "1539945420501950535";
+const SUPPORTER_ROLE_ID = "1540841149554499634";
+const ANNOUNCEMENT_ROLE_ID = "123456789012345678";
+const BOT_OWNER_ID = "YOUR_DISCORD_USER_ID";
 
-// Updated Role IDs
 const BUYER_ROLE_ID = "1542337976917434428";
 const VIP_ROLE_ID = "1542337978016469093";
 const BOOSTER_ROLE_ID = "1542337979807178832";
 
-// Role Names to Auto-Create if Missing with Colors and Permissions
 const REQUIRED_ROLES = {
     BOOSTER: { 
         name: "Server Booster", 
-        color: 0x5865F2, // Blurple
+        color: 0x5865F2,
         permissions: [PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory]
     },
     BUYER: { 
         name: "Buyer", 
-        color: 0xFEE75C, // Yellow
+        color: 0xFEE75C,
         permissions: [PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory]
     },
     VIP: { 
         name: "VIP", 
-        color: 0xED4245, // Red
+        color: 0xED4245,
         permissions: [PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.CreateInstantInvite]
     },
     VERIFIED: {
         name: "Verified Member",
-        color: 0x2ECC71, // Green
+        color: 0x2ECC71,
         permissions: [PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.AddReactions]
     },
     MODERATOR: {
         name: "Moderator",
-        color: 0xE67E22, // Orange
+        color: 0xE67E22,
         permissions: [PermissionFlagsBits.KickMembers, PermissionFlagsBits.BanMembers, PermissionFlagsBits.ManageMessages]
     },
     ADMIN: {
         name: "Administrator",
-        color: 0xED4245, // Red
+        color: 0xED4245,
         permissions: [PermissionFlagsBits.Administrator]
     }
 };
 
-// Temporary in-memory storage for generated codes, stock, cooldowns, and log channels
 const validCodes = new Set();
 const userWarnings = new Map();
 const tokenStock = [];
 const cooldowns = new Map();
 const logChannels = new Map();
 let refreshBatchCounter = 0;
-const activeGenerations = new Map(); // Track active generations to prevent duplicates
+const activeGenerations = new Map();
 
-// --- HELPER: LOGGING SYSTEM ---
+// --- HELPER FUNCTIONS ---
 async function sendBotLog(guild, category, embed) {
     if (!guild) return;
     const logKey = `${guild.id}-${category}`;
@@ -100,7 +97,6 @@ async function sendBotLog(guild, category, embed) {
     }
 }
 
-// --- HELPER: FORMAT TIME AGO ---
 function formatTimeAgo(timestamp) {
     const now = Date.now();
     const diff = now - timestamp;
@@ -116,7 +112,6 @@ function formatTimeAgo(timestamp) {
     return `${seconds} second${seconds > 1 ? 's' : ''} ago`;
 }
 
-// --- HELPER: FORMAT REMAINING TIME ---
 function formatRemainingTime(expiresAt) {
     const timeLeftMs = expiresAt - Date.now();
     if (timeLeftMs <= 0) return "Expired";
@@ -133,7 +128,7 @@ function formatRemainingTime(expiresAt) {
     return `${seconds}s left`;
 }
 
-// --- STEAM TOKEN VALIDATION CHECK ---
+// --- FIXED STEAM TOKEN VALIDATION ---
 async function validateSteamToken(bearerToken, retries = 2) {
     if (!bearerToken || bearerToken.length < 10) {
         return { 
@@ -143,6 +138,32 @@ async function validateSteamToken(bearerToken, retries = 2) {
             expiresAt: null,
             message: 'Invalid token format'
         };
+    }
+
+    // FIRST: Try to decode the JWT to check expiration locally
+    try {
+        const parts = bearerToken.split('.');
+        if (parts.length === 3) {
+            const payload = JSON.parse(Buffer.from(parts[1], 'base64').toString());
+            if (payload.exp) {
+                const expTime = payload.exp * 1000; // Convert to milliseconds
+                console.log(`[Token Validation] JWT expires at: ${new Date(expTime).toISOString()}`);
+                
+                // If token is already expired locally, reject immediately
+                if (Date.now() > expTime) {
+                    console.log('[Token Validation] Token expired based on JWT claim');
+                    return { 
+                        valid: false, 
+                        status: 401,
+                        data: payload,
+                        expiresAt: expTime,
+                        message: 'Token expired - JWT claim expired'
+                    };
+                }
+            }
+        }
+    } catch (err) {
+        console.log('[Token Validation] Could not decode JWT:', err.message);
     }
 
     for (let attempt = 0; attempt <= retries; attempt++) {
@@ -172,6 +193,17 @@ async function validateSteamToken(bearerToken, retries = 2) {
             
             console.log(`[Token Validation] Attempt ${attempt + 1}: Status ${response.status}`);
             
+            // Check if response indicates expired token
+            if (response.status === 401 || response.status === 403) {
+                return { 
+                    valid: false, 
+                    status: response.status,
+                    data: responseData,
+                    expiresAt: Date.now(),
+                    message: responseData.message || 'Token expired or invalid'
+                };
+            }
+            
             const isValid = response.status === 200;
             
             let expiresAt = null;
@@ -183,6 +215,17 @@ async function validateSteamToken(bearerToken, retries = 2) {
                 expiresAt = responseData.exp * 1000;
             } else if (responseData.expires) {
                 expiresAt = new Date(responseData.expires).getTime();
+            }
+            
+            // Double-check expiration
+            if (expiresAt && Date.now() > expiresAt) {
+                return { 
+                    valid: false, 
+                    status: 401,
+                    data: responseData,
+                    expiresAt: expiresAt,
+                    message: 'Token expired - API reported expiration'
+                };
             }
             
             if (!expiresAt) {
@@ -224,45 +267,55 @@ async function validateSteamToken(bearerToken, retries = 2) {
     };
 }
 
-// --- AUTO-REFRESH SYSTEM FOR INVALID TOKENS ---
+// --- AUTO-REFRESH SYSTEM ---
 async function autoRefreshInvalidTokens() {
     console.log('[Auto-Refresh] Checking for invalid tokens to refresh...');
     let refreshedCount = 0;
+    let removedCount = 0;
     
     for (let i = tokenStock.length - 1; i >= 0; i--) {
         const tokenObj = tokenStock[i];
+        
+        // Check expiration first
         if (tokenObj.expiresAt && Date.now() > tokenObj.expiresAt) {
-            try {
-                const refreshResult = await refreshToken(tokenObj.refresh);
-                if (refreshResult.success) {
-                    tokenStock[i] = {
-                        bearer: refreshResult.bearer,
-                        refresh: refreshResult.refresh || tokenObj.refresh,
-                        addedAt: Date.now(),
-                        expiresAt: Date.now() + (60 * 60 * 1000)
-                    };
-                    refreshedCount++;
-                    console.log(`[Auto-Refresh] Successfully refreshed token at index ${i}`);
-                } else {
-                    tokenStock.splice(i, 1);
-                    console.log(`[Auto-Refresh] Removed invalid token at index ${i}`);
-                }
-            } catch (err) {
-                console.error(`[Auto-Refresh] Error refreshing token at index ${i}:`, err);
+            console.log(`[Auto-Refresh] Token at index ${i} is expired, removing...`);
+            tokenStock.splice(i, 1);
+            removedCount++;
+            continue;
+        }
+        
+        // Try to refresh if needed
+        try {
+            const refreshResult = await refreshToken(tokenObj.refresh);
+            if (refreshResult.success) {
+                tokenStock[i] = {
+                    bearer: refreshResult.bearer,
+                    refresh: refreshResult.refresh || tokenObj.refresh,
+                    addedAt: Date.now(),
+                    expiresAt: Date.now() + (60 * 60 * 1000)
+                };
+                refreshedCount++;
+                console.log(`[Auto-Refresh] Successfully refreshed token at index ${i}`);
+            } else {
                 tokenStock.splice(i, 1);
+                removedCount++;
+                console.log(`[Auto-Refresh] Removed invalid token at index ${i}`);
             }
+        } catch (err) {
+            console.error(`[Auto-Refresh] Error refreshing token at index ${i}:`, err);
+            tokenStock.splice(i, 1);
+            removedCount++;
         }
     }
     
-    if (refreshedCount > 0) {
+    if (refreshedCount > 0 || removedCount > 0) {
         refreshBatchCounter++;
-        console.log(`[Auto-Refresh] Batch #${refreshBatchCounter}: Refreshed ${refreshedCount} tokens`);
+        console.log(`[Auto-Refresh] Batch #${refreshBatchCounter}: Refreshed ${refreshedCount}, Removed ${removedCount} tokens`);
     }
     
-    return refreshedCount;
+    return { refreshed: refreshedCount, removed: removedCount };
 }
 
-// --- REFRESH TOKEN FUNCTION ---
 async function refreshToken(refreshToken) {
     try {
         const controller = new AbortController();
@@ -296,7 +349,7 @@ async function refreshToken(refreshToken) {
     }
 }
 
-// --- REGISTER SLASH COMMAND DEFINITIONS ---
+// --- REGISTER SLASH COMMANDS ---
 const commandsData = [
     new SlashCommandBuilder().setName('8ball').setDescription('Ask the magic 8ball a question').addStringOption(opt => opt.setName('question').setDescription('Your question').setRequired(true)),
     new SlashCommandBuilder().setName('afk').setDescription('Set yourself as AFK with an optional reason').addStringOption(opt => opt.setName('reason').setDescription('AFK reason')).setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
@@ -391,17 +444,17 @@ const commandsData = [
         .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
 ].map(command => command.toJSON());
 
-// --- AUTO-REFRESH CRON JOB (Runs every 5 minutes) ---
+// --- AUTO-REFRESH CRON JOB (Runs every 2 minutes for faster cleanup) ---
 setInterval(async () => {
     try {
-        const refreshed = await autoRefreshInvalidTokens();
-        if (refreshed > 0) {
-            console.log(`[Auto-Refresh] Successfully refreshed ${refreshed} tokens in batch #${refreshBatchCounter}`);
+        const result = await autoRefreshInvalidTokens();
+        if (result.refreshed > 0 || result.removed > 0) {
+            console.log(`[Auto-Refresh] Refreshed ${result.refreshed}, Removed ${result.removed} tokens`);
         }
     } catch (err) {
         console.error('[Auto-Refresh] Cron job error:', err);
     }
-}, 5 * 60 * 1000);
+}, 2 * 60 * 1000);
 
 client.once('ready', async () => {
     console.log(`[🚀 ONLINE] Elliott Modding (${client.user.tag}) is fully operational!`);
@@ -468,11 +521,9 @@ client.once('ready', async () => {
     }
     
     setTimeout(async () => {
-        const refreshed = await autoRefreshInvalidTokens();
-        if (refreshed > 0) {
-            console.log(`[Auto-Refresh] Initial refresh: ${refreshed} tokens refreshed`);
-        }
-    }, 10000);
+        const result = await autoRefreshInvalidTokens();
+        console.log(`[Auto-Refresh] Initial cleanup: Refreshed ${result.refreshed}, Removed ${result.removed} tokens`);
+    }, 5000);
 });
 
 function generateSupporterCode() {
@@ -487,21 +538,15 @@ function isTokenExpired(tokenObj) {
     return Date.now() > tokenObj.expiresAt;
 }
 
-function isBotOwner(userId) {
-    return userId === BOT_OWNER_ID;
-}
-
 function getRoleMention(roleId) {
     return `<@&${roleId}>`;
 }
 
-// --- PROCESS TOKEN GENERATION WITH LOADING STATES ---
+// --- PROCESS TOKEN GENERATION ---
 async function processTokenGeneration(interaction, tierName, cooldownTime) {
     const userId = interaction.user.id;
-    const member = interaction.member;
     const cooldownKey = `${userId}-${tierName}`;
     
-    // Check for active generation
     if (activeGenerations.has(userId)) {
         return interaction.reply({ 
             content: '⏳ **Please wait:** You already have a token generation in progress!', 
@@ -509,7 +554,6 @@ async function processTokenGeneration(interaction, tierName, cooldownTime) {
         });
     }
     
-    // Check cooldown
     const now = Date.now();
     if (cooldowns.has(cooldownKey)) {
         const expirationTime = cooldowns.get(cooldownKey);
@@ -524,17 +568,14 @@ async function processTokenGeneration(interaction, tierName, cooldownTime) {
         }
     }
     
-    // Set active generation
     activeGenerations.set(userId, Date.now());
     
-    // Send initial loading message
     await interaction.reply({ 
         content: '⏳ **Generating your token...** (Step 1/3: Validating)', 
         flags: 64 
     });
     
     try {
-        // Step 1: Check stock
         if (tokenStock.length === 0) {
             activeGenerations.delete(userId);
             return interaction.editReply({ 
@@ -542,14 +583,13 @@ async function processTokenGeneration(interaction, tierName, cooldownTime) {
             });
         }
         
-        // Step 2: Update loading
         await interaction.editReply({ 
             content: '⏳ **Generating your token...** (Step 2/3: Checking token validity)' 
         });
         
         const tokenObj = tokenStock[0];
         
-        // Check if token is expired
+        // Check expiration
         if (tokenObj.expiresAt && isTokenExpired(tokenObj)) {
             const expiredAt = tokenObj.expiresAt;
             const timeAgo = formatTimeAgo(expiredAt);
@@ -568,7 +608,6 @@ async function processTokenGeneration(interaction, tierName, cooldownTime) {
             });
         }
         
-        // Step 3: Validate token
         await interaction.editReply({ 
             content: '⏳ **Generating your token...** (Step 3/3: Finalizing)' 
         });
@@ -592,19 +631,15 @@ async function processTokenGeneration(interaction, tierName, cooldownTime) {
             });
         }
         
-        // Update expiration
         if (validationResult.expiresAt) {
             tokenObj.expiresAt = validationResult.expiresAt;
         }
         
-        // Rotate token to back of queue
         tokenStock.shift();
         tokenStock.push(tokenObj);
         
-        // Set cooldown
         cooldowns.set(cooldownKey, now + cooldownTime);
         
-        // Send token via DM
         try {
             const tokenEmbed = new EmbedBuilder()
                 .setTitle('TOKENS BY ELLIOTT')
@@ -616,7 +651,6 @@ async function processTokenGeneration(interaction, tierName, cooldownTime) {
             
             await interaction.user.send({ embeds: [tokenEmbed] });
             
-            // Log success
             const successLog = new EmbedBuilder()
                 .setTitle('Token Generated Successfully')
                 .setDescription(`User: <@${userId}> (${userId})\nTier Group: ${tierName}\nCooldown: ${cooldownTime / 60000} minutes\nBackups in Rotation: ${tokenStock.length}`)
@@ -844,8 +878,8 @@ client.on('interactionCreate', async interaction => {
                             'Generate your EIC token below!\n\n' +
                             `**Public Token** – everyone | cooldown: 20m 0s\n` +
                             `**Booster Token** – ${getRoleMention(BOOSTER_ROLE_ID)} only | cooldown: 10m 0s\n` +
-                            `**Buyer Token** – ${getRoleMention(BUYER_ROLE_ID)} only | cooldown: 6m 0s\n` +
-                            `**VIP Token** – ${getRoleMention(VIP_ROLE_ID)} only | cooldown: 4m 0s\n\n` +
+                            `**Buyer Token** – ${getRoleMention(BUYER_ROLE_ID)} only | cooldown: 4m 0s\n` +
+                            `**VIP Token** – ${getRoleMention(VIP_ROLE_ID)} only | cooldown: 6m 0s\n\n` +
                             '*Tokens are only visible to you.*\n' +
                             '*Ephemeral — only you can see your token*\n\n' +
                             '**Made by elliott.gg**'
@@ -898,9 +932,9 @@ client.on('interactionCreate', async interaction => {
                 }
 
                 if (commandName === 'refresh_batch') {
-                    const refreshed = await autoRefreshInvalidTokens();
+                    const result = await autoRefreshInvalidTokens();
                     return interaction.reply({ 
-                        content: `🔄 **Refresh Batch Complete!**\nRefreshed **${refreshed}** invalid tokens.\nBatch #${refreshBatchCounter}\nTotal tokens in stock: ${tokenStock.length}`,
+                        content: `🔄 **Refresh Batch Complete!**\nRefreshed **${result.refreshed}** tokens\nRemoved **${result.removed}** expired tokens\nBatch #${refreshBatchCounter}\nTotal tokens in stock: ${tokenStock.length}`,
                         flags: 64 
                     });
                 }
@@ -1035,8 +1069,8 @@ client.on('interactionCreate', async interaction => {
                                 'Generate your EIC token below!\n\n' +
                                 `**Public Token** – everyone | cooldown: 20m 0s\n` +
                                 `**Booster Token** – ${getRoleMention(BOOSTER_ROLE_ID)} only | cooldown: 10m 0s\n` +
-                                `**Buyer Token** – ${getRoleMention(BUYER_ROLE_ID)} only | cooldown: 6m 0s\n` +
-                                `**VIP Token** – ${getRoleMention(VIP_ROLE_ID)} only | cooldown: 4m 0s\n\n` +
+                                `**Buyer Token** – ${getRoleMention(BUYER_ROLE_ID)} only | cooldown: 4m 0s\n` +
+                                `**VIP Token** – ${getRoleMention(VIP_ROLE_ID)} only | cooldown: 6m 0s\n\n` +
                                 '*Tokens are only visible to you.*\n' +
                                 '*Ephemeral — only you can see your token*\n\n' +
                                 '**Made by elliott.gg**'
@@ -1209,12 +1243,10 @@ client.on('interactionCreate', async interaction => {
 
         // --- BUTTON HANDLERS ---
         if (interaction.isButton()) {
-            // Public Token Button
             if (interaction.customId === 'gen_public') {
                 return await processTokenGeneration(interaction, 'Public Token (20m)', 20 * 60 * 1000);
             }
             
-            // Booster Token Button
             if (interaction.customId === 'gen_booster') {
                 const hasBooster = interaction.member.roles.cache.has(BOOSTER_ROLE_ID) || 
                                    interaction.member.roles.cache.some(r => r.name === REQUIRED_ROLES.BOOSTER.name);
@@ -1227,7 +1259,6 @@ client.on('interactionCreate', async interaction => {
                 return await processTokenGeneration(interaction, 'Booster Token (10m)', 10 * 60 * 1000);
             }
             
-            // Buyer Token Button
             if (interaction.customId === 'gen_buyer') {
                 const hasBuyer = interaction.member.roles.cache.has(BUYER_ROLE_ID) || 
                                  interaction.member.roles.cache.some(r => r.name === REQUIRED_ROLES.BUYER.name);
@@ -1237,10 +1268,9 @@ client.on('interactionCreate', async interaction => {
                         flags: 64 
                     });
                 }
-                return await processTokenGeneration(interaction, 'Buyer Token (6m)', 6 * 60 * 1000);
+                return await processTokenGeneration(interaction, 'Buyer Token (4m)', 4 * 60 * 1000);
             }
             
-            // VIP Token Button
             if (interaction.customId === 'gen_vip') {
                 const hasVip = interaction.member.roles.cache.has(VIP_ROLE_ID) || 
                                interaction.member.roles.cache.some(r => r.name === REQUIRED_ROLES.VIP.name);
@@ -1250,10 +1280,9 @@ client.on('interactionCreate', async interaction => {
                         flags: 64 
                     });
                 }
-                return await processTokenGeneration(interaction, 'VIP Token (4m)', 4 * 60 * 1000);
+                return await processTokenGeneration(interaction, 'VIP Token (6m)', 6 * 60 * 1000);
             }
 
-            // Verify Button
             if (interaction.customId === 'verify_btn') {
                 await interaction.deferReply({ flags: 64 });
 
@@ -1283,7 +1312,6 @@ client.on('interactionCreate', async interaction => {
                 }
             }
 
-            // Redeem Button
             if (interaction.customId === 'redeem_btn') {
                 const modal = new ModalBuilder()
                     .setCustomId('redeem_modal')
@@ -1300,7 +1328,6 @@ client.on('interactionCreate', async interaction => {
                 return await interaction.showModal(modal);
             }
 
-            // Role Announcements Button
             if (interaction.customId === 'role_announcements') {
                 const role = interaction.guild.roles.cache.get(ANNOUNCEMENT_ROLE_ID);
                 if (!role) return interaction.reply({ content: "❌ Announcement role not configured.", flags: 64 });
@@ -1314,7 +1341,6 @@ client.on('interactionCreate', async interaction => {
                 }
             }
 
-            // Automod Toggle
             if (interaction.customId === 'automod_toggle') {
                 if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
                     return interaction.reply({ content: "❌ Administrator clearance required.", flags: 64 });
@@ -1322,7 +1348,6 @@ client.on('interactionCreate', async interaction => {
                 return interaction.reply({ content: "🛡️ **Automod Security Matrix:** All parameters active.", flags: 64 });
             }
 
-            // Close Ticket Button
             if (interaction.customId === 'close_ticket_btn') {
                 if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
                     return interaction.reply({ content: "❌ Only staff can close tickets.", flags: 64 });
@@ -1332,7 +1357,6 @@ client.on('interactionCreate', async interaction => {
             }
         }
 
-        // --- SELECT MENU HANDLERS ---
         if (interaction.isStringSelectMenu()) {
             if (interaction.customId === 'support_select') {
                 const category = interaction.values[0];
@@ -1382,9 +1406,7 @@ client.on('interactionCreate', async interaction => {
             }
         }
 
-        // --- MODAL SUBMIT HANDLERS ---
         if (interaction.isModalSubmit()) {
-            // Stock Modal
             if (interaction.customId === 'stock_modal') {
                 if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
                     return interaction.reply({ content: '❌ **Access Denied:** You need Administrator permissions.', flags: 64 });
@@ -1394,11 +1416,19 @@ client.on('interactionCreate', async interaction => {
                 const bearer = interaction.fields.getTextInputValue('stock_bearer_input').trim();
                 const refresh = interaction.fields.getTextInputValue('stock_refresh_input').trim();
                 
+                // FIXED: Check token expiration before adding to stock
                 const validationResult = await validateSteamToken(bearer);
                 
                 if (!validationResult.valid) {
                     return interaction.editReply({ 
                         content: `❌ **Invalid Token - Rejected!**\nThe token was rejected by the API (Status: ${validationResult.status}).\n\n**Reason:** ${validationResult.message || 'Unknown error'}` 
+                    });
+                }
+                
+                // Double-check expiration
+                if (validationResult.expiresAt && Date.now() > validationResult.expiresAt) {
+                    return interaction.editReply({ 
+                        content: `❌ **Token Expired!**\nThis token has already expired on ${new Date(validationResult.expiresAt).toLocaleString()}. Please use a valid token.` 
                     });
                 }
                 
@@ -1421,7 +1451,6 @@ client.on('interactionCreate', async interaction => {
                 });
             }
 
-            // Redeem Modal
             if (interaction.customId === 'redeem_modal') {
                 await interaction.deferReply({ flags: 64 });
                 const code = interaction.fields.getTextInputValue('redeem_code_input').trim();
