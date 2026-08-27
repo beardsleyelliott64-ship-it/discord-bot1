@@ -49,10 +49,10 @@ const REQUIRED_ROLES = {
 const validCodes = new Set();
 const userWarnings = new Map(); // Simple mock warning system storage
 const tokenStock = []; // Array to hold loaded token objects { bearer, refresh, addedAt, expiresAt }
-const donatedTokens = []; // Array to hold donated tokens
 const cooldowns = new Map(); // Tracks user cooldown timestamps per token type
 const logChannels = new Map(); // Stores category-specific log channel IDs per guild
-let donatedTokenCounter = 0; // Counter for donated tokens
+const refreshQueue = []; // Queue for auto-refresh of invalid tokens
+let refreshBatchCounter = 0; // Counter for refresh batches
 
 // --- HELPER: LOGGING SYSTEM ---
 async function sendBotLog(guild, category, embed) {
@@ -203,6 +203,80 @@ async function validateSteamToken(bearerToken, retries = 2) {
     };
 }
 
+// --- AUTO-REFRESH SYSTEM FOR INVALID TOKENS ---
+async function autoRefreshInvalidTokens() {
+    console.log('[Auto-Refresh] Checking for invalid tokens to refresh...');
+    let refreshedCount = 0;
+    
+    for (let i = tokenStock.length - 1; i >= 0; i--) {
+        const tokenObj = tokenStock[i];
+        if (tokenObj.expiresAt && isTokenExpired(tokenObj)) {
+            // Token is expired, try to refresh it using the refresh token
+            try {
+                const refreshResult = await refreshToken(tokenObj.refresh);
+                if (refreshResult.success) {
+                    tokenStock[i] = {
+                        bearer: refreshResult.bearer,
+                        refresh: refreshResult.refresh || tokenObj.refresh,
+                        addedAt: Date.now(),
+                        expiresAt: Date.now() + (60 * 60 * 1000) // 1 hour
+                    };
+                    refreshedCount++;
+                    console.log(`[Auto-Refresh] Successfully refreshed token at index ${i}`);
+                } else {
+                    // If refresh fails, remove the token
+                    tokenStock.splice(i, 1);
+                    console.log(`[Auto-Refresh] Removed invalid token at index ${i}`);
+                }
+            } catch (err) {
+                console.error(`[Auto-Refresh] Error refreshing token at index ${i}:`, err);
+                tokenStock.splice(i, 1);
+            }
+        }
+    }
+    
+    if (refreshedCount > 0) {
+        refreshBatchCounter++;
+        console.log(`[Auto-Refresh] Batch #${refreshBatchCounter}: Refreshed ${refreshedCount} tokens`);
+    }
+    
+    return refreshedCount;
+}
+
+// --- REFRESH TOKEN FUNCTION ---
+async function refreshToken(refreshToken) {
+    try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 8000);
+        
+        const response = await fetch('https://api.realanimalcompany.com/auth/refresh', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'User-Agent': 'ElliottModdingBot/1.0'
+            },
+            body: JSON.stringify({ refresh_token: refreshToken }),
+            signal: controller.signal
+        });
+        
+        clearTimeout(timeoutId);
+        
+        if (response.status === 200) {
+            const data = await response.json();
+            return {
+                success: true,
+                bearer: data.access_token || data.bearer,
+                refresh: data.refresh_token || refreshToken
+            };
+        } else {
+            return { success: false };
+        }
+    } catch (err) {
+        console.error('[Refresh Token] Error:', err);
+        return { success: false };
+    }
+}
+
 // --- REGISTER SLASH COMMAND DEFINITIONS ---
 const commandsData = [
     new SlashCommandBuilder().setName('8ball').setDescription('Ask the magic 8ball a question').addStringOption(opt => opt.setName('question').setDescription('Your question').setRequired(true)),
@@ -272,7 +346,7 @@ const commandsData = [
         .addStringOption(opt => opt.setName('theme').setDescription('The theme/name for your server layout').setRequired(true))
         .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
 
-    // Generator & Token Commands - ALL ADMIN ONLY (except token which is public)
+    // Generator & Token Commands
     new SlashCommandBuilder().setName('token').setDescription('Generate a fresh token directly to your DMs'),
     new SlashCommandBuilder().setName('stock').setDescription('Open form to add token stock').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     new SlashCommandBuilder().setName('generator').setDescription('Post clean generator panel').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
@@ -283,7 +357,7 @@ const commandsData = [
     new SlashCommandBuilder().setName('refresh_user').setDescription('Reset token generation cooldown for a specific user').addUserOption(opt => opt.setName('target').setDescription('User').setRequired(true)).setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     new SlashCommandBuilder().setName('logs').setDescription('Set log channel').addChannelOption(opt => opt.setName('channel').setDescription('Log channel').setRequired(true)).setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     new SlashCommandBuilder().setName('servers').setDescription('List all servers the bot is currently in').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-    new SlashCommandBuilder().setName('put_donated').setDescription('Put a donated token into the stock (BOT OWNER ONLY)').addStringOption(opt => opt.setName('bearer').setDescription('Bearer token').setRequired(true)).addStringOption(opt => opt.setName('refresh').setDescription('Refresh token').setRequired(true)),
+    new SlashCommandBuilder().setName('refresh_batch').setDescription('Manually trigger auto-refresh of invalid tokens').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
 
     new SlashCommandBuilder().setName('panel')
         .setDescription('Deploys interactive management panels')
@@ -298,6 +372,18 @@ const commandsData = [
         ))
         .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
 ].map(command => command.toJSON());
+
+// --- AUTO-REFRESH CRON JOB (Runs every 5 minutes) ---
+setInterval(async () => {
+    try {
+        const refreshed = await autoRefreshInvalidTokens();
+        if (refreshed > 0) {
+            console.log(`[Auto-Refresh] Successfully refreshed ${refreshed} tokens in batch #${refreshBatchCounter}`);
+        }
+    } catch (err) {
+        console.error('[Auto-Refresh] Cron job error:', err);
+    }
+}, 5 * 60 * 1000); // 5 minutes
 
 client.once('ready', async () => {
     console.log(`[🚀 ONLINE] Elliott Modding (${client.user.tag}) is fully operational!`);
@@ -330,6 +416,14 @@ client.once('ready', async () => {
     } catch (error) {
         console.error('Failed to register slash commands:', error);
     }
+    
+    // Initial auto-refresh on startup
+    setTimeout(async () => {
+        const refreshed = await autoRefreshInvalidTokens();
+        if (refreshed > 0) {
+            console.log(`[Auto-Refresh] Initial refresh: ${refreshed} tokens refreshed`);
+        }
+    }, 10000);
 });
 
 function generateSupporterCode() {
@@ -482,7 +576,6 @@ client.on('interactionCreate', async interaction => {
                     .setColor(0x3498DB)
                     .setFooter({ text: `Submitted by ${interaction.user.tag}` })
                     .setTimestamp();
-                // Here you would send to a suggestions channel if configured
                 return interaction.reply({ content: '✅ Your suggestion has been submitted!', flags: 64 });
             }
 
@@ -501,7 +594,8 @@ client.on('interactionCreate', async interaction => {
                         { name: "🎨 `/panel roles`", value: "Deploys the community notification toggles.", inline: false },
                         { name: "⚡ `/panel generator`", value: "Deploys the Tokens by Elliott Generator interface panel.", inline: false },
                         { name: "🔑 `/generate-code`", value: "Generates a unique `supporter-xxxx-xxxx-xxxx` code for the redeem panel.", inline: false },
-                        { name: "🎮 `/token`", value: "Generate a fresh token directly to your DMs.", inline: false }
+                        { name: "🎮 `/token`", value: "Generate a fresh token directly to your DMs.", inline: false },
+                        { name: "🔄 `/refresh_batch`", value: "Manually trigger auto-refresh of invalid tokens.", inline: false }
                     )
                     .setFooter({ text: "Elliott Modding Enterprise Security Suite" });
 
@@ -526,48 +620,6 @@ client.on('interactionCreate', async interaction => {
                 return interaction.reply({ embeds: [embed] });
             }
 
-            // --- BOT OWNER ONLY COMMANDS ---
-            if (commandName === 'put_donated') {
-                if (!isBotOwner(interaction.user.id)) {
-                    return interaction.reply({ content: '❌ **Access Denied:** Only the bot owner can use this command.', flags: 64 });
-                }
-
-                const bearer = options.getString('bearer');
-                const refresh = options.getString('refresh');
-                
-                const validationResult = await validateSteamToken(bearer);
-                
-                if (!validationResult.valid) {
-                    return interaction.reply({ 
-                        content: `❌ **Invalid Token!**\nThe token was rejected by the API (Status: ${validationResult.status}).\n\n**Reason:** ${validationResult.message || 'Unknown error'}`,
-                        flags: 64 
-                    });
-                }
-
-                donatedTokenCounter++;
-                donatedTokens.push({
-                    id: donatedTokenCounter,
-                    bearer,
-                    refresh,
-                    addedAt: Date.now(),
-                    expiresAt: validationResult.expiresAt,
-                    donatedBy: interaction.user.id
-                });
-
-                const embed = new EmbedBuilder()
-                    .setTitle('✅ Donated Token Added to Stock')
-                    .setDescription(`Donated token #${donatedTokenCounter} has been verified and added to the stock queue.`)
-                    .setColor(0x2ECC71)
-                    .addFields(
-                        { name: 'Token ID', value: `#${donatedTokenCounter}`, inline: true },
-                        { name: 'Expires', value: validationResult.expiresAt ? `<t:${Math.floor(validationResult.expiresAt/1000)}:R>` : 'Unknown', inline: true },
-                        { name: 'Total Donated Tokens', value: `${donatedTokens.length}`, inline: true }
-                    )
-                    .setTimestamp();
-
-                return interaction.reply({ embeds: [embed], flags: 64 });
-            }
-
             // --- ADMIN ONLY COMMANDS (Require Administrator permission) ---
             if (commandName === 'stock' || commandName === 'generator' || commandName === 'force_refresh' || 
                 commandName === 'remove_stock' || commandName === 'refresh_cooldown_all' || commandName === 'refresh_cooldown_user' ||
@@ -582,7 +634,7 @@ client.on('interactionCreate', async interaction => {
                 commandName === 'mute' || commandName === 'poll' || commandName === 'postroles' || commandName === 'postrules' ||
                 commandName === 'reactionrole' || commandName === 'roleadd' || commandName === 'roleremove' || commandName === 'setlogs' ||
                 commandName === 'slowmode' || commandName === 'starboard' || commandName === 'status' || commandName === 'ticketpanel' ||
-                commandName === 'unlock' || commandName === 'welcome') {
+                commandName === 'unlock' || commandName === 'welcome' || commandName === 'refresh_batch') {
                 
                 // Check if user has Administrator permission
                 if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
@@ -633,15 +685,10 @@ client.on('interactionCreate', async interaction => {
                         new ButtonBuilder().setCustomId('gen_public').setLabel('Public Token').setStyle(ButtonStyle.Success).setEmoji('🟢'),
                         new ButtonBuilder().setCustomId('gen_booster').setLabel('Booster Token').setStyle(ButtonStyle.Primary).setEmoji('🚀'),
                         new ButtonBuilder().setCustomId('gen_buyer').setLabel('Buyer Token').setStyle(ButtonStyle.Secondary).setEmoji('⚡'),
-                        new ButtonBuilder().setCustomId('gen_vip').setLabel('VIP Token').setStyle(ButtonStyle.Danger).setEmoji('👑'),
-                        new ButtonBuilder().setCustomId('gen_donate').setLabel('Donate Token').setStyle(ButtonStyle.Secondary).setEmoji('🤝')
+                        new ButtonBuilder().setCustomId('gen_vip').setLabel('VIP Token').setStyle(ButtonStyle.Danger).setEmoji('👑')
                     );
 
-                    const row2 = new ActionRowBuilder().addComponents(
-                        new ButtonBuilder().setCustomId('gen_use_donated').setLabel('Use Donated Token').setStyle(ButtonStyle.Primary).setEmoji('🎁')
-                    );
-
-                    return interaction.reply({ embeds: [embed], components: [row, row2], allowedMentions: { parse: ['roles'] } });
+                    return interaction.reply({ embeds: [embed], components: [row], allowedMentions: { parse: ['roles'] } });
                 }
 
                 if (commandName === 'force_refresh') {
@@ -676,6 +723,14 @@ client.on('interactionCreate', async interaction => {
                         if (key.startsWith(target.id)) cooldowns.delete(key);
                     }
                     return interaction.reply({ content: `⏱️ Cooldown reset successfully for <@${target.id}>.` });
+                }
+
+                if (commandName === 'refresh_batch') {
+                    const refreshed = await autoRefreshInvalidTokens();
+                    return interaction.reply({ 
+                        content: `🔄 **Refresh Batch Complete!**\nRefreshed **${refreshed}** invalid tokens.\nBatch #${refreshBatchCounter}\nTotal tokens in stock: ${tokenStock.length}`,
+                        flags: 64 
+                    });
                 }
 
                 if (commandName === 'logs') {
@@ -818,15 +873,10 @@ client.on('interactionCreate', async interaction => {
                             new ButtonBuilder().setCustomId('gen_public').setLabel('Public Token').setStyle(ButtonStyle.Success).setEmoji('🟢'),
                             new ButtonBuilder().setCustomId('gen_booster').setLabel('Booster Token').setStyle(ButtonStyle.Primary).setEmoji('🚀'),
                             new ButtonBuilder().setCustomId('gen_buyer').setLabel('Buyer Token').setStyle(ButtonStyle.Secondary).setEmoji('⚡'),
-                            new ButtonBuilder().setCustomId('gen_vip').setLabel('VIP Token').setStyle(ButtonStyle.Danger).setEmoji('👑'),
-                            new ButtonBuilder().setCustomId('gen_donate').setLabel('Donate Token').setStyle(ButtonStyle.Secondary).setEmoji('🤝')
+                            new ButtonBuilder().setCustomId('gen_vip').setLabel('VIP Token').setStyle(ButtonStyle.Danger).setEmoji('👑')
                         );
 
-                        const row2 = new ActionRowBuilder().addComponents(
-                            new ButtonBuilder().setCustomId('gen_use_donated').setLabel('Use Donated Token').setStyle(ButtonStyle.Primary).setEmoji('🎁')
-                        );
-
-                        return interaction.reply({ embeds: [embed], components: [row, row2], allowedMentions: { parse: ['roles'] } });
+                        return interaction.reply({ embeds: [embed], components: [row], allowedMentions: { parse: ['roles'] } });
                     }
 
                     if (subArg === 'verify') {
@@ -989,78 +1039,6 @@ client.on('interactionCreate', async interaction => {
 
         // --- BUTTON HANDLERS ---
         if (interaction.isButton()) {
-            // Donate Token Button - Available to everyone
-            if (interaction.customId === 'gen_donate') {
-                const modal = new ModalBuilder()
-                    .setCustomId('donate_modal')
-                    .setTitle('🤝 Donate Token');
-
-                const bearerInput = new TextInputBuilder()
-                    .setCustomId('donate_bearer_input')
-                    .setLabel("ENTER YOUR BEARER TOKEN")
-                    .setStyle(TextInputStyle.Short)
-                    .setPlaceholder("ey3hG0...")
-                    .setRequired(true);
-
-                const refreshInput = new TextInputBuilder()
-                    .setCustomId('donate_refresh_input')
-                    .setLabel("ENTER YOUR REFRESH TOKEN")
-                    .setStyle(TextInputStyle.Short)
-                    .setPlaceholder("ey3hG0...")
-                    .setRequired(true);
-
-                modal.addComponents(
-                    new ActionRowBuilder().addComponents(bearerInput),
-                    new ActionRowBuilder().addComponents(refreshInput)
-                );
-                return await interaction.showModal(modal);
-            }
-
-            // Use Donated Token - Bot Owner Only (FIXED: Now owner can use it)
-            if (interaction.customId === 'gen_use_donated') {
-                // FIXED: Check if user is bot owner
-                if (interaction.user.id !== BOT_OWNER_ID) {
-                    return interaction.reply({ content: '❌ **Access Denied:** Only the bot owner can use donated tokens.', flags: 64 });
-                }
-
-                if (donatedTokens.length === 0) {
-                    return interaction.reply({ content: '❌ **No Donated Tokens:** There are currently no donated tokens available.', flags: 64 });
-                }
-
-                // Get the first donated token
-                const donatedToken = donatedTokens[0];
-                
-                if (donatedToken.expiresAt && Date.now() > donatedToken.expiresAt) {
-                    donatedTokens.shift();
-                    return interaction.reply({ content: '❌ **Expired Token:** The donated token has expired and has been removed.', flags: 64 });
-                }
-
-                // Move donated token to main stock
-                tokenStock.push({
-                    bearer: donatedToken.bearer,
-                    refresh: donatedToken.refresh,
-                    addedAt: Date.now(),
-                    expiresAt: donatedToken.expiresAt
-                });
-
-                // Log which token was used
-                const usedTokenId = donatedToken.id;
-                donatedTokens.shift();
-
-                const embed = new EmbedBuilder()
-                    .setTitle('🎁 Donated Token Added to Stock')
-                    .setDescription(`Donated token #${usedTokenId} has been added to the main stock queue.`)
-                    .setColor(0x2ECC71)
-                    .addFields(
-                        { name: 'Token ID Used', value: `#${usedTokenId}`, inline: true },
-                        { name: 'Remaining Donated Tokens', value: `${donatedTokens.length}`, inline: true },
-                        { name: 'Total Stock', value: `${tokenStock.length}`, inline: true }
-                    )
-                    .setTimestamp();
-
-                return interaction.reply({ embeds: [embed], flags: 64 });
-            }
-
             // Public/Booster/Buyer/VIP Token buttons - Available to everyone with role checks
             if (['gen_public', 'gen_booster', 'gen_buyer', 'gen_vip'].includes(interaction.customId)) {
                 const userId = interaction.user.id;
@@ -1344,71 +1322,6 @@ client.on('interactionCreate', async interaction => {
 
         // --- MODAL SUBMIT HANDLERS ---
         if (interaction.isModalSubmit()) {
-            // Donate Token Modal - Available to everyone
-            if (interaction.customId === 'donate_modal') {
-                await interaction.deferReply({ flags: 64 });
-                const bearer = interaction.fields.getTextInputValue('donate_bearer_input').trim();
-                const refresh = interaction.fields.getTextInputValue('donate_refresh_input').trim();
-                
-                const validationResult = await validateSteamToken(bearer);
-                
-                if (!validationResult.valid) {
-                    const donationLog = new EmbedBuilder()
-                        .setTitle('❌ Donation Rejected')
-                        .setDescription(`User: <@${interaction.user.id}> tried to donate an invalid token.\nAPI Status: ${validationResult.status}\nMessage: ${validationResult.message || 'Token invalid'}`)
-                        .setColor(0xED4245)
-                        .setTimestamp();
-                    await sendBotLog(interaction.guild, 'stock', donationLog);
-                    
-                    return interaction.editReply({ 
-                        content: `❌ **Donation Failed!**\nThe token was rejected by the API (Status: ${validationResult.status}).\n\n**Reason:** ${validationResult.message || 'Unknown error'}` 
-                    });
-                }
-
-                // Increment counter and store donated token
-                donatedTokenCounter++;
-                donatedTokens.push({
-                    id: donatedTokenCounter,
-                    bearer,
-                    refresh,
-                    addedAt: Date.now(),
-                    expiresAt: validationResult.expiresAt,
-                    donatedBy: interaction.user.id
-                });
-
-                // Send DM to bot owner with full token details
-                try {
-                    const owner = await client.users.fetch(BOT_OWNER_ID);
-                    const dmEmbed = new EmbedBuilder()
-                        .setTitle('🎁 New Token Donated!')
-                        .setDescription(`A token has been donated by <@${interaction.user.id}>`)
-                        .setColor(0x2ECC71)
-                        .addFields(
-                            { name: 'Donor', value: `${interaction.user.tag} (${interaction.user.id})`, inline: true },
-                            { name: 'Token ID', value: `#${donatedTokenCounter}`, inline: true },
-                            { name: 'Total Donated Tokens', value: `${donatedTokens.length}`, inline: true },
-                            { name: 'Bearer Token', value: `\`\`\`${bearer}\`\`\``, inline: false },
-                            { name: 'Refresh Token', value: `\`\`\`${refresh}\`\`\``, inline: false },
-                            { name: 'Expires', value: validationResult.expiresAt ? `<t:${Math.floor(validationResult.expiresAt/1000)}:F>` : 'Unknown', inline: true }
-                        )
-                        .setTimestamp();
-                    await owner.send({ embeds: [dmEmbed] });
-                } catch (err) {
-                    console.error('Failed to send DM to owner:', err);
-                }
-
-                const donationLog = new EmbedBuilder()
-                    .setTitle('🤝 Token Donated & Verified')
-                    .setDescription(`User: <@${interaction.user.id}> donated a verified token.\nDonated Token ID: #${donatedTokenCounter}\nTotal Donated Tokens: ${donatedTokens.length}\nExpires: ${validationResult.expiresAt ? `<t:${Math.floor(validationResult.expiresAt/1000)}:R>` : 'Unknown'}`)
-                    .setColor(0x2ECC71)
-                    .setTimestamp();
-                await sendBotLog(interaction.guild, 'stock', donationLog);
-
-                return interaction.editReply({ 
-                    content: `✅ **Thank you for donating!** Your token has been added to the donation queue.\n\n**Donation ID:** #${donatedTokenCounter}\n**Token expires:** ${validationResult.expiresAt ? `<t:${Math.floor(validationResult.expiresAt/1000)}:F>` : 'Unknown'}\n\n**Time left:** ${validationResult.expiresAt ? formatRemainingTime(validationResult.expiresAt) : 'Unknown'}` 
-                });
-            }
-
             // Stock Modal - Admin only
             if (interaction.customId === 'stock_modal') {
                 if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
