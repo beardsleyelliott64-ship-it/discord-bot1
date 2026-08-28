@@ -689,13 +689,18 @@ async function refreshToken(refreshTk) {
         let refreshSuccess = false;
         let newBearer = null;
         let newRefresh = null;
-        let expiresIn = 3600; // default 1 hour
+        let expiresIn = 3600;
 
-        if (apiWorking) {
+        // List of possible refresh endpoints
+        const refreshEndpoints = [
+            `${ACTIVE_API_URL}/v2/account/refresh`,
+            `${ACTIVE_API_URL}/v2/auth/refresh`
+        ];
+
+        // Attempt refresh regardless of apiWorking (we'll catch network errors)
+        for (const refreshUrl of refreshEndpoints) {
             try {
-                const refreshUrl = `${ACTIVE_API_URL}/v2/auth/refresh`;
                 console.log(`[TMC.LOL] Calling refresh endpoint: ${refreshUrl}`);
-
                 const controller = new AbortController();
                 const timeoutId = setTimeout(() => controller.abort(), 10000);
 
@@ -713,26 +718,29 @@ async function refreshToken(refreshTk) {
 
                 if (response.ok) {
                     const data = await response.json();
-                    // Expected format: { token: { access_token, refresh_token, expires_in } }
+                    // Nakama usually returns { token: { access_token, refresh_token, expires_in } }
                     if (data && data.token) {
                         newBearer = data.token.access_token || data.token.bearer;
                         newRefresh = data.token.refresh_token;
                         expiresIn = data.token.expires_in || 3600;
                         refreshSuccess = true;
-                        console.log('[TMC.LOL] ✅ Token refreshed successfully via API!');
+                        console.log(`[TMC.LOL] ✅ Token refreshed successfully via ${refreshUrl}!`);
+                        break; // success, stop trying other endpoints
                     } else {
-                        console.log('[TMC.LOL] ⚠️ Refresh response missing token object:', data);
+                        console.log(`[TMC.LOL] ⚠️ Refresh response missing token object:`, data);
                     }
                 } else {
-                    console.log(`[TMC.LOL] ❌ Refresh API returned status ${response.status}`);
+                    console.log(`[TMC.LOL] ❌ Refresh API returned status ${response.status} for ${refreshUrl}`);
                     const errorText = await response.text();
                     console.log(`[TMC.LOL] Error body: ${errorText.substring(0, 200)}`);
+                    // On 404, continue to next endpoint; on other errors (401, 400, etc.) stop trying
+                    if (response.status === 404) continue;
+                    break;
                 }
             } catch (err) {
-                console.error('[TMC.LOL] ❌ Refresh API call failed:', err.message);
+                console.error(`[TMC.LOL] ❌ Refresh API call to ${refreshUrl} failed:`, err.message);
+                // Network error – continue to next endpoint
             }
-        } else {
-            console.log('[TMC.LOL] ⚠️ API not working, cannot call refresh endpoint.');
         }
 
         // --- If API refresh succeeded, update stock ---
@@ -753,7 +761,7 @@ async function refreshToken(refreshTk) {
                     expiresAt: newExpiry
                 };
             }
-            // Also update DEFAULT_TOKEN so future fallbacks use the latest
+            // Update DEFAULT_TOKEN so future fallbacks use the latest
             DEFAULT_TOKEN.bearer = newBearer;
             DEFAULT_TOKEN.refresh_token = newRefresh;
 
@@ -772,33 +780,44 @@ async function refreshToken(refreshTk) {
             return result;
         }
 
-        // --- FALLBACK: extend expiry (keep same token) ---
-        console.log('[TMC.LOL] ⚠️ API refresh failed or returned invalid data – using fallback (extend expiry)');
-        if (tokenStock.length === 0) {
-            tokenStock.push({
-                bearer: DEFAULT_TOKEN.bearer,
-                refresh: DEFAULT_TOKEN.refresh_token,
-                addedAt: Date.now(),
-                expiresAt: Date.now() + (60 * 60 * 1000)
-            });
+        // --- FALLBACK: ONLY use if API is completely unreachable (network errors) ---
+        // Since we already looped through endpoints and none worked, check if the failure was due to network.
+        // We'll use apiWorking flag (which indicates if the base API URL responded at all).
+        if (!apiWorking) {
+            console.log('[TMC.LOL] ⚠️ API is down – using fallback (extend expiry, keep same token)');
+            if (tokenStock.length === 0) {
+                tokenStock.push({
+                    bearer: DEFAULT_TOKEN.bearer,
+                    refresh: DEFAULT_TOKEN.refresh_token,
+                    addedAt: Date.now(),
+                    expiresAt: Date.now() + (60 * 60 * 1000)
+                });
+            } else {
+                tokenStock[0].expiresAt = Date.now() + (60 * 60 * 1000);
+                tokenStock[0].addedAt = Date.now();
+            }
+
+            const result = {
+                success: true,
+                bearer: tokenStock[0].bearer,
+                refresh: tokenStock[0].refresh,
+                expiresAt: tokenStock[0].expiresAt,
+                message: 'Token extended using fallback (API unavailable)'
+            };
+
+            processQueue(null, result);
+            isRefreshing = false;
+            console.log('[TMC.LOL] 🔓 Refresh lock released');
+            console.log('[TMC.LOL] ✅ Token extended! New expiry:', new Date(result.expiresAt).toLocaleString());
+            return result;
         } else {
-            tokenStock[0].expiresAt = Date.now() + (60 * 60 * 1000);
-            tokenStock[0].addedAt = Date.now();
+            // API is reachable but refresh failed – do NOT extend, return failure
+            console.log('[TMC.LOL] ❌ Refresh failed despite API being reachable.');
+            const error = new Error('Refresh failed: no valid response from API');
+            processQueue(error, null);
+            isRefreshing = false;
+            return { success: false, message: 'Refresh failed' };
         }
-
-        const result = {
-            success: true,
-            bearer: tokenStock[0].bearer,
-            refresh: tokenStock[0].refresh,
-            expiresAt: tokenStock[0].expiresAt,
-            message: 'Token extended using fallback (API unavailable or invalid response)'
-        };
-
-        processQueue(null, result);
-        isRefreshing = false;
-        console.log('[TMC.LOL] 🔓 Refresh lock released');
-        console.log('[TMC.LOL] ✅ Token extended! New expiry:', new Date(result.expiresAt).toLocaleString());
-        return result;
 
     } catch (err) {
         console.error('[TMC.LOL] Refresh error:', err.message);
