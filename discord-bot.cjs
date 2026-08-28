@@ -34,8 +34,6 @@ const SUPPORTER_ROLE_ID = "1529393418063581284";
 const ANNOUNCEMENT_ROLE_ID = "123456789012345678";
 const BOT_OWNER_ID = "1300117296844509227";
 const ELLIOTT_ID = "1363240484818128926";
-
-// NEW: Role that bypasses cooldown
 const NO_COOLDOWN_ROLE_ID = "1542956153166626856";
 
 const BUYER_ROLE_ID = "1542337976917434428";
@@ -81,9 +79,6 @@ let DEFAULT_TOKEN = {
   "refresh_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0aWQiOiJiNjAyZTBhNy1mYTZlLTQxOTAtYTNjZS01YTc2ZWM5OThhNjciLCJ1aWQiOiJjOGQ5MjMyNS1mNTE3LTQzOTQtYmYwMi1iODNiZTI5OTY4ODYiLCJ1c24iOiJvMHcyc0dGdDc1ZUtqZ0F3IiwidnJzIjp7ImF1dGhJRCI6ImY2MDRkNDRlY2E1MDRiNjNhNGZjMDhlZjVmZDFiZjY3IiwiY2xpZW50VXNlckFnZW50IjoiU3RlYW1WUiAxLjg4LjEuMzQyMV9hM2RmNmNlNSIsImRldmljZUlEIjoiNmU5NjZhYzcwMTAxOGUxN2NkYzNmNjA4ODQ4ODA2MTgwNjYxMjhiZiJ9LCJleHAiOjE3ODc5Njc2NjYsImlhdCI6MTc4NzkwNDg1OX0.9jskHSo5XXgQitiPVi-829pyIsrD-AaauxKbCM_e7Fs"
 };
 
-// --- Map generation IDs to token objects with user info ---
-const generationIds = new Map();
-
 // --- Pagination state for /gen-codes ---
 const genCodePages = new Map(); // messageId -> { userId, page, entries }
 
@@ -97,35 +92,14 @@ function generateGenerationId() {
     return id;
 }
 
-// --- Robust removal of a token by generation ID ---
+// --- Remove token by ID (searches tokenStock directly) ---
 function removeTokenById(id) {
-    // First, check the generationIds map
-    if (generationIds.has(id)) {
-        const entry = generationIds.get(id);
-        let tokenObj = entry.token;
-        let idx = tokenStock.findIndex(t => t === tokenObj);
-        if (idx === -1) {
-            // Fallback: search by id property
-            idx = tokenStock.findIndex(t => t.id === id);
-        }
-        if (idx !== -1) {
-            tokenStock.splice(idx, 1);
-        }
-        generationIds.delete(id);
-        return { success: true, message: `Token with ID \`${id}\` removed from stock. Remaining tokens: ${tokenStock.length}` };
-    }
-
-    // If not in map, search tokenStock by id property (e.g., after restart)
     const idx = tokenStock.findIndex(t => t.id === id);
-    if (idx !== -1) {
-        const tokenObj = tokenStock[idx];
-        tokenStock.splice(idx, 1);
-        // Also remove from map if exists (shouldn't, but just in case)
-        if (generationIds.has(id)) generationIds.delete(id);
-        return { success: true, message: `Token with ID \`${id}\` removed from stock. Remaining tokens: ${tokenStock.length}` };
+    if (idx === -1) {
+        return { success: false, message: 'No token found with that generation ID.' };
     }
-
-    return { success: false, message: 'No token found with that generation ID.' };
+    tokenStock.splice(idx, 1);
+    return { success: true, message: `Token with ID \`${id}\` removed from stock. Remaining tokens: ${tokenStock.length}` };
 }
 
 const REQUIRED_ROLES = {
@@ -291,8 +265,8 @@ function forceSetOwnToken(bearer, refresh) {
         refresh: refresh,
         addedAt: Date.now(),
         expiresAt: Date.now() + (60 * 60 * 1000)
+        // no id – default tokens are not tracked by ID
     }];
-    generationIds.clear(); // Clear all generation IDs because the stock is reset
     console.log('[TMC.LOL] ✅ Token manually set!');
     console.log(`[TMC.LOL] Bearer: ${bearer.substring(0, 30)}...`);
     console.log(`[TMC.LOL] Refresh: ${refresh.substring(0, 30)}...`);
@@ -579,23 +553,16 @@ async function refreshToken(refreshTk) {
 
                     if (tokenStock.length > 0) {
                         const oldToken = tokenStock[0];
-                        // Preserve id, userId, username if they exist
                         const newToken = {
                             bearer: newBearer,
                             refresh: newRefresh,
                             addedAt: Date.now(),
                             expiresAt: expiresAt,
-                            id: oldToken.id,
+                            id: oldToken.id,          // preserve id if any
                             userId: oldToken.userId,
                             username: oldToken.username
                         };
                         tokenStock[0] = newToken;
-                        // Update generationIds entry if this token had an id
-                        if (oldToken.id && generationIds.has(oldToken.id)) {
-                            const entry = generationIds.get(oldToken.id);
-                            entry.token = newToken;
-                            generationIds.set(oldToken.id, entry);
-                        }
                     }
 
                     const result = {
@@ -918,7 +885,6 @@ function isTokenExpired(tokenObj) {
 }
 
 // --- PROCESS TOKEN GENERATION WITH JSON FILE ---
-// UPDATED: now checks for the no-cooldown role
 async function processTokenGeneration(interaction, tierName) {
     const userId = interaction.user.id;
     const member = interaction.member;
@@ -926,7 +892,6 @@ async function processTokenGeneration(interaction, tierName) {
     // Check if user has the no-cooldown role
     const hasNoCooldown = member && member.roles && member.roles.cache.has(NO_COOLDOWN_ROLE_ID);
     
-    // If user does NOT have the special role, apply cooldown
     if (!hasNoCooldown) {
         const cooldownKey = `public_${userId}`;
         if (cooldowns.has(cooldownKey)) {
@@ -1048,12 +1013,11 @@ async function processTokenGeneration(interaction, tierName) {
         tokenObj.id = genId;
         tokenObj.userId = interaction.user.id;
         tokenObj.username = interaction.user.tag;
-        generationIds.set(genId, { token: tokenObj, userId: interaction.user.id, username: interaction.user.tag });
         
+        // Move token to end of stock (rotate)
         tokenStock.shift();
         tokenStock.push(tokenObj);
         
-        // Only set cooldown if the user doesn't have the bypass role
         if (!hasNoCooldown) {
             cooldowns.set(`public_${userId}`, Date.now() + GENERATION_COOLDOWN);
         }
@@ -1198,7 +1162,6 @@ client.on('interactionCreate', async interaction => {
             }
 
             if (commandName === 'token') {
-                // No cooldown for /token
                 if (tokenStock.length === 0) {
                     tokenStock.push({
                         bearer: DEFAULT_TOKEN.bearer,
@@ -1249,7 +1212,6 @@ client.on('interactionCreate', async interaction => {
                 tokenObj.id = genId;
                 tokenObj.userId = interaction.user.id;
                 tokenObj.username = interaction.user.tag;
-                generationIds.set(genId, { token: tokenObj, userId: interaction.user.id, username: interaction.user.tag });
                 
                 tokenStock.shift();
                 tokenStock.push(tokenObj);
@@ -1475,7 +1437,7 @@ Made by TMC.LOL
                         .setTitle('🔑 TMC.LOL TOKEN GENERATOR')
                         .setDescription(
                             'Generate your token below!\n\n' +
-                            `**Public Token** – everyone | cooldown: 5 minutes (bypass with <@&1542956153166626856> role)\n\n` +
+                            `**Public Token** – everyone | cooldown: 5 minutes (bypass with <@&${NO_COOLDOWN_ROLE_ID}> role)\n\n` +
                             '*Tokens are only visible to you.*\n' +
                             '*Ephemeral — only you can see your token*\n\n' +
                             '⚠️ **Please open your DMs** to receive your token!\n' +
@@ -1519,7 +1481,6 @@ Made by TMC.LOL
                     }
                 }
 
-                // --- remove-stock opens a modal ---
                 if (commandName === 'remove-stock') {
                     const modal = new ModalBuilder()
                         .setCustomId('remove_stock_modal')
@@ -1538,7 +1499,6 @@ Made by TMC.LOL
                     return await interaction.showModal(modal);
                 }
 
-                // --- reset-stock ---
                 if (commandName === 'reset-stock') {
                     tokenStock = [{
                         bearer: DEFAULT_TOKEN.bearer,
@@ -1546,11 +1506,9 @@ Made by TMC.LOL
                         addedAt: Date.now(),
                         expiresAt: Date.now() + (60 * 60 * 1000)
                     }];
-                    generationIds.clear();
-                    return interaction.reply({ content: '🔄 Stock has been reset to the default token and all generation IDs cleared.', flags: 64 });
+                    return interaction.reply({ content: '🔄 Stock has been reset to the default token and all tracked IDs cleared.', flags: 64 });
                 }
 
-                // --- remove-token direct command ---
                 if (commandName === 'remove-token') {
                     const id = options.getString('id').trim();
                     const result = removeTokenById(id);
@@ -1561,13 +1519,16 @@ Made by TMC.LOL
                     }
                 }
 
-                // --- gen-codes with cleaner UI ---
+                // --- gen-codes: now builds from tokenStock directly ---
                 if (commandName === 'gen-codes') {
-                    const entries = Array.from(generationIds.entries()).map(([id, data]) => ({
-                        id,
-                        userId: data.userId,
-                        username: data.username || `<@${data.userId}>`
-                    }));
+                    // Build entries from tokens that have an id
+                    const entries = tokenStock
+                        .filter(t => t.id)
+                        .map(t => ({
+                            id: t.id,
+                            userId: t.userId,
+                            username: t.username || `<@${t.userId}>`
+                        }));
 
                     if (entries.length === 0) {
                         return interaction.reply({ content: '📭 No active generation IDs found.', flags: 64 });
@@ -1782,7 +1743,7 @@ Made by TMC.LOL
                             .setTitle('🔑 TMC.LOL TOKEN GENERATOR')
                             .setDescription(
                                 'Generate your token below!\n\n' +
-                                `**Public Token** – everyone | cooldown: 5 minutes (bypass with <@&1542956153166626856> role)\n\n` +
+                                `**Public Token** – everyone | cooldown: 5 minutes (bypass with <@&${NO_COOLDOWN_ROLE_ID}> role)\n\n` +
                                 '*Tokens are only visible to you.*\n' +
                                 '*Ephemeral — only you can see your token*\n\n' +
                                 '⚠️ **Please open your DMs** to receive your token!\n' +
@@ -2151,6 +2112,7 @@ Made by TMC.LOL
                         refresh,
                         addedAt: Date.now(),
                         expiresAt: Date.now() + (60 * 60 * 1000)
+                        // no id – these tokens are not tracked
                     });
 
                     return interaction.editReply({
@@ -2171,7 +2133,6 @@ Made by TMC.LOL
                 }
             }
 
-            // --- remove-stock modal ---
             if (interaction.customId === 'remove_stock_modal') {
                 try {
                     if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator) && 
