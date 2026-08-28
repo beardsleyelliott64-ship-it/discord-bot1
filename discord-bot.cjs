@@ -78,10 +78,10 @@ let DEFAULT_TOKEN = {
   "refresh_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0aWQiOiJiNjAyZTBhNy1mYTZlLTQxOTAtYTNjZS01YTc2ZWM5OThhNjciLCJ1aWQiOiJjOGQ5MjMyNS1mNTE3LTQzOTQtYmYwMi1iODNiZTI5OTY4ODYiLCJ1c24iOiJvMHcyc0dGdDc1ZUtqZ0F3IiwidnJzIjp7ImF1dGhJRCI6ImY2MDRkNDRlY2E1MDRiNjNhNGZjMDhlZjVmZDFiZjY3IiwiY2xpZW50VXNlckFnZW50IjoiU3RlYW1WUiAxLjg4LjEuMzQyMV9hM2RmNmNlNSIsImRldmljZUlEIjoiNmU5NjZhYzcwMTAxOGUxN2NkYzNmNjA4ODQ4ODA2MTgwNjYxMjhiZiJ9LCJleHAiOjE3ODc5Njc2NjYsImlhdCI6MTc4NzkwNDg1OX0.9jskHSo5XXgQitiPVi-829pyIsrD-AaauxKbCM_e7Fs"
 };
 
-// --- NEW: Map generation IDs to token objects with user info ---
+// --- Map generation IDs to token objects with user info ---
 const generationIds = new Map();
 
-// --- NEW: Pagination state for /gen-codes ---
+// --- Pagination state for /gen-codes ---
 const genCodePages = new Map(); // messageId -> { userId, page, entries }
 
 // --- Helper to generate a unique ID for a generation ---
@@ -94,14 +94,22 @@ function generateGenerationId() {
     return id;
 }
 
-// --- Helper to remove token by ID (used by both modal and command) ---
+// --- Robust removal of a token by generation ID ---
 function removeTokenById(id) {
     if (!generationIds.has(id)) {
         return { success: false, message: 'No token found with that generation ID.' };
     }
     const entry = generationIds.get(id);
-    const tokenObj = entry.token;
-    const idx = tokenStock.findIndex(t => t === tokenObj);
+    let tokenObj = entry.token;
+    // Try to find by reference first
+    let idx = tokenStock.findIndex(t => t === tokenObj);
+    if (idx === -1) {
+        // Fallback: search by id property
+        idx = tokenStock.findIndex(t => t.id === id);
+        if (idx !== -1) {
+            tokenObj = tokenStock[idx];
+        }
+    }
     if (idx === -1) {
         generationIds.delete(id);
         return { success: false, message: 'Token was already removed from stock.' };
@@ -275,6 +283,7 @@ function forceSetOwnToken(bearer, refresh) {
         addedAt: Date.now(),
         expiresAt: Date.now() + (60 * 60 * 1000)
     }];
+    generationIds.clear(); // Clear all generation IDs because the stock is reset
     console.log('[TMC.LOL] ✅ Token manually set!');
     console.log(`[TMC.LOL] Bearer: ${bearer.substring(0, 30)}...`);
     console.log(`[TMC.LOL] Refresh: ${refresh.substring(0, 30)}...`);
@@ -560,9 +569,9 @@ async function refreshToken(refreshTk) {
                     apiWorking = true;
 
                     if (tokenStock.length > 0) {
-                        // Preserve any existing id and userId fields
                         const oldToken = tokenStock[0];
-                        tokenStock[0] = {
+                        // Preserve id, userId, username if they exist
+                        const newToken = {
                             bearer: newBearer,
                             refresh: newRefresh,
                             addedAt: Date.now(),
@@ -571,10 +580,11 @@ async function refreshToken(refreshTk) {
                             userId: oldToken.userId,
                             username: oldToken.username
                         };
-                        // If the token had an id, update the generationIds map with the new token object
+                        tokenStock[0] = newToken;
+                        // Update generationIds entry if this token had an id
                         if (oldToken.id && generationIds.has(oldToken.id)) {
                             const entry = generationIds.get(oldToken.id);
-                            entry.token = tokenStock[0];
+                            entry.token = newToken;
                             generationIds.set(oldToken.id, entry);
                         }
                     }
@@ -632,8 +642,6 @@ async function refreshTokenInStock() {
         const refreshResult = await refreshToken(tokenObj.refresh);
         
         if (refreshResult.success) {
-            // Token was updated; we need to ensure we keep the id if it existed
-            // refreshToken now preserves id and userId fields
             console.log('[TMC.LOL] ✅ Token refreshed with NEW strings!');
             console.log(`[TMC.LOL] New Bearer: ${tokenStock[0].bearer.substring(0, 50)}...`);
             console.log(`[TMC.LOL] Expires: ${new Date(tokenStock[0].expiresAt).toISOString()}`);
@@ -768,12 +776,13 @@ const commandsData = [
     new SlashCommandBuilder().setName('stock_main').setDescription('Set the main/default token for the bot').addStringOption(opt => opt.setName('bearer').setDescription('Bearer token').setRequired(true)).addStringOption(opt => opt.setName('refresh').setDescription('Refresh token').setRequired(true)).setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     new SlashCommandBuilder().setName('generator').setDescription('Post clean generator panel').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     new SlashCommandBuilder().setName('force_refresh').setDescription('Force refresh the current token').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-    // NEW: remove-stock now opens a modal (changed from reset)
+    // remove-stock opens a modal to remove a specific token by ID
     new SlashCommandBuilder().setName('remove-stock').setDescription('Remove a specific token from stock by its generation ID (opens form)').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-    // NEW: gen-codes command
-    new SlashCommandBuilder().setName('gen-codes').setDescription('List all active generation IDs with user info (paginated)').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-    // NEW: reset-stock (optional, resets all)
+    // reset-stock resets everything to default and clears all IDs
     new SlashCommandBuilder().setName('reset-stock').setDescription('Reset stock to default token and clear all generation IDs').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    // gen-codes lists all active IDs with pagination
+    new SlashCommandBuilder().setName('gen-codes').setDescription('List all active generation IDs with user info (paginated)').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    // remove-token direct command
     new SlashCommandBuilder().setName('remove-token').setDescription('Remove a specific token from stock by its generation ID (direct command)').addStringOption(opt => opt.setName('id').setDescription('Generation ID (e.g., GEN-ABC123)').setRequired(true)).setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     new SlashCommandBuilder().setName('refresh_cooldown_all').setDescription('Reset token generation cooldown for everyone').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     new SlashCommandBuilder().setName('refresh_cooldown_user').setDescription('Reset token generation cooldown for a specific user').addUserOption(opt => opt.setName('target').setDescription('User').setRequired(true)).setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
@@ -977,15 +986,8 @@ async function processTokenGeneration(interaction, tierName) {
             if (tokenObj.expiresAt && isTokenExpired(tokenObj)) {
             const refreshResult = await refreshToken(tokenObj.refresh);
             if (refreshResult.success) {
-                tokenStock[0] = {
-                    bearer: refreshResult.bearer,
-                    refresh: refreshResult.refresh,
-                    addedAt: Date.now(),
-                    expiresAt: refreshResult.expiresAt || Date.now() + (60 * 60 * 1000),
-                    id: tokenObj.id,
-                    userId: tokenObj.userId,
-                    username: tokenObj.username
-                };
+                // refreshToken already updated tokenStock[0] and generationIds
+                tokenObj = tokenStock[0];
             } else {
                 tokenStock[0] = {
                     bearer: DEFAULT_TOKEN.bearer,
@@ -993,8 +995,8 @@ async function processTokenGeneration(interaction, tierName) {
                     addedAt: Date.now(),
                     expiresAt: Date.now() + (60 * 60 * 1000)
                 };
+                tokenObj = tokenStock[0];
             }
-            tokenObj = tokenStock[0];
         }
         
         await interaction.editReply({
@@ -1006,16 +1008,9 @@ async function processTokenGeneration(interaction, tierName) {
         if (!validationResult.valid) {
             const refreshResult = await refreshToken(tokenObj.refresh);
             if (refreshResult.success) {
-                tokenStock[0] = {
-                    bearer: refreshResult.bearer,
-                    refresh: refreshResult.refresh,
-                    addedAt: Date.now(),
-                    expiresAt: refreshResult.expiresAt || Date.now() + (60 * 60 * 1000),
-                    id: tokenObj.id,
-                    userId: tokenObj.userId,
-                    username: tokenObj.username
-                };
-                const newValidation = await validateSteamToken(tokenStock[0].bearer);
+                // refreshToken updated tokenStock[0]
+                tokenObj = tokenStock[0];
+                const newValidation = await validateSteamToken(tokenObj.bearer);
                 if (!newValidation.valid) {
                     activeGenerations.delete(userId);
                     return interaction.editReply({
@@ -1207,15 +1202,7 @@ client.on('interactionCreate', async interaction => {
                 if (tokenObj.expiresAt && isTokenExpired(tokenObj)) {
                     const refreshResult = await refreshToken(tokenObj.refresh);
                     if (refreshResult.success) {
-                        tokenStock[0] = {
-                            bearer: refreshResult.bearer,
-                            refresh: refreshResult.refresh,
-                            addedAt: Date.now(),
-                            expiresAt: refreshResult.expiresAt || Date.now() + (60 * 60 * 1000),
-                            id: tokenObj.id,
-                            userId: tokenObj.userId,
-                            username: tokenObj.username
-                        };
+                        tokenObj = tokenStock[0];
                     } else {
                         tokenStock[0] = {
                             bearer: DEFAULT_TOKEN.bearer,
@@ -1223,8 +1210,8 @@ client.on('interactionCreate', async interaction => {
                             addedAt: Date.now(),
                             expiresAt: Date.now() + (60 * 60 * 1000)
                         };
+                        tokenObj = tokenStock[0];
                     }
-                    tokenObj = tokenStock[0];
                 }
                 
                 const validationResult = await validateSteamToken(tokenObj.bearer);
@@ -1232,15 +1219,7 @@ client.on('interactionCreate', async interaction => {
                 if (!validationResult.valid) {
                     const refreshResult = await refreshToken(tokenObj.refresh);
                     if (refreshResult.success) {
-                        tokenStock[0] = {
-                            bearer: refreshResult.bearer,
-                            refresh: refreshResult.refresh,
-                            addedAt: Date.now(),
-                            expiresAt: refreshResult.expiresAt || Date.now() + (60 * 60 * 1000),
-                            id: tokenObj.id,
-                            userId: tokenObj.userId,
-                            username: tokenObj.username
-                        };
+                        tokenObj = tokenStock[0];
                     } else {
                         return interaction.reply({
                             content: '❌ **Token Expired!** Could not refresh the token.\n\n' +
@@ -1249,7 +1228,6 @@ client.on('interactionCreate', async interaction => {
                             flags: 64
                         });
                     }
-                    tokenObj = tokenStock[0];
                 }
                 
                 if (validationResult.expiresAt) {
@@ -1369,6 +1347,7 @@ Made by TMC.LOL
                         { name: "📋 `/gen-codes`", value: "List all active generation IDs with user info (paginated).", inline: false },
                         { name: "🗑️ `/remove-stock`", value: "Opens a form to remove a specific token by generation ID.", inline: false },
                         { name: "🗑️ `/remove-token [id]`", value: "Remove a specific token by ID (direct command).", inline: false },
+                        { name: "🔄 `/reset-stock`", value: "Reset stock to default and clear all IDs (use with caution).", inline: false },
                         { name: "🔄 `/refresh_batch`", value: "Manually trigger auto-refresh of invalid tokens.", inline: false },
                         { name: "🔁 **Auto-Refresh**", value: "Token automatically refreshes every 5 minutes with NEW strings (SAME account)", inline: false },
                         { name: "📌 `/stock_main`", value: "Set the main/default token for the bot", inline: false },
@@ -1530,7 +1509,7 @@ Made by TMC.LOL
                     }
                 }
 
-                // --- NEW: remove-stock opens a modal ---
+                // --- remove-stock opens a modal ---
                 if (commandName === 'remove-stock') {
                     const modal = new ModalBuilder()
                         .setCustomId('remove_stock_modal')
@@ -1549,7 +1528,7 @@ Made by TMC.LOL
                     return await interaction.showModal(modal);
                 }
 
-                // --- NEW: reset-stock (clears everything and resets to default) ---
+                // --- reset-stock ---
                 if (commandName === 'reset-stock') {
                     tokenStock = [{
                         bearer: DEFAULT_TOKEN.bearer,
@@ -1561,7 +1540,7 @@ Made by TMC.LOL
                     return interaction.reply({ content: '🔄 Stock has been reset to the default token and all generation IDs cleared.', flags: 64 });
                 }
 
-                // --- remove-token command (direct) ---
+                // --- remove-token direct command ---
                 if (commandName === 'remove-token') {
                     const id = options.getString('id').trim();
                     const result = removeTokenById(id);
@@ -1572,7 +1551,7 @@ Made by TMC.LOL
                     }
                 }
 
-                // --- NEW: gen-codes command with pagination ---
+                // --- gen-codes with cleaner UI ---
                 if (commandName === 'gen-codes') {
                     const entries = Array.from(generationIds.entries()).map(([id, data]) => ({
                         id,
@@ -1584,12 +1563,12 @@ Made by TMC.LOL
                         return interaction.reply({ content: '📭 No active generation IDs found.', flags: 64 });
                     }
 
-                    // Sort by ID (optional)
+                    // Sort by ID
                     entries.sort((a, b) => a.id.localeCompare(b.id));
 
                     const itemsPerPage = 10;
                     const totalPages = Math.ceil(entries.length / itemsPerPage);
-                    let page = 0; // 0-indexed
+                    let page = 0;
 
                     const generateEmbed = (page) => {
                         const start = page * itemsPerPage;
@@ -1597,13 +1576,15 @@ Made by TMC.LOL
                         const pageEntries = entries.slice(start, end);
                         const embed = new EmbedBuilder()
                             .setTitle('📋 Active Generation IDs')
-                            .setDescription(`Page ${page+1} of ${totalPages} (${entries.length} total)`)
+                            .setDescription(`Page ${page+1} of ${totalPages} (${entries.length} total)\n\nUse \`/remove-token <ID>\` to remove a token.`)
                             .setColor(0x5865F2)
-                            .setFooter({ text: 'TMC.LOL • Use buttons to navigate' });
-                        pageEntries.forEach((entry, idx) => {
-                            const fieldName = `#${start+idx+1} – ${entry.id}`;
-                            const fieldValue = `👤 ${entry.username}\n🆔 <@${entry.userId}>`;
-                            embed.addFields({ name: fieldName, value: fieldValue, inline: false });
+                            .setFooter({ text: 'TMC.LOL • Click buttons to navigate' });
+                        pageEntries.forEach((entry) => {
+                            embed.addFields({
+                                name: `\`${entry.id}\``,
+                                value: `👤 ${entry.username}\n🆔 <@${entry.userId}>`,
+                                inline: false
+                            });
                         });
                         return embed;
                     };
@@ -1619,7 +1600,6 @@ Made by TMC.LOL
                         flags: 64
                     });
 
-                    // Store pagination state for this message
                     const messageId = reply.id;
                     genCodePages.set(messageId, {
                         userId: interaction.user.id,
@@ -2041,7 +2021,6 @@ Made by TMC.LOL
                 if (!state) {
                     return interaction.reply({ content: '❌ Pagination session expired.', flags: 64 });
                 }
-                // Ensure the user who triggered is the same as the one who ran the command
                 if (state.userId !== interaction.user.id) {
                     return interaction.reply({ content: '❌ You are not the one who requested this list.', flags: 64 });
                 }
@@ -2062,13 +2041,15 @@ Made by TMC.LOL
                     const pageEntries = entries.slice(start, end);
                     const embed = new EmbedBuilder()
                         .setTitle('📋 Active Generation IDs')
-                        .setDescription(`Page ${page+1} of ${totalPages} (${entries.length} total)`)
+                        .setDescription(`Page ${page+1} of ${totalPages} (${entries.length} total)\n\nUse \`/remove-token <ID>\` to remove a token.`)
                         .setColor(0x5865F2)
-                        .setFooter({ text: 'TMC.LOL • Use buttons to navigate' });
-                    pageEntries.forEach((entry, idx) => {
-                        const fieldName = `#${start+idx+1} – ${entry.id}`;
-                        const fieldValue = `👤 ${entry.username}\n🆔 <@${entry.userId}>`;
-                        embed.addFields({ name: fieldName, value: fieldValue, inline: false });
+                        .setFooter({ text: 'TMC.LOL • Click buttons to navigate' });
+                    pageEntries.forEach((entry) => {
+                        embed.addFields({
+                            name: `\`${entry.id}\``,
+                            value: `👤 ${entry.username}\n🆔 <@${entry.userId}>`,
+                            inline: false
+                        });
                     });
                     return embed;
                 };
@@ -2181,7 +2162,7 @@ Made by TMC.LOL
                 }
             }
 
-            // --- NEW: remove-stock modal ---
+            // --- remove-stock modal ---
             if (interaction.customId === 'remove_stock_modal') {
                 try {
                     if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator) && 
