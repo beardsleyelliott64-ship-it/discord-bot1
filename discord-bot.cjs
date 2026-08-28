@@ -39,7 +39,6 @@ const BUYER_ROLE_ID = "1542337976917434428";
 const VIP_ROLE_ID = "1542337978016469093";
 const BOOSTER_ROLE_ID = "1542337979807178832";
 
-// --- NEW: Generation cooldown (5 minutes) ---
 const GENERATION_COOLDOWN = 5 * 60 * 1000; // 5 minutes
 
 // --- API CONFIGURATION ---
@@ -79,10 +78,13 @@ let DEFAULT_TOKEN = {
   "refresh_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0aWQiOiJiNjAyZTBhNy1mYTZlLTQxOTAtYTNjZS01YTc2ZWM5OThhNjciLCJ1aWQiOiJjOGQ5MjMyNS1mNTE3LTQzOTQtYmYwMi1iODNiZTI5OTY4ODYiLCJ1c24iOiJvMHcyc0dGdDc1ZUtqZ0F3IiwidnJzIjp7ImF1dGhJRCI6ImY2MDRkNDRlY2E1MDRiNjNhNGZjMDhlZjVmZDFiZjY3IiwiY2xpZW50VXNlckFnZW50IjoiU3RlYW1WUiAxLjg4LjEuMzQyMV9hM2RmNmNlNSIsImRldmljZUlEIjoiNmU5NjZhYzcwMTAxOGUxN2NkYzNmNjA4ODQ4ODA2MTgwNjYxMjhiZiJ9LCJleHAiOjE3ODc5Njc2NjYsImlhdCI6MTc4NzkwNDg1OX0.9jskHSo5XXgQitiPVi-829pyIsrD-AaauxKbCM_e7Fs"
 };
 
-// --- NEW: Map generation IDs to token objects ---
+// --- NEW: Map generation IDs to token objects with user info ---
 const generationIds = new Map();
 
-// --- NEW: Helper to generate a unique ID for a generation ---
+// --- NEW: Pagination state for /gen-codes ---
+const genCodePages = new Map(); // messageId -> { userId, page, entries }
+
+// --- Helper to generate a unique ID for a generation ---
 function generateGenerationId() {
     const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
     let id = 'GEN-';
@@ -90,6 +92,23 @@ function generateGenerationId() {
         id += chars.charAt(Math.floor(Math.random() * chars.length));
     }
     return id;
+}
+
+// --- Helper to remove token by ID (used by both modal and command) ---
+function removeTokenById(id) {
+    if (!generationIds.has(id)) {
+        return { success: false, message: 'No token found with that generation ID.' };
+    }
+    const entry = generationIds.get(id);
+    const tokenObj = entry.token;
+    const idx = tokenStock.findIndex(t => t === tokenObj);
+    if (idx === -1) {
+        generationIds.delete(id);
+        return { success: false, message: 'Token was already removed from stock.' };
+    }
+    tokenStock.splice(idx, 1);
+    generationIds.delete(id);
+    return { success: true, message: `Token with ID \`${id}\` removed from stock. Remaining tokens: ${tokenStock.length}` };
 }
 
 const REQUIRED_ROLES = {
@@ -255,7 +274,6 @@ function forceSetOwnToken(bearer, refresh) {
         refresh: refresh,
         addedAt: Date.now(),
         expiresAt: Date.now() + (60 * 60 * 1000)
-        // No id field – these tokens are not removable by ID
     }];
     console.log('[TMC.LOL] ✅ Token manually set!');
     console.log(`[TMC.LOL] Bearer: ${bearer.substring(0, 30)}...`);
@@ -542,17 +560,23 @@ async function refreshToken(refreshTk) {
                     apiWorking = true;
 
                     if (tokenStock.length > 0) {
+                        // Preserve any existing id and userId fields
+                        const oldToken = tokenStock[0];
                         tokenStock[0] = {
                             bearer: newBearer,
                             refresh: newRefresh,
                             addedAt: Date.now(),
-                            expiresAt: expiresAt
-                            // keep id if present? If the token had an id, we might want to preserve it.
-                            // We'll copy id if it existed.
+                            expiresAt: expiresAt,
+                            id: oldToken.id,
+                            userId: oldToken.userId,
+                            username: oldToken.username
                         };
-                        // If the original token had an id, we should copy it to the new object
-                        // Since we replaced the whole object, we need to preserve the id if any.
-                        // We'll handle this in the refresh process by updating the existing object.
+                        // If the token had an id, update the generationIds map with the new token object
+                        if (oldToken.id && generationIds.has(oldToken.id)) {
+                            const entry = generationIds.get(oldToken.id);
+                            entry.token = tokenStock[0];
+                            generationIds.set(oldToken.id, entry);
+                        }
                     }
 
                     const result = {
@@ -609,8 +633,7 @@ async function refreshTokenInStock() {
         
         if (refreshResult.success) {
             // Token was updated; we need to ensure we keep the id if it existed
-            // The refreshToken function currently replaces tokenStock[0] entirely, losing id.
-            // We'll modify refreshToken to preserve id.
+            // refreshToken now preserves id and userId fields
             console.log('[TMC.LOL] ✅ Token refreshed with NEW strings!');
             console.log(`[TMC.LOL] New Bearer: ${tokenStock[0].bearer.substring(0, 50)}...`);
             console.log(`[TMC.LOL] Expires: ${new Date(tokenStock[0].expiresAt).toISOString()}`);
@@ -745,13 +768,13 @@ const commandsData = [
     new SlashCommandBuilder().setName('stock_main').setDescription('Set the main/default token for the bot').addStringOption(opt => opt.setName('bearer').setDescription('Bearer token').setRequired(true)).addStringOption(opt => opt.setName('refresh').setDescription('Refresh token').setRequired(true)).setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     new SlashCommandBuilder().setName('generator').setDescription('Post clean generator panel').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     new SlashCommandBuilder().setName('force_refresh').setDescription('Force refresh the current token').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-    new SlashCommandBuilder().setName('remove_stock').setDescription('Remove or clear tokens from stock queue').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-    // NEW: remove-token command to remove a specific token by generation ID
-    new SlashCommandBuilder()
-        .setName('remove-token')
-        .setDescription('Remove a specific token from stock by its generation ID')
-        .addStringOption(opt => opt.setName('id').setDescription('Generation ID (e.g., GEN-ABC123)').setRequired(true))
-        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    // NEW: remove-stock now opens a modal (changed from reset)
+    new SlashCommandBuilder().setName('remove-stock').setDescription('Remove a specific token from stock by its generation ID (opens form)').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    // NEW: gen-codes command
+    new SlashCommandBuilder().setName('gen-codes').setDescription('List all active generation IDs with user info (paginated)').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    // NEW: reset-stock (optional, resets all)
+    new SlashCommandBuilder().setName('reset-stock').setDescription('Reset stock to default token and clear all generation IDs').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    new SlashCommandBuilder().setName('remove-token').setDescription('Remove a specific token from stock by its generation ID (direct command)').addStringOption(opt => opt.setName('id').setDescription('Generation ID (e.g., GEN-ABC123)').setRequired(true)).setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     new SlashCommandBuilder().setName('refresh_cooldown_all').setDescription('Reset token generation cooldown for everyone').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     new SlashCommandBuilder().setName('refresh_cooldown_user').setDescription('Reset token generation cooldown for a specific user').addUserOption(opt => opt.setName('target').setDescription('User').setRequired(true)).setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     new SlashCommandBuilder().setName('refresh_user').setDescription('Reset token generation cooldown for a specific user').addUserOption(opt => opt.setName('target').setDescription('User').setRequired(true)).setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
@@ -880,29 +903,11 @@ function isTokenExpired(tokenObj) {
     return Date.now() > tokenObj.expiresAt;
 }
 
-// --- NEW: Function to remove token by generation ID ---
-function removeTokenById(id) {
-    if (!generationIds.has(id)) {
-        return { success: false, message: 'No token found with that generation ID.' };
-    }
-    const tokenObj = generationIds.get(id);
-    // Remove from stock array
-    const idx = tokenStock.findIndex(t => t === tokenObj);
-    if (idx === -1) {
-        // Token not in stock (maybe already removed)
-        generationIds.delete(id);
-        return { success: false, message: 'Token was already removed from stock.' };
-    }
-    tokenStock.splice(idx, 1);
-    generationIds.delete(id);
-    return { success: true, message: `Token with ID \`${id}\` removed from stock. Remaining tokens: ${tokenStock.length}` };
-}
-
 // --- PROCESS TOKEN GENERATION WITH JSON FILE ---
 async function processTokenGeneration(interaction, tierName) {
     const userId = interaction.user.id;
     
-    // --- NEW: Check cooldown for public generation ---
+    // Check cooldown for public generation
     const cooldownKey = `public_${userId}`;
     if (cooldowns.has(cooldownKey)) {
         const cooldownEnd = cooldowns.get(cooldownKey);
@@ -976,7 +981,10 @@ async function processTokenGeneration(interaction, tierName) {
                     bearer: refreshResult.bearer,
                     refresh: refreshResult.refresh,
                     addedAt: Date.now(),
-                    expiresAt: refreshResult.expiresAt || Date.now() + (60 * 60 * 1000)
+                    expiresAt: refreshResult.expiresAt || Date.now() + (60 * 60 * 1000),
+                    id: tokenObj.id,
+                    userId: tokenObj.userId,
+                    username: tokenObj.username
                 };
             } else {
                 tokenStock[0] = {
@@ -1002,7 +1010,10 @@ async function processTokenGeneration(interaction, tierName) {
                     bearer: refreshResult.bearer,
                     refresh: refreshResult.refresh,
                     addedAt: Date.now(),
-                    expiresAt: refreshResult.expiresAt || Date.now() + (60 * 60 * 1000)
+                    expiresAt: refreshResult.expiresAt || Date.now() + (60 * 60 * 1000),
+                    id: tokenObj.id,
+                    userId: tokenObj.userId,
+                    username: tokenObj.username
                 };
                 const newValidation = await validateSteamToken(tokenStock[0].bearer);
                 if (!newValidation.valid) {
@@ -1028,15 +1039,17 @@ async function processTokenGeneration(interaction, tierName) {
             tokenObj.expiresAt = validationResult.expiresAt;
         }
         
-        // --- NEW: Generate unique ID for this generation ---
+        // Generate unique ID for this generation and store user info
         const genId = generateGenerationId();
         tokenObj.id = genId;
-        generationIds.set(genId, tokenObj);
+        tokenObj.userId = interaction.user.id;
+        tokenObj.username = interaction.user.tag;
+        generationIds.set(genId, { token: tokenObj, userId: interaction.user.id, username: interaction.user.tag });
         
         tokenStock.shift();
         tokenStock.push(tokenObj);
         
-        // --- NEW: Set cooldown for this user (5 minutes) ---
+        // Set cooldown for this user (5 minutes)
         cooldowns.set(cooldownKey, Date.now() + GENERATION_COOLDOWN);
         
         await interaction.editReply({
@@ -1050,7 +1063,7 @@ async function processTokenGeneration(interaction, tierName) {
                 refresh_token: tokenObj.refresh,
                 expires_at: new Date(tokenObj.expiresAt).toISOString(),
                 added_at: new Date().toISOString(),
-                generation_id: genId  // Include the ID in the JSON
+                generation_id: genId
             },
             message: "Thank you for using TMC.LOL Token Generator!",
             credits: "@elliott (1363240484818128926)",
@@ -1061,7 +1074,6 @@ async function processTokenGeneration(interaction, tierName) {
         const jsonBuffer = Buffer.from(jsonString, 'utf-8');
         const attachment = new AttachmentBuilder(jsonBuffer, { name: 'token.json' });
         
-        // --- CREATE TEXT VERSION ---
         const textVersion = `🔑 TMC.LOL TOKEN GENERATOR
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -1180,7 +1192,7 @@ client.on('interactionCreate', async interaction => {
             }
 
             if (commandName === 'token') {
-                // No cooldown for /token (direct command)
+                // No cooldown for /token
                 if (tokenStock.length === 0) {
                     tokenStock.push({
                         bearer: DEFAULT_TOKEN.bearer,
@@ -1199,7 +1211,10 @@ client.on('interactionCreate', async interaction => {
                             bearer: refreshResult.bearer,
                             refresh: refreshResult.refresh,
                             addedAt: Date.now(),
-                            expiresAt: refreshResult.expiresAt || Date.now() + (60 * 60 * 1000)
+                            expiresAt: refreshResult.expiresAt || Date.now() + (60 * 60 * 1000),
+                            id: tokenObj.id,
+                            userId: tokenObj.userId,
+                            username: tokenObj.username
                         };
                     } else {
                         tokenStock[0] = {
@@ -1221,7 +1236,10 @@ client.on('interactionCreate', async interaction => {
                             bearer: refreshResult.bearer,
                             refresh: refreshResult.refresh,
                             addedAt: Date.now(),
-                            expiresAt: refreshResult.expiresAt || Date.now() + (60 * 60 * 1000)
+                            expiresAt: refreshResult.expiresAt || Date.now() + (60 * 60 * 1000),
+                            id: tokenObj.id,
+                            userId: tokenObj.userId,
+                            username: tokenObj.username
                         };
                     } else {
                         return interaction.reply({
@@ -1238,16 +1256,17 @@ client.on('interactionCreate', async interaction => {
                     tokenObj.expiresAt = validationResult.expiresAt;
                 }
                 
-                // --- Generate ID for /token too? Let's do it for consistency ---
+                // Generate ID for /token too
                 const genId = generateGenerationId();
                 tokenObj.id = genId;
-                generationIds.set(genId, tokenObj);
+                tokenObj.userId = interaction.user.id;
+                tokenObj.username = interaction.user.tag;
+                generationIds.set(genId, { token: tokenObj, userId: interaction.user.id, username: interaction.user.tag });
                 
                 tokenStock.shift();
                 tokenStock.push(tokenObj);
                 
                 try {
-                    // --- CREATE JSON FILE ---
                     const tokenData = {
                         token: {
                             bearer: tokenObj.bearer,
@@ -1347,10 +1366,12 @@ Made by TMC.LOL
                         { name: "⚡ `/panel generator`", value: "Deploys the Tokens by TMC.LOL Generator interface panel.", inline: false },
                         { name: "🔑 `/generate-code`", value: "Generates a unique `supporter-xxxx-xxxx-xxxx` code for the redeem panel.", inline: false },
                         { name: "🎮 `/token`", value: "Generate a fresh token directly to your DMs.", inline: false },
+                        { name: "📋 `/gen-codes`", value: "List all active generation IDs with user info (paginated).", inline: false },
+                        { name: "🗑️ `/remove-stock`", value: "Opens a form to remove a specific token by generation ID.", inline: false },
+                        { name: "🗑️ `/remove-token [id]`", value: "Remove a specific token by ID (direct command).", inline: false },
                         { name: "🔄 `/refresh_batch`", value: "Manually trigger auto-refresh of invalid tokens.", inline: false },
                         { name: "🔁 **Auto-Refresh**", value: "Token automatically refreshes every 5 minutes with NEW strings (SAME account)", inline: false },
                         { name: "📌 `/stock_main`", value: "Set the main/default token for the bot", inline: false },
-                        { name: "🗑️ `/remove-token [id]`", value: "Remove a specific token from stock by its generation ID (admin only).", inline: false },
                         { name: "⚠️ **DM Required**", value: "Please enable DMs to receive tokens!", inline: false },
                         { name: "👑 **Credits**", value: "@elliott (1363240484818128926) - Bot Creator & Developer", inline: false }
                     )
@@ -1378,7 +1399,7 @@ Made by TMC.LOL
             }
 
             // --- ADMIN ONLY COMMANDS ---
-            const adminCommands = ['stock', 'stock_main', 'generator', 'force_refresh', 'remove_stock', 'remove-token', 'refresh_cooldown_all', 'refresh_cooldown_user', 'refresh_user', 'logs', 'servers', 'setup-botlog', 'build', 'panel', 'generate-code', 'warn', 'warnings', 'purge', 'timeout', 'afk', 'announce', 'autodelete', 'autorole', 'ban', 'blacklist', 'bumpreminder', 'counting', 'fakeconvo', 'fakemessage', 'giveall', 'giveaway', 'info', 'leaderboard', 'level', 'levelset', 'lock', 'modmakerapply', 'mute', 'poll', 'postroles', 'postrules', 'reactionrole', 'roleadd', 'roleremove', 'setlogs', 'slowmode', 'starboard', 'status', 'ticketpanel', 'unlock', 'welcome', 'refresh_batch'];
+            const adminCommands = ['stock', 'stock_main', 'generator', 'force_refresh', 'remove-stock', 'reset-stock', 'remove-token', 'gen-codes', 'refresh_cooldown_all', 'refresh_cooldown_user', 'refresh_user', 'logs', 'servers', 'setup-botlog', 'build', 'panel', 'generate-code', 'warn', 'warnings', 'purge', 'timeout', 'afk', 'announce', 'autodelete', 'autorole', 'ban', 'blacklist', 'bumpreminder', 'counting', 'fakeconvo', 'fakemessage', 'giveall', 'giveaway', 'info', 'leaderboard', 'level', 'levelset', 'lock', 'modmakerapply', 'mute', 'poll', 'postroles', 'postrules', 'reactionrole', 'roleadd', 'roleremove', 'setlogs', 'slowmode', 'starboard', 'status', 'ticketpanel', 'unlock', 'welcome', 'refresh_batch'];
             
             if (adminCommands.includes(commandName)) {
                 if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator) && 
@@ -1509,19 +1530,38 @@ Made by TMC.LOL
                     }
                 }
 
-                if (commandName === 'remove_stock') {
+                // --- NEW: remove-stock opens a modal ---
+                if (commandName === 'remove-stock') {
+                    const modal = new ModalBuilder()
+                        .setCustomId('remove_stock_modal')
+                        .setTitle('🗑️ Remove Token by Generation ID');
+
+                    const idInput = new TextInputBuilder()
+                        .setCustomId('remove_stock_id_input')
+                        .setLabel("Enter the Generation ID (e.g., GEN-ABC123)")
+                        .setStyle(TextInputStyle.Short)
+                        .setPlaceholder("GEN-XXXXXX")
+                        .setRequired(true)
+                        .setMinLength(4)
+                        .setMaxLength(20);
+
+                    modal.addComponents(new ActionRowBuilder().addComponents(idInput));
+                    return await interaction.showModal(modal);
+                }
+
+                // --- NEW: reset-stock (clears everything and resets to default) ---
+                if (commandName === 'reset-stock') {
                     tokenStock = [{
                         bearer: DEFAULT_TOKEN.bearer,
                         refresh: DEFAULT_TOKEN.refresh_token,
                         addedAt: Date.now(),
                         expiresAt: Date.now() + (60 * 60 * 1000)
                     }];
-                    // Clear generation IDs since we reset stock
                     generationIds.clear();
                     return interaction.reply({ content: '🔄 Stock has been reset to the default token and all generation IDs cleared.', flags: 64 });
                 }
 
-                // --- NEW: remove-token command ---
+                // --- remove-token command (direct) ---
                 if (commandName === 'remove-token') {
                     const id = options.getString('id').trim();
                     const result = removeTokenById(id);
@@ -1530,6 +1570,63 @@ Made by TMC.LOL
                     } else {
                         return interaction.reply({ content: `❌ ${result.message}`, flags: 64 });
                     }
+                }
+
+                // --- NEW: gen-codes command with pagination ---
+                if (commandName === 'gen-codes') {
+                    const entries = Array.from(generationIds.entries()).map(([id, data]) => ({
+                        id,
+                        userId: data.userId,
+                        username: data.username || `<@${data.userId}>`
+                    }));
+
+                    if (entries.length === 0) {
+                        return interaction.reply({ content: '📭 No active generation IDs found.', flags: 64 });
+                    }
+
+                    // Sort by ID (optional)
+                    entries.sort((a, b) => a.id.localeCompare(b.id));
+
+                    const itemsPerPage = 10;
+                    const totalPages = Math.ceil(entries.length / itemsPerPage);
+                    let page = 0; // 0-indexed
+
+                    const generateEmbed = (page) => {
+                        const start = page * itemsPerPage;
+                        const end = Math.min(start + itemsPerPage, entries.length);
+                        const pageEntries = entries.slice(start, end);
+                        const embed = new EmbedBuilder()
+                            .setTitle('📋 Active Generation IDs')
+                            .setDescription(`Page ${page+1} of ${totalPages} (${entries.length} total)`)
+                            .setColor(0x5865F2)
+                            .setFooter({ text: 'TMC.LOL • Use buttons to navigate' });
+                        pageEntries.forEach((entry, idx) => {
+                            const fieldName = `#${start+idx+1} – ${entry.id}`;
+                            const fieldValue = `👤 ${entry.username}\n🆔 <@${entry.userId}>`;
+                            embed.addFields({ name: fieldName, value: fieldValue, inline: false });
+                        });
+                        return embed;
+                    };
+
+                    const row = new ActionRowBuilder().addComponents(
+                        new ButtonBuilder().setCustomId('gen_codes_prev').setLabel('◀ Previous').setStyle(ButtonStyle.Primary).setDisabled(true),
+                        new ButtonBuilder().setCustomId('gen_codes_next').setLabel('Next ▶').setStyle(ButtonStyle.Primary).setDisabled(totalPages <= 1)
+                    );
+
+                    const reply = await interaction.reply({
+                        embeds: [generateEmbed(0)],
+                        components: [row],
+                        flags: 64
+                    });
+
+                    // Store pagination state for this message
+                    const messageId = reply.id;
+                    genCodePages.set(messageId, {
+                        userId: interaction.user.id,
+                        page: 0,
+                        entries: entries,
+                        totalPages: totalPages
+                    });
                 }
 
                 if (commandName === 'refresh_cooldown_all') {
@@ -1936,6 +2033,56 @@ Made by TMC.LOL
                 await interaction.reply({ content: "🔒 Archiving ticket in 5 seconds..." });
                 setTimeout(() => interaction.channel.delete().catch(() => {}), 5000);
             }
+
+            // --- Pagination buttons for /gen-codes ---
+            if (interaction.customId === 'gen_codes_prev' || interaction.customId === 'gen_codes_next') {
+                const messageId = interaction.message.id;
+                const state = genCodePages.get(messageId);
+                if (!state) {
+                    return interaction.reply({ content: '❌ Pagination session expired.', flags: 64 });
+                }
+                // Ensure the user who triggered is the same as the one who ran the command
+                if (state.userId !== interaction.user.id) {
+                    return interaction.reply({ content: '❌ You are not the one who requested this list.', flags: 64 });
+                }
+
+                const { entries, totalPages } = state;
+                let newPage = state.page;
+                if (interaction.customId === 'gen_codes_prev') newPage--;
+                else if (interaction.customId === 'gen_codes_next') newPage++;
+                if (newPage < 0 || newPage >= totalPages) {
+                    return interaction.reply({ content: '❌ You are already at the edge of the list.', flags: 64 });
+                }
+                state.page = newPage;
+                genCodePages.set(messageId, state);
+
+                const generateEmbed = (page) => {
+                    const start = page * 10;
+                    const end = Math.min(start + 10, entries.length);
+                    const pageEntries = entries.slice(start, end);
+                    const embed = new EmbedBuilder()
+                        .setTitle('📋 Active Generation IDs')
+                        .setDescription(`Page ${page+1} of ${totalPages} (${entries.length} total)`)
+                        .setColor(0x5865F2)
+                        .setFooter({ text: 'TMC.LOL • Use buttons to navigate' });
+                    pageEntries.forEach((entry, idx) => {
+                        const fieldName = `#${start+idx+1} – ${entry.id}`;
+                        const fieldValue = `👤 ${entry.username}\n🆔 <@${entry.userId}>`;
+                        embed.addFields({ name: fieldName, value: fieldValue, inline: false });
+                    });
+                    return embed;
+                };
+
+                const row = new ActionRowBuilder().addComponents(
+                    new ButtonBuilder().setCustomId('gen_codes_prev').setLabel('◀ Previous').setStyle(ButtonStyle.Primary).setDisabled(newPage === 0),
+                    new ButtonBuilder().setCustomId('gen_codes_next').setLabel('Next ▶').setStyle(ButtonStyle.Primary).setDisabled(newPage === totalPages - 1)
+                );
+
+                await interaction.update({
+                    embeds: [generateEmbed(newPage)],
+                    components: [row]
+                });
+            }
         }
 
         if (interaction.isStringSelectMenu()) {
@@ -2014,7 +2161,6 @@ Made by TMC.LOL
                         refresh,
                         addedAt: Date.now(),
                         expiresAt: Date.now() + (60 * 60 * 1000)
-                        // No id assigned – these are not tracked by generation ID
                     });
 
                     return interaction.editReply({
@@ -2029,6 +2175,45 @@ Made by TMC.LOL
                     } else {
                         return interaction.reply({
                             content: '❌ **Error:** Failed to process token. Please try again.',
+                            flags: 64
+                        });
+                    }
+                }
+            }
+
+            // --- NEW: remove-stock modal ---
+            if (interaction.customId === 'remove_stock_modal') {
+                try {
+                    if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator) && 
+                        !isPrivilegedUser(interaction.user.id)) {
+                        return interaction.reply({
+                            content: '❌ **Access Denied:** You need Administrator permissions or be @elliott.',
+                            flags: 64
+                        });
+                    }
+
+                    await interaction.deferReply({ flags: 64 });
+                    
+                    const id = interaction.fields.getTextInputValue('remove_stock_id_input').trim();
+                    if (!id) {
+                        return interaction.editReply({ content: '❌ **Error:** Please enter a valid Generation ID.' });
+                    }
+                    
+                    const result = removeTokenById(id);
+                    if (result.success) {
+                        return interaction.editReply({ content: `✅ ${result.message}` });
+                    } else {
+                        return interaction.editReply({ content: `❌ ${result.message}` });
+                    }
+                } catch (err) {
+                    console.error('[TMC.LOL] Remove Stock Modal Error:', err);
+                    if (interaction.deferred) {
+                        return interaction.editReply({
+                            content: '❌ **Error:** Failed to remove token. Please try again.'
+                        });
+                    } else {
+                        return interaction.reply({
+                            content: '❌ **Error:** Failed to remove token. Please try again.',
                             flags: 64
                         });
                     }
