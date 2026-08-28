@@ -2783,7 +2783,8 @@ process.on('unhandledRejection', (error) => {
     console.error('[TMC.LOL] ❌ Unhandled Rejection:', error);
 });
 
-process.on('uncaughtException', (error) {
+// ✅ FIXED: missing => arrow function
+process.on('uncaughtException', (error) => {
     console.error('[TMC.LOL] ❌ Uncaught Exception:', error);
 });
 
