@@ -14,7 +14,7 @@ const {
     SlashCommandBuilder,
     REST,
     Routes,
-    AttachmentBuilder // FIX: Added AttachmentBuilder here
+    AttachmentBuilder
 } = require('discord.js');
 
 const http = require('http');
@@ -49,17 +49,11 @@ const API_URLS = [
 let ACTIVE_API_URL = API_URLS[0];
 let apiWorking = false;
 
-const hasServerKey = NAKAMA_SERVER_KEY && NAKAMA_SERVER_KEY.length > 0;
-if (!hasServerKey) {
-    console.log('[TMC.LOL] ⚠️ NAKAMA_SERVER_KEY not set - token refresh will fail with "Server key required"');
-}
-
 // --- Token refresh queue system ---
 let isRefreshing = false;
 let failedQueue = [];
 let currentRefreshPromise = null;
 
-// Queue processor for pending requests
 function processQueue(error, token = null) {
     failedQueue.forEach(prom => {
         if (error) {
@@ -119,12 +113,10 @@ let refreshBatchCounter = 0;
 const activeGenerations = new Map();
 let refreshInterval = null;
 
-// --- CHECK IF USER IS ELLIOTT OR BOT OWNER ---
 function isPrivilegedUser(userId) {
     return userId === BOT_OWNER_ID || userId === ELLIOTT_ID;
 }
 
-// --- CLEANUP STUCK GENERATIONS ---
 setInterval(() => {
     const now = Date.now();
     let cleaned = 0;
@@ -139,7 +131,6 @@ setInterval(() => {
     }
 }, 30000);
 
-// --- HELPER FUNCTIONS ---
 async function sendBotLog(guild, category, embed) {
     if (!guild) return;
     const logKey = `${guild.id}-${category}`;
@@ -189,7 +180,6 @@ function formatRemainingTime(expiresAt) {
     return `${seconds}s left`;
 }
 
-// --- FIND WORKING API URL ---
 async function findWorkingApiUrl() {
     console.log('[TMC.LOL] Searching for working API URL...');
     
@@ -199,7 +189,6 @@ async function findWorkingApiUrl() {
             const controller = new AbortController();
             const timeoutId = setTimeout(() => controller.abort(), 5000);
             
-            // Test the Nakama server is reachable
             const response = await fetch(url, {
                 method: 'GET',
                 headers: {
@@ -230,9 +219,6 @@ async function findWorkingApiUrl() {
     return API_URLS[0];
 }
 
-// ============================================
-// FORCE SET OWN TOKEN (BYPASS API)
-// ============================================
 function forceSetOwnToken(bearer, refresh) {
     DEFAULT_TOKEN.bearer = bearer;
     DEFAULT_TOKEN.refresh_token = refresh;
@@ -247,7 +233,6 @@ function forceSetOwnToken(bearer, refresh) {
     console.log(`[TMC.LOL] Refresh: ${refresh.substring(0, 30)}...`);
 }
 
-// --- TOKEN VALIDATION ---
 async function validateSteamToken(bearerToken, retries = 3) {
     if (!bearerToken || bearerToken.length < 10) {
         return {
@@ -339,7 +324,6 @@ async function validateSteamToken(bearerToken, retries = 3) {
         };
     }
 
-    // If API is not working, trust the local JWT check
     if (!apiWorking) {
         console.log('[TMC.LOL] ⚠️ API not reachable - Using local JWT validation only');
         if (payload && payload.exp) {
@@ -366,7 +350,6 @@ async function validateSteamToken(bearerToken, retries = 3) {
 
     for (let attempt = 0; attempt <= retries; attempt++) {
         try {
-            // Use Nakama's /v2/account endpoint to validate the session token
             const validateUrl = `${ACTIVE_API_URL}/v2/account`;
             const controller = new AbortController();
             const timeoutId = setTimeout(() => controller.abort(), 10000);
@@ -422,10 +405,7 @@ async function validateSteamToken(bearerToken, retries = 3) {
             }
             
             const isValid = response.status === 200;
-            
-            // Nakama /v2/account returns wallet, user ID etc - compute expiry from JWT if present
             let expiresAt = Date.now() + (60 * 60 * 1000);
-            
             apiWorking = true;
             
             return {
@@ -464,13 +444,12 @@ async function validateSteamToken(bearerToken, retries = 3) {
 }
 
 // ============================================
-// TOKEN REFRESH SYSTEM WITH QUEUE
+// TOKEN REFRESH – CLIENT-SIDE (NO SERVER KEY)
 // ============================================
 async function refreshToken(refreshTk) {
     try {
-        console.log('[TMC.LOL] 🔄 Attempting to refresh token via Nakama...');
+        console.log('[TMC.LOL] 🔄 Attempting to refresh token via Nakama (client mode)...');
         
-        // If already refreshing, queue this request
         if (isRefreshing) {
             console.log('[TMC.LOL] ⏳ Refresh in progress, queuing...');
             return new Promise((resolve, reject) => {
@@ -481,25 +460,25 @@ async function refreshToken(refreshTk) {
         isRefreshing = true;
         console.log('[TMC.LOL] 🔒 Refresh lock acquired');
 
-        // Try ALL API URLs until one works
+        // Use the current bearer token to authenticate the refresh request
+        const currentBearer = tokenStock.length > 0 ? tokenStock[0].bearer : DEFAULT_TOKEN.bearer;
+
         const urlsToTry = apiWorking ? [ACTIVE_API_URL, ...API_URLS.filter(u => u !== ACTIVE_API_URL)] : [...API_URLS];
 
         for (const url of urlsToTry) {
             try {
-                // Nakama session refresh endpoint
                 const refreshUrl = `${url}/v2/account/session/refresh`;
                 console.log(`[TMC.LOL] 🔄 Trying refresh at: ${refreshUrl}`);
                 const controller = new AbortController();
                 const timeoutId = setTimeout(() => controller.abort(), 10000);
 
-                const serverKeyAuth = 'Basic ' + Buffer.from(NAKAMA_SERVER_KEY + ':').toString('base64');
-
+                // ✅ CLIENT-SIDE AUTH: Bearer token instead of Basic server key
                 const response = await fetch(refreshUrl, {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
                         'User-Agent': 'SteamVR 1.88.1.3421_a3df6ce5',
-                        'Authorization': serverKeyAuth
+                        'Authorization': `Bearer ${currentBearer}`
                     },
                     body: JSON.stringify({ token: refreshTk }),
                     signal: controller.signal
@@ -515,7 +494,6 @@ async function refreshToken(refreshTk) {
 
                 const data = await response.json();
 
-                // Nakama returns { token, refresh_token } on success
                 if (response.status === 200 && data.token) {
                     const newBearer = data.token;
                     const newRefresh = data.refresh_token || refreshTk;
@@ -575,7 +553,6 @@ async function refreshToken(refreshTk) {
     }
 }
 
-// --- REFRESH TOKEN IN STOCK (Every 5 minutes) ---
 async function refreshTokenInStock() {
     console.log('[TMC.LOL] 🔄 Auto-refreshing token with NEW strings...');
     
@@ -596,14 +573,12 @@ async function refreshTokenInStock() {
         const refreshResult = await refreshToken(tokenObj.refresh);
         
         if (refreshResult.success) {
-            // Token was already updated in the refresh function
             console.log('[TMC.LOL] ✅ Token refreshed with NEW strings!');
             console.log(`[TMC.LOL] New Bearer: ${tokenStock[0].bearer.substring(0, 50)}...`);
             console.log(`[TMC.LOL] Expires: ${new Date(tokenStock[0].expiresAt).toISOString()}`);
             console.log(`[TMC.LOL] ⏳ Lifespan extended to 1 hour!`);
         } else {
             console.log('[TMC.LOL] ❌ Refresh failed, keeping existing token');
-            // Keep existing token but extend expiry
             tokenStock[0].expiresAt = Date.now() + (60 * 60 * 1000);
             tokenStock[0].addedAt = Date.now();
         }
@@ -622,10 +597,10 @@ async function refreshTokenInStock() {
     }
     
     console.log(`[TMC.LOL] Stock count: ${tokenStock.length}`);
-    console.log(`[TMC.LOL] Next refresh in 5 minutes...`);
+    console.log(`[TMC.LOL] Next refresh in 1 minute...`);
 }
 
-// --- START AUTO-REFRESH (Every 5 minutes) ---
+// --- START AUTO-REFRESH (Every 1 minute) ---
 function startAutoRefresh() {
     if (refreshInterval) {
         clearInterval(refreshInterval);
@@ -633,7 +608,7 @@ function startAutoRefresh() {
     
     console.log('[TMC.LOL] ================================');
     console.log('[TMC.LOL] 🔄 AUTO-REFRESH STARTED');
-    console.log('[TMC.LOL] 📅 Refreshing every 5 minutes');
+    console.log('[TMC.LOL] 📅 Refreshing every 1 minute');   // Changed
     console.log('[TMC.LOL] 🔑 Same account - NEW strings');
     console.log('[TMC.LOL] ================================');
 
@@ -655,7 +630,7 @@ function startAutoRefresh() {
             await findWorkingApiUrl();
         }
         await refreshTokenInStock();
-    }, 5 * 60 * 1000);
+    }, 60 * 1000);   // Changed from 5 minutes to 1 minute
 }
 
 // --- SLASH COMMANDS ---
@@ -758,7 +733,7 @@ const commandsData = [
 client.once('ready', async () => {
     console.log(`[TMC.LOL] 🚀 ONLINE: ${client.user.tag}`);
     console.log('[TMC.LOL] 🔑 Token Generator Active');
-    console.log('[TMC.LOL] 🔄 Auto-Refresh Every 5 Minutes');
+    console.log('[TMC.LOL] 🔄 Auto-Refresh Every 1 Minute');
     console.log('[TMC.LOL] 📦 Always in Stock');
     console.log(`[TMC.LOL] 👑 Elliott ID: ${ELLIOTT_ID} has full access`);
     console.log('[TMC.LOL] ================================');
@@ -915,9 +890,9 @@ async function processTokenGeneration(interaction, tierName) {
             content: '⏳ **Generating your token...** (Step 2/4: Checking token validity)'
         });
         
-        const tokenObj = tokenStock[0];
+        let tokenObj = tokenStock[0];
         
-            if (tokenObj.expiresAt && isTokenExpired(tokenObj)) {
+        if (tokenObj.expiresAt && isTokenExpired(tokenObj)) {
             const refreshResult = await refreshToken(tokenObj.refresh);
             if (refreshResult.success) {
                 tokenStock[0] = {
@@ -993,7 +968,7 @@ async function processTokenGeneration(interaction, tierName) {
             },
             message: "Thank you for using TMC.LOL Token Generator!",
             credits: "@elliott (1363240484818128926)",
-            auto_refresh: "Every 5 minutes - NEW strings, SAME account"
+            auto_refresh: "Every 1 minute - NEW strings, SAME account"
         };
         
         const jsonString = JSON.stringify(tokenData, null, 2);
@@ -1014,7 +989,7 @@ ${tokenObj.refresh}
 ⏳ Valid until: ${new Date(tokenObj.expiresAt).toLocaleString()}
 ⏳ Time left: ${formatRemainingTime(tokenObj.expiresAt)}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-🔄 Auto-Refresh: Every 5 minutes (NEW strings, SAME account)
+🔄 Auto-Refresh: Every 1 minute (NEW strings, SAME account)
 👑 Credits: @elliott (1363240484818128926)
 Made by TMC.LOL
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`;
@@ -1029,11 +1004,11 @@ Made by TMC.LOL
                 '• `token.json` - JSON format (for developers)\n' +
                 '• `token.txt` - Plain text format\n\n' +
                 `⏳ **Valid for:** ${formatRemainingTime(tokenObj.expiresAt)}\n` +
-                '🔄 **Auto-Refresh:** Every 5 minutes (NEW strings, SAME account)\n\n' +
+                '🔄 **Auto-Refresh:** Every 1 minute (NEW strings, SAME account)\n\n' +
                 '👑 **Credits:** @elliott (1363240484818128926)\n' +
                 '**Made by TMC.LOL**')
             .setColor(0x5865F2)
-            .setFooter({ text: 'TMC.LOL Token Generator • Auto-Refreshed Every 5 Min • Credits to @elliott' });
+            .setFooter({ text: 'TMC.LOL Token Generator • Auto-Refreshed Every 1 Min • Credits to @elliott' });
         
         try {
             await interaction.user.send({
@@ -1124,7 +1099,7 @@ client.on('interactionCreate', async interaction => {
                     });
                 }
                 
-                const tokenObj = tokenStock[0];
+                let tokenObj = tokenStock[0];
                 
                 if (tokenObj.expiresAt && isTokenExpired(tokenObj)) {
                     const refreshResult = await refreshToken(tokenObj.refresh);
@@ -1186,7 +1161,7 @@ client.on('interactionCreate', async interaction => {
                         },
                         message: "Thank you for using TMC.LOL Token Generator!",
                         credits: "@elliott (1363240484818128926)",
-                        auto_refresh: "Every 5 minutes - NEW strings, SAME account"
+                        auto_refresh: "Every 1 minute - NEW strings, SAME account"
                     };
                     
                     const jsonString = JSON.stringify(tokenData, null, 2);
@@ -1207,7 +1182,7 @@ ${tokenObj.refresh}
 ⏳ Valid until: ${new Date(tokenObj.expiresAt).toLocaleString()}
 ⏳ Time left: ${formatRemainingTime(tokenObj.expiresAt)}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-🔄 Auto-Refresh: Every 5 minutes (NEW strings, SAME account)
+🔄 Auto-Refresh: Every 1 minute (NEW strings, SAME account)
 👑 Credits: @elliott (1363240484818128926)
 Made by TMC.LOL
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`;
@@ -1222,11 +1197,11 @@ Made by TMC.LOL
                             '• `token.json` - JSON format (for developers)\n' +
                             '• `token.txt` - Plain text format\n\n' +
                             `⏳ **Valid for:** ${formatRemainingTime(tokenObj.expiresAt)}\n` +
-                            '🔄 **Auto-Refresh:** Every 5 minutes (NEW strings, SAME account)\n\n' +
+                            '🔄 **Auto-Refresh:** Every 1 minute (NEW strings, SAME account)\n\n' +
                             '👑 **Credits:** @elliott (1363240484818128926)\n' +
                             '**Made by TMC.LOL**')
                         .setColor(0x5865F2)
-                        .setFooter({ text: 'TMC.LOL Token Generator • Auto-Refreshed Every 5 Min • Credits to @elliott' });
+                        .setFooter({ text: 'TMC.LOL Token Generator • Auto-Refreshed Every 1 Min • Credits to @elliott' });
                     
                     await interaction.user.send({
                         embeds: [embed],
@@ -1273,7 +1248,7 @@ Made by TMC.LOL
                         { name: "🔑 `/generate-code`", value: "Generates a unique `supporter-xxxx-xxxx-xxxx` code for the redeem panel.", inline: false },
                         { name: "🎮 `/token`", value: "Generate a fresh token directly to your DMs.", inline: false },
                         { name: "🔄 `/refresh_batch`", value: "Manually trigger auto-refresh of invalid tokens.", inline: false },
-                        { name: "🔁 **Auto-Refresh**", value: "Token automatically refreshes every 5 minutes with NEW strings (SAME account)", inline: false },
+                        { name: "🔁 **Auto-Refresh**", value: "Token automatically refreshes every 1 minute with NEW strings (SAME account)", inline: false },
                         { name: "📌 `/stock_main`", value: "Set the main/default token for the bot", inline: false },
                         { name: "⚠️ **DM Required**", value: "Please enable DMs to receive tokens!", inline: false },
                         { name: "👑 **Credits**", value: "@elliott (1363240484818128926) - Bot Creator & Developer", inline: false }
@@ -1393,7 +1368,7 @@ Made by TMC.LOL
                             '*Tokens are only visible to you.*\n' +
                             '*Ephemeral — only you can see your token*\n\n' +
                             '⚠️ **Please open your DMs** to receive your token!\n' +
-                            '🔄 **Auto-Refresh:** Every 5 minutes (NEW strings, SAME account)\n\n' +
+                            '🔄 **Auto-Refresh:** Every 1 minute (NEW strings, SAME account)\n\n' +
                             '👑 **Credits:** @elliott (1363240484818128926)\n' +
                             '**Made by TMC.LOL**'
                         )
@@ -1610,7 +1585,7 @@ Made by TMC.LOL
                                 '*Tokens are only visible to you.*\n' +
                                 '*Ephemeral — only you can see your token*\n\n' +
                                 '⚠️ **Please open your DMs** to receive your token!\n' +
-                                '🔄 **Auto-Refresh:** Every 5 minutes (NEW strings, SAME account)\n\n' +
+                                '🔄 **Auto-Refresh:** Every 1 minute (NEW strings, SAME account)\n\n' +
                                 '👑 **Credits:** @elliott (1363240484818128926)\n' +
                                 '**Made by TMC.LOL**'
                             )
@@ -1981,7 +1956,7 @@ Made by TMC.LOL
 // --- HTTP SERVER ---
 const server = http.createServer((req, res) => {
     res.writeHead(200, { 'Content-Type': 'text/plain' });
-    res.end('TMC.LOL Token Generator Bot is active!\nAuto-refreshes every 5 minutes.\nCredits to @elliott\n');
+    res.end('TMC.LOL Token Generator Bot is active!\nAuto-refreshes every 1 minute.\nCredits to @elliott\n');
 });
 
 const PORT = process.env.PORT || 3000;
