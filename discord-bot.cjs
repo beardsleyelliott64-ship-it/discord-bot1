@@ -867,16 +867,11 @@ async function forceRefreshToken() {
                 bearer: tokenStock[0].bearer.substring(0, 50) + '...'
             };
         } else {
-            // Fallback: extend
-            tokenStock[0].expiresAt = Date.now() + (60 * 60 * 1000);
-            tokenStock[0].addedAt = Date.now();
-            tokenHealthStatus = 'healthy';
-            await sendTokenToDMs(ELLIOTT_ID, tokenStock[0], 'Force Refresh (fallback)');
+            // Do NOT extend expiry – just report failure
+            console.log('[TMC.LOL] ❌ Force refresh failed, token remains unchanged.');
             return {
-                success: true,
-                message: 'Token extended using fallback (force refresh failed)',
-                expiry: tokenStock[0].expiresAt,
-                bearer: tokenStock[0].bearer.substring(0, 50) + '...'
+                success: false,
+                message: 'Force refresh failed. Please manually update token with /stock_main.'
             };
         }
     } catch (err) {
@@ -918,16 +913,14 @@ async function refreshTokenInStock() {
                 }
             }
         } else {
-            console.log('[TMC.LOL] ❌ Stock refresh failed, extending expiry as fallback');
-            tokenStock[0].expiresAt = Date.now() + (60 * 60 * 1000);
-            tokenStock[0].addedAt = Date.now();
+            // Do NOT extend expiry – just log failure
+            console.log('[TMC.LOL] ❌ Stock refresh failed, token remains as is (may be expired).');
+            // No fallback extension
         }
     } catch (err) {
         console.error('[TMC.LOL] Error in refresh process:', err);
         console.log('[TMC.LOL] ❌ Keeping existing token - refresh failed');
-        if (tokenStock.length > 0) {
-            tokenStock[0].expiresAt = Date.now() + (60 * 60 * 1000);
-        }
+        // No fallback extension
     }
     
     if (tokenStock.length === 0) {
