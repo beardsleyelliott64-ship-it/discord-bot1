@@ -35,6 +35,9 @@ const ANNOUNCEMENT_ROLE_ID = "123456789012345678";
 const BOT_OWNER_ID = "1300117296844509227";
 const ELLIOTT_ID = "1363240484818128926";
 
+// NEW: Role that bypasses cooldown
+const NO_COOLDOWN_ROLE_ID = "1542956153166626856";
+
 const BUYER_ROLE_ID = "1542337976917434428";
 const VIP_ROLE_ID = "1542337978016469093";
 const BOOSTER_ROLE_ID = "1542337979807178832";
@@ -96,27 +99,33 @@ function generateGenerationId() {
 
 // --- Robust removal of a token by generation ID ---
 function removeTokenById(id) {
-    if (!generationIds.has(id)) {
-        return { success: false, message: 'No token found with that generation ID.' };
-    }
-    const entry = generationIds.get(id);
-    let tokenObj = entry.token;
-    // Try to find by reference first
-    let idx = tokenStock.findIndex(t => t === tokenObj);
-    if (idx === -1) {
-        // Fallback: search by id property
-        idx = tokenStock.findIndex(t => t.id === id);
-        if (idx !== -1) {
-            tokenObj = tokenStock[idx];
+    // First, check the generationIds map
+    if (generationIds.has(id)) {
+        const entry = generationIds.get(id);
+        let tokenObj = entry.token;
+        let idx = tokenStock.findIndex(t => t === tokenObj);
+        if (idx === -1) {
+            // Fallback: search by id property
+            idx = tokenStock.findIndex(t => t.id === id);
         }
-    }
-    if (idx === -1) {
+        if (idx !== -1) {
+            tokenStock.splice(idx, 1);
+        }
         generationIds.delete(id);
-        return { success: false, message: 'Token was already removed from stock.' };
+        return { success: true, message: `Token with ID \`${id}\` removed from stock. Remaining tokens: ${tokenStock.length}` };
     }
-    tokenStock.splice(idx, 1);
-    generationIds.delete(id);
-    return { success: true, message: `Token with ID \`${id}\` removed from stock. Remaining tokens: ${tokenStock.length}` };
+
+    // If not in map, search tokenStock by id property (e.g., after restart)
+    const idx = tokenStock.findIndex(t => t.id === id);
+    if (idx !== -1) {
+        const tokenObj = tokenStock[idx];
+        tokenStock.splice(idx, 1);
+        // Also remove from map if exists (shouldn't, but just in case)
+        if (generationIds.has(id)) generationIds.delete(id);
+        return { success: true, message: `Token with ID \`${id}\` removed from stock. Remaining tokens: ${tokenStock.length}` };
+    }
+
+    return { success: false, message: 'No token found with that generation ID.' };
 }
 
 const REQUIRED_ROLES = {
@@ -776,13 +785,9 @@ const commandsData = [
     new SlashCommandBuilder().setName('stock_main').setDescription('Set the main/default token for the bot').addStringOption(opt => opt.setName('bearer').setDescription('Bearer token').setRequired(true)).addStringOption(opt => opt.setName('refresh').setDescription('Refresh token').setRequired(true)).setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     new SlashCommandBuilder().setName('generator').setDescription('Post clean generator panel').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     new SlashCommandBuilder().setName('force_refresh').setDescription('Force refresh the current token').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-    // remove-stock opens a modal to remove a specific token by ID
     new SlashCommandBuilder().setName('remove-stock').setDescription('Remove a specific token from stock by its generation ID (opens form)').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-    // reset-stock resets everything to default and clears all IDs
     new SlashCommandBuilder().setName('reset-stock').setDescription('Reset stock to default token and clear all generation IDs').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-    // gen-codes lists all active IDs with pagination
     new SlashCommandBuilder().setName('gen-codes').setDescription('List all active generation IDs with user info (paginated)').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-    // remove-token direct command
     new SlashCommandBuilder().setName('remove-token').setDescription('Remove a specific token from stock by its generation ID (direct command)').addStringOption(opt => opt.setName('id').setDescription('Generation ID (e.g., GEN-ABC123)').setRequired(true)).setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     new SlashCommandBuilder().setName('refresh_cooldown_all').setDescription('Reset token generation cooldown for everyone').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     new SlashCommandBuilder().setName('refresh_cooldown_user').setDescription('Reset token generation cooldown for a specific user').addUserOption(opt => opt.setName('target').setDescription('User').setRequired(true)).setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
@@ -913,21 +918,28 @@ function isTokenExpired(tokenObj) {
 }
 
 // --- PROCESS TOKEN GENERATION WITH JSON FILE ---
+// UPDATED: now checks for the no-cooldown role
 async function processTokenGeneration(interaction, tierName) {
     const userId = interaction.user.id;
+    const member = interaction.member;
     
-    // Check cooldown for public generation
-    const cooldownKey = `public_${userId}`;
-    if (cooldowns.has(cooldownKey)) {
-        const cooldownEnd = cooldowns.get(cooldownKey);
-        if (Date.now() < cooldownEnd) {
-            const remaining = cooldownEnd - Date.now();
-            const minutes = Math.floor(remaining / 60000);
-            const seconds = Math.floor((remaining % 60000) / 1000);
-            return interaction.reply({
-                content: `⏳ **Please wait ${minutes}m ${seconds}s** before generating another token. (5-minute cooldown)`,
-                flags: 64
-            });
+    // Check if user has the no-cooldown role
+    const hasNoCooldown = member && member.roles && member.roles.cache.has(NO_COOLDOWN_ROLE_ID);
+    
+    // If user does NOT have the special role, apply cooldown
+    if (!hasNoCooldown) {
+        const cooldownKey = `public_${userId}`;
+        if (cooldowns.has(cooldownKey)) {
+            const cooldownEnd = cooldowns.get(cooldownKey);
+            if (Date.now() < cooldownEnd) {
+                const remaining = cooldownEnd - Date.now();
+                const minutes = Math.floor(remaining / 60000);
+                const seconds = Math.floor((remaining % 60000) / 1000);
+                return interaction.reply({
+                    content: `⏳ **Please wait ${minutes}m ${seconds}s** before generating another token. (5-minute cooldown)`,
+                    flags: 64
+                });
+            }
         }
     }
     
@@ -986,7 +998,6 @@ async function processTokenGeneration(interaction, tierName) {
             if (tokenObj.expiresAt && isTokenExpired(tokenObj)) {
             const refreshResult = await refreshToken(tokenObj.refresh);
             if (refreshResult.success) {
-                // refreshToken already updated tokenStock[0] and generationIds
                 tokenObj = tokenStock[0];
             } else {
                 tokenStock[0] = {
@@ -1008,7 +1019,6 @@ async function processTokenGeneration(interaction, tierName) {
         if (!validationResult.valid) {
             const refreshResult = await refreshToken(tokenObj.refresh);
             if (refreshResult.success) {
-                // refreshToken updated tokenStock[0]
                 tokenObj = tokenStock[0];
                 const newValidation = await validateSteamToken(tokenObj.bearer);
                 if (!newValidation.valid) {
@@ -1034,7 +1044,6 @@ async function processTokenGeneration(interaction, tierName) {
             tokenObj.expiresAt = validationResult.expiresAt;
         }
         
-        // Generate unique ID for this generation and store user info
         const genId = generateGenerationId();
         tokenObj.id = genId;
         tokenObj.userId = interaction.user.id;
@@ -1044,8 +1053,10 @@ async function processTokenGeneration(interaction, tierName) {
         tokenStock.shift();
         tokenStock.push(tokenObj);
         
-        // Set cooldown for this user (5 minutes)
-        cooldowns.set(cooldownKey, Date.now() + GENERATION_COOLDOWN);
+        // Only set cooldown if the user doesn't have the bypass role
+        if (!hasNoCooldown) {
+            cooldowns.set(`public_${userId}`, Date.now() + GENERATION_COOLDOWN);
+        }
         
         await interaction.editReply({
             content: '⏳ **Generating your token...** (Step 4/4: Sending to DMs)'
@@ -1234,7 +1245,6 @@ client.on('interactionCreate', async interaction => {
                     tokenObj.expiresAt = validationResult.expiresAt;
                 }
                 
-                // Generate ID for /token too
                 const genId = generateGenerationId();
                 tokenObj.id = genId;
                 tokenObj.userId = interaction.user.id;
@@ -1465,7 +1475,7 @@ Made by TMC.LOL
                         .setTitle('🔑 TMC.LOL TOKEN GENERATOR')
                         .setDescription(
                             'Generate your token below!\n\n' +
-                            `**Public Token** – everyone | cooldown: 5 minutes\n\n` +
+                            `**Public Token** – everyone | cooldown: 5 minutes (bypass with <@&1542956153166626856> role)\n\n` +
                             '*Tokens are only visible to you.*\n' +
                             '*Ephemeral — only you can see your token*\n\n' +
                             '⚠️ **Please open your DMs** to receive your token!\n' +
@@ -1563,7 +1573,6 @@ Made by TMC.LOL
                         return interaction.reply({ content: '📭 No active generation IDs found.', flags: 64 });
                     }
 
-                    // Sort by ID
                     entries.sort((a, b) => a.id.localeCompare(b.id));
 
                     const itemsPerPage = 10;
@@ -1773,7 +1782,7 @@ Made by TMC.LOL
                             .setTitle('🔑 TMC.LOL TOKEN GENERATOR')
                             .setDescription(
                                 'Generate your token below!\n\n' +
-                                `**Public Token** – everyone | cooldown: 5 minutes\n\n` +
+                                `**Public Token** – everyone | cooldown: 5 minutes (bypass with <@&1542956153166626856> role)\n\n` +
                                 '*Tokens are only visible to you.*\n' +
                                 '*Ephemeral — only you can see your token*\n\n' +
                                 '⚠️ **Please open your DMs** to receive your token!\n' +
