@@ -13,11 +13,11 @@ const {
     PermissionFlagsBits,
     SlashCommandBuilder,
     REST,
-    Routes
+    Routes,
+    AttachmentBuilder // FIX: Added AttachmentBuilder here
 } = require('discord.js');
 
 const http = require('http');
-const { AttachmentBuilder } = require('discord.js');
 
 const client = new Client({
     intents: [
@@ -33,28 +33,26 @@ const MEMBER_ROLE_ID = "1492798151516491816";
 const SUPPORTER_ROLE_ID = "1529393418063581284";
 const ANNOUNCEMENT_ROLE_ID = "123456789012345678";
 const BOT_OWNER_ID = "1300117296844509227";
-const ELLIOTT_ID = "1363240484818128926"; // Elliott's User ID
+const ELLIOTT_ID = "1363240484818128926";
 
 const BUYER_ROLE_ID = "1542337976917434428";
 const VIP_ROLE_ID = "1542337978016469093";
 const BOOSTER_ROLE_ID = "1542337979807178832";
 
 // --- API CONFIGURATION ---
+const NAKAMA_SERVER = 'https://animalcompany.us-east1.nakamacloud.io';
+const NAKAMA_SERVER_KEY = process.env.NAKAMA_SERVER_KEY || 'defaultkey';
 const API_URLS = [
-    'https://api.realanimalcompany.com',
-    'https://realanimalcompany.com/api',
-    'https://www.realanimalcompany.com/api',
-    'https://auth.realanimalcompany.com',
-    'https://api.animalcompany.com',
-    'https://animalcompany.com/api',
-    'https://api.realanimalcompany.com/v1',
-    'https://realanimalcompany.com/v1',
-    'https://api.realanimalcompany.com/auth',
-    'https://realanimalcompany.com/auth'
+    NAKAMA_SERVER
 ];
 
 let ACTIVE_API_URL = API_URLS[0];
 let apiWorking = false;
+
+const hasServerKey = NAKAMA_SERVER_KEY && NAKAMA_SERVER_KEY.length > 0;
+if (!hasServerKey) {
+    console.log('[TMC.LOL] ⚠️ NAKAMA_SERVER_KEY not set - token refresh will fail with "Server key required"');
+}
 
 // --- Token refresh queue system ---
 let isRefreshing = false;
@@ -75,8 +73,8 @@ function processQueue(error, token = null) {
 
 // --- DEFAULT TOKEN ---
 let DEFAULT_TOKEN = {
-    bearer: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0aWQiOiIyYzNiNDJmMi0zZGNhLTQ3ZmYtYjgwZC00NzEzNTRiN2E0NTkiLCJ1aWQiOiIzZjJkZWI5Ni01MGQ1LTQxNTAtYjBmNC05NjdkZjhlNWY0YjIiLCJ1c24iOiJNQ080N2xwMVNfbnlrVFVNIiwidnJzIjp7ImF1dGhJRCI6ImExOTU2MWI1NGQwZjRhNzFiZWFmNDFkYWMwYWMyNDA5IiwiY2xpZW50VXNlckFnZW50IjoiU3RlYW1WUiAxLjg4LjAuMzQxNV8wN2UxNGExNyIsImRldmljZUlEIjoiNDYxNjU0MDU0NjhmNmU4MTYxZDY1Yjc1OWQ3N2I1NTEwMzAzMWVhOSJ9LCJleHAiOjE3ODc4MTU1MDksImlhdCI6MTc4Nzc4MDU0Mn0.gPWaFouLcPLVsI7VyMpCeVwIJybuhFIBkTWsiKeQkJE",
-    refresh_token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0aWQiOiIyYzNiNDJmMi0zZGNhLTQ3ZmYtYjgwZC00NzEzNTRiN2E0NTkiLCJ1aWQiOiIzZjJkZWI5Ni01MGQ1LTQxNTAtYjBmNC05NjdkZjhlNWY0YjIiLCJ1c24iOiJNQ080N2xwMVNfbnlrVFVNIiwidnJzIjp7ImF1dGhJRCI6ImExOTU2MWI1NGQwZjRhNzFiZWFmNDFkYWMwYWMyNDA5IiwiY2xpZW50VXNlckFnZW50IjoiU3RlYW1WUiAxLjg4LjAuMzQxNV8wN2UxNGExNyIsImRldmljZUlEIjoiNDYxNjU0MDU0NjhmNmU4MTYxZDY1Yjc1OWQ3N2I1NTEwMzAzMWVhOSJ9LCJleHAiOjE3ODc4MzM1MDksImlhdCI6MTc4Nzc4MDU0Mn0.1P_vl9PrIh3GuhHbY_kf3_6neC80_biZgsJNcr1Yw_Q"
+    bearer: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0aWQiOiIwY2M4YjZlOS03OTFiLTQyZTYtODU1YS0wNGNiYzA4MDcyYjciLCJ1aWQiOiJjOGQ5MjMyNS1mNTE3LTQzOTQtYmYwMi1iODNiZTI5OTY4ODYiLCJ1c24iOiJvMHcyc0dGdDc1ZUtqZ0F3IiwidnJzIjp7ImF1dGhJRCI6ImE4ZjA1YjBlNDMyNDQ1ZWFhOTQ1OWFjOTM4MTk0MDQ3IiwiY2xpZW50VXNlckFnZW50IjoiU3RlYW1WUiAxLjg4LjEuMzQyMV9hM2RmNmNlNSIsImRldmljZUlEIjoiNmU5NjZhYzcwMTAxOGUxN2NkYzNmNjA4ODQ4ODA2MTgwNjYxMjhiZiJ9LCJleHAiOjE3ODc4ODYwNjYsImlhdCI6MTc4Nzg4MjQ2Nn0.NF6aT0wONv1E96uX-NPpTv2-V123H98_hH6_8EHwvbQ",
+    refresh_token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0aWQiOiIwY2M4YjZlOS03OTFiLTQyZTYtODU1YS0wNGNiYzA4MDcyYjciLCJ1aWQiOiJjOGQ5MjMyNS1mNTE3LTQzOTQtYmYwMi1iODNiZTI5OTY4ODYiLCJ1c24iOiJvMHcyc0dGdDc1ZUtqZ0F3IiwidnJzIjp7ImF1dGhJRCI6ImE4ZjA1YjBlNDMyNDQ1ZWFhOTQ1OWFjOTM4MTk0MDQ3IiwiY2xpZW50VXNlckFnZW50IjoiU3RlYW1WUiAxLjg4LjEuMzQyMV9hM2RmNmNlNSIsImRldmljZUlEIjoiNmU5NjZhYzcwMTAxOGUxN2NkYzNmNjA4ODQ4ODA2MTgwNjYxMjhiZiJ9LCJleHAiOjE3ODc5MDQwNjYsImlhdCI6MTc4Nzg4MjQ2Nn0.45YTw42pd1ywnrig7HfQSQZeq0gbUqjR_ix9utrygS0"
 };
 
 const REQUIRED_ROLES = {
@@ -201,11 +199,12 @@ async function findWorkingApiUrl() {
             const controller = new AbortController();
             const timeoutId = setTimeout(() => controller.abort(), 5000);
             
-            const response = await fetch(`${url}/validate`, {
+            // Test the Nakama server is reachable
+            const response = await fetch(url, {
                 method: 'GET',
                 headers: {
                     'Content-Type': 'application/json',
-                    'User-Agent': 'TMC.LOL-Bot/1.0'
+                    'User-Agent': 'SteamVR 1.88.1.3421_a3df6ce5'
                 },
                 signal: controller.signal
             });
@@ -214,7 +213,6 @@ async function findWorkingApiUrl() {
             
             const contentType = response.headers.get('content-type');
             if (contentType && contentType.includes('application/json')) {
-                const data = await response.json();
                 console.log(`[TMC.LOL] ✅ Found working API: ${url}`);
                 ACTIVE_API_URL = url;
                 apiWorking = true;
@@ -282,6 +280,9 @@ async function validateSteamToken(bearerToken, retries = 3) {
         }
     }
 
+    let payload = null;
+    let expTime = null;
+
     try {
         const parts = bearerToken.split('.');
         if (parts.length !== 3) {
@@ -295,10 +296,10 @@ async function validateSteamToken(bearerToken, retries = 3) {
             };
         }
         
-        const payload = JSON.parse(Buffer.from(parts[1], 'base64').toString());
+        payload = JSON.parse(Buffer.from(parts[1], 'base64').toString());
         
         if (payload.exp) {
-            const expTime = payload.exp * 1000;
+            expTime = payload.exp * 1000;
             console.log(`[TMC.LOL] JWT expires at: ${new Date(expTime).toISOString()}`);
             
             if (Date.now() > expTime) {
@@ -338,29 +339,44 @@ async function validateSteamToken(bearerToken, retries = 3) {
         };
     }
 
-    // If API is not working, bypass validation
+    // If API is not working, trust the local JWT check
     if (!apiWorking) {
-        console.log('[TMC.LOL] ⚠️ API not working - Bypassing validation');
+        console.log('[TMC.LOL] ⚠️ API not reachable - Using local JWT validation only');
+        if (payload && payload.exp) {
+            const expTime = payload.exp * 1000;
+            if (Date.now() < expTime) {
+                console.log(`[TMC.LOL] ⚠️ JWT not expired locally (${new Date(expTime).toISOString()}) - treating as valid`);
+                return {
+                    valid: true,
+                    status: 200,
+                    data: { locally_valid: true },
+                    expiresAt: expTime,
+                    message: 'Token appears valid locally - API unreachable for full validation'
+                };
+            }
+        }
         return {
-            valid: true,
-            status: 200,
+            valid: false,
+            status: 0,
             data: { bypassed: true },
-            expiresAt: Date.now() + (60 * 60 * 1000),
-            message: 'Validation bypassed - API not reachable'
+            expiresAt: null,
+            message: 'Cannot validate token - API unreachable and token may be expired.'
         };
     }
 
     for (let attempt = 0; attempt <= retries; attempt++) {
         try {
+            // Use Nakama's /v2/account endpoint to validate the session token
+            const validateUrl = `${ACTIVE_API_URL}/v2/account`;
             const controller = new AbortController();
             const timeoutId = setTimeout(() => controller.abort(), 10000);
             
-            const response = await fetch(`${ACTIVE_API_URL}/validate`, {
+            const response = await fetch(validateUrl, {
                 method: 'GET',
                 headers: {
                     'Authorization': `Bearer ${bearerToken}`,
                     'Content-Type': 'application/json',
-                    'User-Agent': 'TMC.LOL-Bot/1.0'
+                    'User-Agent': 'SteamVR 1.88.1.3421_a3df6ce5'
                 },
                 signal: controller.signal
             });
@@ -407,30 +423,8 @@ async function validateSteamToken(bearerToken, retries = 3) {
             
             const isValid = response.status === 200;
             
-            let expiresAt = null;
-            if (responseData.expires_at) {
-                expiresAt = new Date(responseData.expires_at).getTime();
-            } else if (responseData.expiresIn) {
-                expiresAt = Date.now() + (responseData.expiresIn * 1000);
-            } else if (responseData.exp) {
-                expiresAt = responseData.exp * 1000;
-            } else if (responseData.expires) {
-                expiresAt = new Date(responseData.expires).getTime();
-            }
-            
-            if (expiresAt && Date.now() > expiresAt) {
-                return {
-                    valid: false,
-                    status: 401,
-                    data: responseData,
-                    expiresAt: expiresAt,
-                    message: 'Token expired - API reported expiration'
-                };
-            }
-            
-            if (!expiresAt) {
-                expiresAt = Date.now() + (60 * 60 * 1000);
-            }
+            // Nakama /v2/account returns wallet, user ID etc - compute expiry from JWT if present
+            let expiresAt = Date.now() + (60 * 60 * 1000);
             
             apiWorking = true;
             
@@ -472,15 +466,9 @@ async function validateSteamToken(bearerToken, retries = 3) {
 // ============================================
 // TOKEN REFRESH SYSTEM WITH QUEUE
 // ============================================
-async function refreshToken(refreshToken) {
+async function refreshToken(refreshTk) {
     try {
-        console.log('[TMC.LOL] 🔄 Attempting to refresh token...');
-        
-        // If API is not working, skip refresh
-        if (!apiWorking) {
-            console.log('[TMC.LOL] ⚠️ API not working - Skipping refresh');
-            return { success: false };
-        }
+        console.log('[TMC.LOL] 🔄 Attempting to refresh token via Nakama...');
         
         // If already refreshing, queue this request
         if (isRefreshing) {
@@ -493,92 +481,96 @@ async function refreshToken(refreshToken) {
         isRefreshing = true;
         console.log('[TMC.LOL] 🔒 Refresh lock acquired');
 
-        // ACTUALLY CALL THE API TO GET A NEW TOKEN
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 10000);
+        // Try ALL API URLs until one works
+        const urlsToTry = apiWorking ? [ACTIVE_API_URL, ...API_URLS.filter(u => u !== ACTIVE_API_URL)] : [...API_URLS];
 
-        const response = await fetch(`${ACTIVE_API_URL}/refresh`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'User-Agent': 'TMC.LOL-Bot/1.0'
-            },
-            body: JSON.stringify({ refresh_token: refreshToken }),
-            signal: controller.signal
-        });
+        for (const url of urlsToTry) {
+            try {
+                // Nakama session refresh endpoint
+                const refreshUrl = `${url}/v2/account/session/refresh`;
+                console.log(`[TMC.LOL] 🔄 Trying refresh at: ${refreshUrl}`);
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 10000);
 
-        clearTimeout(timeoutId);
+                const serverKeyAuth = 'Basic ' + Buffer.from(NAKAMA_SERVER_KEY + ':').toString('base64');
 
-        // Check if response is JSON
-        const contentType = response.headers.get('content-type');
-        if (!contentType || !contentType.includes('application/json')) {
-            console.log('[TMC.LOL] ❌ Response is not JSON, treating as failure');
-            processQueue(new Error('Invalid response format'), null);
-            isRefreshing = false;
-            return { success: false };
+                const response = await fetch(refreshUrl, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'User-Agent': 'SteamVR 1.88.1.3421_a3df6ce5',
+                        'Authorization': serverKeyAuth
+                    },
+                    body: JSON.stringify({ token: refreshTk }),
+                    signal: controller.signal
+                });
+
+                clearTimeout(timeoutId);
+
+                const contentType = response.headers.get('content-type');
+                if (!contentType || !contentType.includes('application/json')) {
+                    console.log(`[TMC.LOL] ❌ ${url} - Not JSON response (status ${response.status})`);
+                    continue;
+                }
+
+                const data = await response.json();
+
+                // Nakama returns { token, refresh_token } on success
+                if (response.status === 200 && data.token) {
+                    const newBearer = data.token;
+                    const newRefresh = data.refresh_token || refreshTk;
+                    const expiresAt = Date.now() + (60 * 60 * 1000);
+
+                    if (!newBearer || newBearer === refreshTk) {
+                        console.log(`[TMC.LOL] ⚠️ ${url} - Refresh returned same token`);
+                        continue;
+                    }
+
+                    console.log(`[TMC.LOL] ✅ Successfully refreshed token via ${url}!`);
+                    console.log(`[TMC.LOL] New Bearer: ${newBearer.substring(0, 50)}...`);
+
+                    DEFAULT_TOKEN.bearer = newBearer;
+                    DEFAULT_TOKEN.refresh_token = newRefresh;
+                    ACTIVE_API_URL = url;
+                    apiWorking = true;
+
+                    if (tokenStock.length > 0) {
+                        tokenStock[0] = {
+                            bearer: newBearer,
+                            refresh: newRefresh,
+                            addedAt: Date.now(),
+                            expiresAt: expiresAt
+                        };
+                    }
+
+                    const result = {
+                        success: true,
+                        bearer: newBearer,
+                        refresh: newRefresh,
+                        expiresAt: expiresAt
+                    };
+
+                    processQueue(null, result);
+                    isRefreshing = false;
+                    console.log('[TMC.LOL] 🔓 Refresh lock released');
+                    return result;
+                } else {
+                    console.log(`[TMC.LOL] ❌ ${url} - Status: ${response.status}`, data);
+                }
+            } catch (err) {
+                console.log(`[TMC.LOL] ❌ ${url} - ${err.message}`);
+            }
         }
 
-        const data = await response.json();
-
-        if (response.status === 200 && (data.access_token || data.bearer)) {
-            const newBearer = data.access_token || data.bearer;
-            const newRefresh = data.refresh_token || refreshToken;
-            const expiresAt = data.expires_at ? new Date(data.expires_at).getTime() : Date.now() + (60 * 60 * 1000);
-
-            if (!newBearer || newBearer === refreshToken) {
-                console.log('[TMC.LOL] ⚠️ Refresh returned same token, treating as failure');
-                throw new Error('Refresh returned same token');
-            }
-
-            console.log('[TMC.LOL] ✅ Successfully refreshed token!');
-            console.log(`[TMC.LOL] New Bearer: ${newBearer.substring(0, 50)}...`);
-
-            // Update DEFAULT_TOKEN with the NEW tokens
-            DEFAULT_TOKEN.bearer = newBearer;
-            DEFAULT_TOKEN.refresh_token = newRefresh;
-
-            // Also update the stock
-            if (tokenStock.length > 0) {
-                tokenStock[0] = {
-                    bearer: newBearer,
-                    refresh: newRefresh,
-                    addedAt: Date.now(),
-                    expiresAt: expiresAt
-                };
-            }
-
-            const result = {
-                success: true,
-                bearer: newBearer,
-                refresh: newRefresh,
-                expiresAt: expiresAt
-            };
-
-            // Process the queue with the NEW token
-            processQueue(null, newBearer);
-            isRefreshing = false;
-            console.log('[TMC.LOL] 🔓 Refresh lock released');
-            return result;
-
-        } else {
-            console.log(`[TMC.LOL] ❌ Refresh failed with status: ${response.status}`);
-            console.log(`[TMC.LOL] Response:`, data);
-            
-            processQueue(new Error(`Refresh failed with status ${response.status}`), null);
-            isRefreshing = false;
-            return { success: false };
-        }
+        console.log('[TMC.LOL] ❌ All refresh URLs failed');
+        processQueue(new Error('All refresh URLs failed'), null);
+        isRefreshing = false;
+        return { success: false };
 
     } catch (err) {
         console.error('[TMC.LOL] Refresh error:', err.message);
-        console.log('[TMC.LOL] ⚠️ Falling back to default token...');
-        
-        // Process queue with error
         processQueue(err, null);
         isRefreshing = false;
-        console.log('[TMC.LOL] 🔓 Refresh lock released (error)');
-
-        // Return failure
         return { success: false };
     }
 }
@@ -617,12 +609,7 @@ async function refreshTokenInStock() {
         }
     } catch (err) {
         console.error('[TMC.LOL] Error in refresh process:', err);
-        tokenStock[0] = {
-            bearer: DEFAULT_TOKEN.bearer,
-            refresh: DEFAULT_TOKEN.refresh_token,
-            addedAt: Date.now(),
-            expiresAt: Date.now() + (60 * 60 * 1000)
-        };
+        console.log('[TMC.LOL] ❌ Keeping existing token - refresh failed');
     }
     
     if (tokenStock.length === 0) {
@@ -930,7 +917,7 @@ async function processTokenGeneration(interaction, tierName) {
         
         const tokenObj = tokenStock[0];
         
-        if (tokenObj.expiresAt && isTokenExpired(tokenObj)) {
+            if (tokenObj.expiresAt && isTokenExpired(tokenObj)) {
             const refreshResult = await refreshToken(tokenObj.refresh);
             if (refreshResult.success) {
                 tokenStock[0] = {
@@ -947,6 +934,7 @@ async function processTokenGeneration(interaction, tierName) {
                     expiresAt: Date.now() + (60 * 60 * 1000)
                 };
             }
+            tokenObj = tokenStock[0];
         }
         
         await interaction.editReply({
@@ -966,21 +954,22 @@ async function processTokenGeneration(interaction, tierName) {
                 };
                 const newValidation = await validateSteamToken(tokenStock[0].bearer);
                 if (!newValidation.valid) {
-                    tokenStock[0] = {
-                        bearer: DEFAULT_TOKEN.bearer,
-                        refresh: DEFAULT_TOKEN.refresh_token,
-                        addedAt: Date.now(),
-                        expiresAt: Date.now() + (60 * 60 * 1000)
-                    };
+                    activeGenerations.delete(userId);
+                    return interaction.editReply({
+                        content: '❌ **Token Expired!** Refresh succeeded but the new token is still invalid.\n\n' +
+                                 '🔑 **Fix:** An admin needs to run `/stock_main` with a fresh bearer + refresh token.\n' +
+                                 '💡 The current tokens in stock are expired and cannot be auto-refreshed.'
+                    });
                 }
             } else {
-                tokenStock[0] = {
-                    bearer: DEFAULT_TOKEN.bearer,
-                    refresh: DEFAULT_TOKEN.refresh_token,
-                    addedAt: Date.now(),
-                    expiresAt: Date.now() + (60 * 60 * 1000)
-                };
+                activeGenerations.delete(userId);
+                return interaction.editReply({
+                    content: '❌ **Token Expired!** Could not refresh the token.\n\n' +
+                             '🔑 **Fix:** An admin needs to run `/stock_main` with a fresh bearer + refresh token.\n' +
+                             '💡 The current tokens in stock are expired and no working API was found to refresh them.'
+                });
             }
+            tokenObj = tokenStock[0];
         }
         
         if (validationResult.expiresAt) {
@@ -1030,11 +1019,9 @@ ${tokenObj.refresh}
 Made by TMC.LOL
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`;
         
-        // Create text file attachment
         const textBuffer = Buffer.from(textVersion, 'utf-8');
         const textAttachment = new AttachmentBuilder(textBuffer, { name: 'token.txt' });
         
-        // --- SEND BOTH VERSIONS ---
         const embed = new EmbedBuilder()
             .setTitle('🔑 TMC.LOL TOKEN GENERATOR')
             .setDescription('✅ **Token generated successfully!**\n\n' +
@@ -1156,6 +1143,7 @@ client.on('interactionCreate', async interaction => {
                             expiresAt: Date.now() + (60 * 60 * 1000)
                         };
                     }
+                    tokenObj = tokenStock[0];
                 }
                 
                 const validationResult = await validateSteamToken(tokenObj.bearer);
@@ -1170,13 +1158,14 @@ client.on('interactionCreate', async interaction => {
                             expiresAt: refreshResult.expiresAt || Date.now() + (60 * 60 * 1000)
                         };
                     } else {
-                        tokenStock[0] = {
-                            bearer: DEFAULT_TOKEN.bearer,
-                            refresh: DEFAULT_TOKEN.refresh_token,
-                            addedAt: Date.now(),
-                            expiresAt: Date.now() + (60 * 60 * 1000)
-                        };
+                        return interaction.reply({
+                            content: '❌ **Token Expired!** Could not refresh the token.\n\n' +
+                                     '🔑 **Fix:** An admin needs to run `/stock_main` with a fresh bearer + refresh token.\n' +
+                                     '💡 The current tokens in stock are expired and no working API was found to refresh them.',
+                            flags: 64
+                        });
                     }
+                    tokenObj = tokenStock[0];
                 }
                 
                 if (validationResult.expiresAt) {
@@ -1316,7 +1305,6 @@ Made by TMC.LOL
             const adminCommands = ['stock', 'stock_main', 'generator', 'force_refresh', 'remove_stock', 'refresh_cooldown_all', 'refresh_cooldown_user', 'refresh_user', 'logs', 'servers', 'setup-botlog', 'build', 'panel', 'generate-code', 'warn', 'warnings', 'purge', 'timeout', 'afk', 'announce', 'autodelete', 'autorole', 'ban', 'blacklist', 'bumpreminder', 'counting', 'fakeconvo', 'fakemessage', 'giveall', 'giveaway', 'info', 'leaderboard', 'level', 'levelset', 'lock', 'modmakerapply', 'mute', 'poll', 'postroles', 'postrules', 'reactionrole', 'roleadd', 'roleremove', 'setlogs', 'slowmode', 'starboard', 'status', 'ticketpanel', 'unlock', 'welcome', 'refresh_batch'];
             
             if (adminCommands.includes(commandName)) {
-                // FIX: Check if user is Administrator OR is Elliott or Bot Owner
                 if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator) && 
                     !isPrivilegedUser(interaction.user.id)) {
                     return interaction.reply({ 
@@ -1338,7 +1326,6 @@ Made by TMC.LOL
                             });
                         }
                         
-                        // Force set the token directly (bypass API)
                         forceSetOwnToken(bearer, refresh);
                         
                         const embed = new EmbedBuilder()
@@ -1931,7 +1918,6 @@ Made by TMC.LOL
                         });
                     }
                     
-                    // Force add token directly
                     tokenStock.push({
                         bearer,
                         refresh,
