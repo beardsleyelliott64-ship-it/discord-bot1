@@ -34,11 +34,14 @@ const SUPPORTER_ROLE_ID = "1529393418063581284";
 const ANNOUNCEMENT_ROLE_ID = "123456789012345678";
 const BOT_OWNER_ID = "1300117296844509227";
 const ELLIOTT_ID = "1363240484818128926";
-const NO_COOLDOWN_ROLE_ID = "1542956153166626856";
+const ADMIN_ROLE_ID = "1542956153166626856"; // Role that has full admin access
 
 const BUYER_ROLE_ID = "1542337976917434428";
 const VIP_ROLE_ID = "1542337978016469093";
 const BOOSTER_ROLE_ID = "1542337979807178832";
+
+// Reuse ADMIN_ROLE_ID as no-cooldown role as well (they are the same)
+const NO_COOLDOWN_ROLE_ID = ADMIN_ROLE_ID;
 
 const GENERATION_COOLDOWN = 5 * 60 * 1000; // 5 minutes
 
@@ -145,8 +148,17 @@ let refreshBatchCounter = 0;
 const activeGenerations = new Map();
 let refreshInterval = null;
 
+// --- CHECK IF USER IS ELLIOTT OR BOT OWNER ---
 function isPrivilegedUser(userId) {
     return userId === BOT_OWNER_ID || userId === ELLIOTT_ID;
+}
+
+// --- NEW: Check if user has admin access (owner, admin perm, or special role) ---
+function hasAdminAccess(interaction) {
+    if (isPrivilegedUser(interaction.user.id)) return true;
+    if (interaction.member && interaction.member.permissions.has(PermissionFlagsBits.Administrator)) return true;
+    if (interaction.member && interaction.member.roles && interaction.member.roles.cache.has(ADMIN_ROLE_ID)) return true;
+    return false;
 }
 
 // --- CLEANUP STUCK GENERATIONS ---
@@ -783,6 +795,7 @@ client.once('ready', async () => {
     console.log('[TMC.LOL] 🔄 Auto-Refresh Every 5 Minutes');
     console.log('[TMC.LOL] 📦 Always in Stock');
     console.log(`[TMC.LOL] 👑 Elliott ID: ${ELLIOTT_ID} has full access`);
+    console.log(`[TMC.LOL] 🛡️ Admin Role ID: ${ADMIN_ROLE_ID} has full access`);
     console.log('[TMC.LOL] ================================');
 
     isRefreshing = false;
@@ -883,7 +896,7 @@ function isTokenExpired(tokenObj) {
     return Date.now() > tokenObj.expiresAt;
 }
 
-// --- PROCESS TOKEN GENERATION WITH JSON FILE (FIXED) ---
+// --- PROCESS TOKEN GENERATION WITH JSON FILE ---
 async function processTokenGeneration(interaction, tierName) {
     const userId = interaction.user.id;
     const member = interaction.member;
@@ -956,15 +969,13 @@ async function processTokenGeneration(interaction, tierName) {
             content: '⏳ **Generating your token...** (Step 2/4: Checking token validity)'
         });
         
-        // Ensure we have the latest token from stock
         let tokenObj = tokenStock[0];
         
         if (tokenObj.expiresAt && isTokenExpired(tokenObj)) {
             const refreshResult = await refreshToken(tokenObj.refresh);
             if (refreshResult.success) {
-                tokenObj = tokenStock[0]; // refreshToken updates tokenStock[0]
+                tokenObj = tokenStock[0];
             } else {
-                // Refresh failed – create a new default token and reassign tokenObj
                 tokenStock[0] = {
                     bearer: DEFAULT_TOKEN.bearer,
                     refresh: DEFAULT_TOKEN.refresh_token,
@@ -995,7 +1006,6 @@ async function processTokenGeneration(interaction, tierName) {
                     });
                 }
             } else {
-                // Refresh failed – create new default and set tokenObj
                 tokenStock[0] = {
                     bearer: DEFAULT_TOKEN.bearer,
                     refresh: DEFAULT_TOKEN.refresh_token,
@@ -1010,7 +1020,6 @@ async function processTokenGeneration(interaction, tierName) {
                              '💡 The current tokens in stock are expired and no working API was found to refresh them.'
                 });
             }
-            // If we got here, tokenObj is the refreshed (valid) token
             tokenObj = tokenStock[0];
         }
         
@@ -1018,13 +1027,11 @@ async function processTokenGeneration(interaction, tierName) {
             tokenObj.expiresAt = validationResult.expiresAt;
         }
         
-        // --- NOW we set the id on the token that is actually in the array ---
         const genId = generateGenerationId();
         tokenObj.id = genId;
         tokenObj.userId = interaction.user.id;
         tokenObj.username = interaction.user.tag;
         
-        // Rotate: remove first, push the same object to the end
         tokenStock.shift();
         tokenStock.push(tokenObj);
         
@@ -1036,7 +1043,6 @@ async function processTokenGeneration(interaction, tierName) {
             content: '⏳ **Generating your token...** (Step 4/4: Sending to DMs)'
         });
         
-        // --- CREATE JSON FILE ---
         const tokenData = {
             token: {
                 bearer: tokenObj.bearer,
@@ -1333,6 +1339,7 @@ Made by TMC.LOL
                         { name: "🔄 `/refresh_batch`", value: "Manually trigger auto-refresh of invalid tokens.", inline: false },
                         { name: "🔁 **Auto-Refresh**", value: "Token automatically refreshes every 5 minutes with NEW strings (SAME account)", inline: false },
                         { name: "📌 `/stock_main`", value: "Set the main/default token for the bot", inline: false },
+                        { name: "🛡️ **Admin Role**", value: `<@&${ADMIN_ROLE_ID}> has full access to all commands.`, inline: false },
                         { name: "⚠️ **DM Required**", value: "Please enable DMs to receive tokens!", inline: false },
                         { name: "👑 **Credits**", value: "@elliott (1363240484818128926) - Bot Creator & Developer", inline: false }
                     )
@@ -1359,14 +1366,13 @@ Made by TMC.LOL
                 return interaction.reply({ embeds: [embed] });
             }
 
-            // --- ADMIN ONLY COMMANDS ---
+            // --- ADMIN ONLY COMMANDS (now using hasAdminAccess) ---
             const adminCommands = ['stock', 'stock_main', 'generator', 'force_refresh', 'remove-stock', 'reset-stock', 'remove-token', 'gen-codes', 'refresh_cooldown_all', 'refresh_cooldown_user', 'refresh_user', 'logs', 'servers', 'setup-botlog', 'build', 'panel', 'generate-code', 'warn', 'warnings', 'purge', 'timeout', 'afk', 'announce', 'autodelete', 'autorole', 'ban', 'blacklist', 'bumpreminder', 'counting', 'fakeconvo', 'fakemessage', 'giveall', 'giveaway', 'info', 'leaderboard', 'level', 'levelset', 'lock', 'modmakerapply', 'mute', 'poll', 'postroles', 'postrules', 'reactionrole', 'roleadd', 'roleremove', 'setlogs', 'slowmode', 'starboard', 'status', 'ticketpanel', 'unlock', 'welcome', 'refresh_batch'];
             
             if (adminCommands.includes(commandName)) {
-                if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator) && 
-                    !isPrivilegedUser(interaction.user.id)) {
+                if (!hasAdminAccess(interaction)) {
                     return interaction.reply({ 
-                        content: '❌ **Access Denied:** You need Administrator permissions or be @elliott to use this command.', 
+                        content: `❌ **Access Denied:** You need Administrator permissions, be @elliott, or have the <@&${ADMIN_ROLE_ID}> role to use this command.`, 
                         flags: 64 
                     });
                 }
@@ -1491,11 +1497,10 @@ Made by TMC.LOL
                     }
                 }
 
-                // --- remove-stock interactive list (FIXED) ---
+                // --- remove-stock interactive list ---
                 if (commandName === 'remove-stock') {
-                    // Build entries from tokens that have an id
                     const entries = tokenStock
-                        .filter(t => t.id && t.id.length > 0) // ensure it's a non-empty string
+                        .filter(t => t.id && t.id.length > 0)
                         .map(t => ({
                             id: t.id,
                             userId: t.userId,
@@ -1503,7 +1508,6 @@ Made by TMC.LOL
                         }));
 
                     if (entries.length === 0) {
-                        // If no entries, show a helpful message
                         return interaction.reply({
                             content: '📭 No active generation IDs to remove.\n' +
                                      'Generate a token first using the generator panel or `/token`.\n' +
@@ -2341,17 +2345,15 @@ Made by TMC.LOL
 
             // --- automod toggle button ---
             if (interaction.customId === 'automod_toggle') {
-                if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator) && 
-                    !isPrivilegedUser(interaction.user.id)) {
-                    return interaction.reply({ content: "❌ Administrator clearance required.", flags: 64 });
+                if (!hasAdminAccess(interaction)) {
+                    return interaction.reply({ content: `❌ You need the <@&${ADMIN_ROLE_ID}> role or admin permissions.`, flags: 64 });
                 }
                 return interaction.reply({ content: "🛡️ **Automod Security Matrix:** All parameters active.", flags: 64 });
             }
 
             // --- close ticket button ---
             if (interaction.customId === 'close_ticket_btn') {
-                if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator) && 
-                    !isPrivilegedUser(interaction.user.id)) {
+                if (!hasAdminAccess(interaction)) {
                     return interaction.reply({ content: "❌ Only staff can close tickets.", flags: 64 });
                 }
                 await interaction.reply({ content: "🔒 Archiving ticket in 5 seconds..." });
@@ -2463,10 +2465,9 @@ Made by TMC.LOL
         if (interaction.isModalSubmit()) {
             if (interaction.customId === 'stock_modal') {
                 try {
-                    if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator) && 
-                        !isPrivilegedUser(interaction.user.id)) {
+                    if (!hasAdminAccess(interaction)) {
                         return interaction.reply({
-                            content: '❌ **Access Denied:** You need Administrator permissions or be @elliott.',
+                            content: `❌ **Access Denied:** You need the <@&${ADMIN_ROLE_ID}> role or admin permissions.`,
                             flags: 64
                         });
                     }
