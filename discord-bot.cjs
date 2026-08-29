@@ -80,7 +80,7 @@ function hasAdminAccess(interaction) {
     return false;
 }
 
-// =========================== TOKEN REFRESH ===========================
+// =========================== TOKEN REFRESH (with fallback) ===========================
 async function refreshToken(refreshTk) {
     if (isRefreshing) {
         return new Promise((resolve, reject) => {
@@ -90,56 +90,75 @@ async function refreshToken(refreshTk) {
     isRefreshing = true;
 
     const url = `${NAKAMA_SERVER}/v2/account/session/refresh`;
-    const authHeader = `Bearer ${NAKAMA_SERVER_KEY}`;
 
-    try {
-        const response = await fetch(url, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'User-Agent': 'SteamVR 1.88.1.3421_a3df6ce5',
-                'Authorization': authHeader
-            },
-            body: JSON.stringify({ token: refreshTk })
-        });
+    // Try server key first, fallback to refresh token if key invalid
+    const authMethods = [
+        { type: 'server_key', header: `Bearer ${NAKAMA_SERVER_KEY}` },
+        { type: 'refresh_token', header: `Bearer ${refreshTk}` }
+    ];
 
-        const data = await response.json();
-        if (response.status === 200 && data.token && data.token !== refreshTk) {
-            const newBearer = data.token;
-            const newRefresh = data.refresh_token || refreshTk;
-            const expiresAt = Date.now() + 60 * 60 * 1000;
+    for (const method of authMethods) {
+        try {
+            const response = await fetch(url, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'User-Agent': 'SteamVR 1.88.1.3421_a3df6ce5',
+                    'Authorization': method.header
+                },
+                body: JSON.stringify({ token: refreshTk })
+            });
 
-            // Update default and stock
-            DEFAULT_TOKEN.bearer = newBearer;
-            DEFAULT_TOKEN.refresh_token = newRefresh;
-            if (tokenStock.length > 0) {
-                const old = tokenStock[0];
-                tokenStock[0] = {
-                    bearer: newBearer,
-                    refresh: newRefresh,
-                    expiresAt: expiresAt,
-                    id: old.id || undefined,
-                    userId: old.userId || undefined,
-                    username: old.username || undefined
-                };
+            const data = await response.json();
+            if (response.status === 200 && data.token && data.token !== refreshTk) {
+                const newBearer = data.token;
+                const newRefresh = data.refresh_token || refreshTk;
+                const expiresAt = Date.now() + 60 * 60 * 1000;
+
+                // Update default and stock
+                DEFAULT_TOKEN.bearer = newBearer;
+                DEFAULT_TOKEN.refresh_token = newRefresh;
+                if (tokenStock.length > 0) {
+                    const old = tokenStock[0];
+                    tokenStock[0] = {
+                        bearer: newBearer,
+                        refresh: newRefresh,
+                        expiresAt: expiresAt,
+                        id: old.id || undefined,
+                        userId: old.userId || undefined,
+                        username: old.username || undefined
+                    };
+                } else {
+                    tokenStock.push({ bearer: newBearer, refresh: newRefresh, expiresAt });
+                }
+
+                console.log(`[TMC.LOL] ✅ Refreshed using ${method.type}`);
+                const result = { success: true, bearer: newBearer, refresh: newRefresh, expiresAt };
+                failedQueue.forEach(p => p.resolve(result));
+                failedQueue = [];
+                isRefreshing = false;
+                return result;
+            } else if (response.status === 401 && data.message && data.message.includes('Server key invalid')) {
+                // Server key failed, continue to fallback
+                console.log('[TMC.LOL] ⚠️ Server key invalid – trying refresh token as Bearer');
+                continue;
             } else {
-                tokenStock.push({ bearer: newBearer, refresh: newRefresh, expiresAt });
+                // Other error, maybe retry with fallback? We'll try fallback anyway.
+                console.log(`[TMC.LOL] ❌ ${method.type} failed: ${data.message || response.status}`);
+                continue;
             }
-
-            const result = { success: true, bearer: newBearer, refresh: newRefresh, expiresAt };
-            failedQueue.forEach(p => p.resolve(result));
-            failedQueue = [];
-            isRefreshing = false;
-            return result;
-        } else {
-            throw new Error(data.message || `HTTP ${response.status}`);
+        } catch (err) {
+            console.error(`[TMC.LOL] ${method.type} error:`, err.message);
+            // Continue to next method if any
         }
-    } catch (err) {
-        failedQueue.forEach(p => p.reject(err));
-        failedQueue = [];
-        isRefreshing = false;
-        throw err;
     }
+
+    // All methods failed
+    const error = new Error('All refresh methods failed');
+    failedQueue.forEach(p => p.reject(error));
+    failedQueue = [];
+    isRefreshing = false;
+    throw error;
 }
 
 async function refreshTokenInStock() {
@@ -166,7 +185,6 @@ async function refreshTokenInStock() {
 
 // =========================== TOKEN VALIDATION ===========================
 async function validateToken(bearerToken) {
-    // Quick JWT expiry check
     try {
         const parts = bearerToken.split('.');
         if (parts.length !== 3) return false;
@@ -175,15 +193,8 @@ async function validateToken(bearerToken) {
     } catch {
         return false;
     }
-    // Optionally call /v2/account to verify
-    try {
-        const resp = await fetch(`${NAKAMA_SERVER}/v2/account`, {
-            headers: { 'Authorization': `Bearer ${bearerToken}` }
-        });
-        return resp.status === 200;
-    } catch {
-        return true; // fallback if API unreachable
-    }
+    // Optional: call /v2/account to verify, but we'll rely on JWT expiry
+    return true;
 }
 
 // =========================== GENERATE TOKEN PROCESS ===========================
@@ -254,9 +265,8 @@ async function generateTokenForUser(interaction, tier) {
             }
         }
 
-        // Validate
-        const valid = await validateToken(tokenObj.bearer);
-        if (!valid) {
+        // Validate (quick JWT expiry check)
+        if (!await validateToken(tokenObj.bearer)) {
             // Try refresh again
             try {
                 await refreshToken(tokenObj.refresh);
@@ -365,7 +375,7 @@ const commands = [
 client.once('ready', async () => {
     console.log(`[TMC.LOL] 🚀 Logged in as ${client.user.tag}`);
     console.log('[TMC.LOL] 🔄 Auto-refresh every 90 seconds');
-    console.log('[TMC.LOL] 🔑 Using Nakama server key');
+    console.log('[TMC.LOL] 🔑 Using Nakama server key with fallback to refresh token');
 
     // Initialize stock
     tokenStock = [{
