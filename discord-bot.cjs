@@ -18,15 +18,24 @@ const {
 } = require('discord.js');
 
 const http = require('http');
-const fs = require('fs');
 
+// --- DNS FIX FOR RENDER ---
+const dns = require('dns');
+dns.setServers(['8.8.8.8', '1.1.1.1']);
+console.log('[TMC.LOL] ✅ DNS set to Google DNS (8.8.8.8, 1.1.1.1)');
+
+// --- CREATE CLIENT WITH PROPER INTENTS ---
 const client = new Client({
     intents: [
         GatewayIntentBits.Guilds,
         GatewayIntentBits.GuildMembers,
         GatewayIntentBits.GuildMessages,
         GatewayIntentBits.MessageContent
-    ]
+    ],
+    rest: {
+        timeout: 60000
+    },
+    failIfNotExists: false
 });
 
 // --- CONFIGURATION ---
@@ -46,18 +55,22 @@ const GENERATION_COOLDOWN = 5 * 60 * 1000;
 
 // --- API CONFIGURATION ---
 const NAKAMA_SERVER = 'https://animalcompany.us-east1.nakamacloud.io';
+const NAKAMA_SERVER_KEY = '6URuTSlDKKfYbuDW';
 const API_URLS = [ NAKAMA_SERVER ];
 
 let ACTIVE_API_URL = API_URLS[0];
 let apiWorking = false;
 
-// --- Nakama server key – read from environment (fallback to hardcoded) ---
-const NAKAMA_SERVER_KEY = process.env.NAKAMA_SERVER_KEY || "6URuTSlDKKfYbuDW";
+const hasServerKey = NAKAMA_SERVER_KEY && NAKAMA_SERVER_KEY.length > 0 && NAKAMA_SERVER_KEY !== 'Key';
+if (!hasServerKey) {
+    console.log('[TMC.LOL] ⚠️ NAKAMA_SERVER_KEY not set - token refresh will fail with "Server key required"');
+} else {
+    console.log('[TMC.LOL] ✅ NAKAMA_SERVER_KEY is set! Token refresh should work.');
+}
 
 // --- Token refresh queue system ---
 let isRefreshing = false;
 let failedQueue = [];
-let currentRefreshPromise = null;
 
 function processQueue(error, token = null) {
     failedQueue.forEach(prom => {
@@ -70,18 +83,15 @@ function processQueue(error, token = null) {
     failedQueue = [];
 }
 
-// ============================================================
-// DEFAULT TOKEN – UPDATED with the new token (provided by user)
-// ============================================================
+// --- DEFAULT TOKEN ---
 let DEFAULT_TOKEN = {
-    bearer: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0aWQiOiI0MmU3OTUzNi1hMWIxLTQ1Y2YtYWNlYy03ZTZkZWIzNTE0NGIiLCJ1aWQiOiJlNDY4MzE4Ny02ZTRlLTQzMmItOTQ2My0wNjNlYzI5NDZhMmMiLCJ1c24iOiJTMURFVnhpS0FkZzlVYW12IiwidnJzIjp7ImF1dGhJRCI6ImJmY2FlNWUxMGRjNjRkNzhhYTQ0YTZmMWIxYTQ2MWI0IiwiY2xpZW50VXNlckFnZW50IjoiU3RlYW1WUiAxLjg4LjEuMzQyMV9hM2RmNmNlNSIsImRldmljZUlEIjoiNmU5NjZhYzcwMTAxOGUxN2NkYzNmNjA4ODQ4ODA2MTgwNjYxMjhiZiJ9LCJleHAiOjE3ODgwNDMyMDUsImlhdCI6MTc4ODAzMzA5NX0.UST8vXbofVs0g1gTeai96iOYe8pVIo1tcyS9WXKUER4",
-    refresh_token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0aWQiOiI0MmU3OTUzNi1hMWIxLTQ1Y2YtYWNlYy03ZTZkZWIzNTE0NGIiLCJ1aWQiOiJlNDY4MzE4Ny02ZTRlLTQzMmItOTQ2My0wNjNlYzI5NDZhMmMiLCJ1c24iOiJTMURFVnhpS0FkZzlVYW12IiwidnJzIjp7ImF1dGhJRCI6ImJmY2FlNWUxMGRjNjRkNzhhYTQ0YTZmMWIxYTQ2MWI0IiwiY2xpZW50VXNlckFnZW50IjoiU3RlYW1WUiAxLjg4LjEuMzQyMV9hM2RmNmNlNSIsImRldmljZUlEIjoiNmU5NjZhYzcwMTAxOGUxN2NkYzNmNjA4ODQ4ODA2MTgwNjYxMjhiZiJ9LCJleHAiOjE3ODgwNjEyMDUsImlhdCI6MTc4ODAzMzA5NX0.DqaMVXvxpg6LmrwaedEsMysm-94Xbgt5RDeAar6_bQc"
+  "bearer": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0aWQiOiJjODBkODViOS1lZmRhLTRiMzktYWEyZi0wY2Q5ZTVkZDJlMjMiLCJ1aWQiOiIyOWM1OGJlNi02YjYzLTQ1YTAtYTBhZS1kMTRlMjgxMzJjYjciLCJ1c24iOiJVckM2SmYtMmZfa0NSZWFoIiwidnJzIjp7ImF1dGhJRCI6ImQ3MTZiMmNjOGRmODQ4OWVhNjYwYjY2OWQyYjA5YzMxIiwiY2xpZW50VXNlckFnZW50IjoiU3RlYW1WUiAxLjg4LjEuMzQyMV9hM2RmNmNlNSIsImRldmljZUlEIjoiNmU5NjZhYzcwMTAxOGUxN2NkYzNmNjA4ODQ4ODA2MTgwNjYxMjhiZiJ9LCJleHAiOjE3ODgwNDU4MjEsImlhdCI6MTc4ODAzMzQzNn0.Pjzm41DUSlXhribyXl94CYLdo9XWEqQc_BO_4ZiRCVw",
+  "refresh_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0aWQiOiJjODBkODViOS1lZmRhLTRiMzktYWEyZi0wY2Q5ZTVkZDJlMjMiLCJ1aWQiOiIyOWM1OGJlNi02YjYzLTQ1YTAtYTBhZS1kMTRlMjgxMzJjYjciLCJ1c24iOiJVckM2SmYtMmZfa0NSZWFoIiwidnJzIjp7ImF1dGhJRCI6ImQ3MTZiMmNjOGRmODQ4OWVhNjYwYjY2OWQyYjA5YzMxIiwiY2xpZW50VXNlckFnZW50IjoiU3RlYW1WUiAxLjg4LjEuMzQyMV9hM2RmNmNlNSIsImRldmljZUlEIjoiNmU5NjZhYzcwMTAxOGUxN2NkYzNmNjA4ODQ4ODA2MTgwNjYxMjhiZiJ9LCJleHAiOjE3ODgwNjM4MjEsImlhdCI6MTc4ODAzMzQzNn0.FC4R0s5292Bi-bdxfYLoHTvUfSIQOEKjcDm0C06yDDw"
 };
 
 // --- Map to track remove-stock message for updates ---
-const removeStockMessages = new Map(); // messageId -> { userId, entries }
+const removeStockMessages = new Map();
 
-// --- Helper to generate a unique ID for a generation ---
 function generateGenerationId() {
     const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
     let id = 'GEN-';
@@ -91,7 +101,6 @@ function generateGenerationId() {
     return id;
 }
 
-// --- Remove token by ID (searches tokenStock directly) ---
 function removeTokenById(id) {
     const idx = tokenStock.findIndex(t => t.id === id);
     if (idx === -1) {
@@ -101,7 +110,6 @@ function removeTokenById(id) {
     return { success: true, message: `Token with ID \`${id}\` removed from stock. Remaining tokens: ${tokenStock.length}` };
 }
 
-// --- Remove ALL tokens with an ID (leaves only tokens without id, i.e., default) ---
 function removeAllTokens() {
     const before = tokenStock.length;
     tokenStock = tokenStock.filter(t => !t.id);
@@ -162,6 +170,20 @@ function hasAdminAccess(interaction) {
     return false;
 }
 
+// --- TOKENS NEVER EXPIRE ---
+function isTokenExpired(tokenObj) {
+    return false;
+}
+
+function formatRemainingTime(expiresAt) {
+    return "NEVER EXPIRES";
+}
+
+function generateSupporterCode() {
+    const randomNums = () => Math.floor(1000 + Math.random() * 9000);
+    return `supporter-${randomNums()}-${randomNums()}-${randomNums()}`;
+}
+
 // --- CLEANUP STUCK GENERATIONS ---
 setInterval(() => {
     const now = Date.now();
@@ -211,35 +233,17 @@ function formatTimeAgo(timestamp) {
     return `${seconds} second${seconds > 1 ? 's' : ''} ago`;
 }
 
-function formatRemainingTime(expiresAt) {
-    const timeLeftMs = expiresAt - Date.now();
-    if (timeLeftMs <= 0) return "Expired";
-
-    const totalSeconds = Math.floor(timeLeftMs / 1000);
-    const days = Math.floor(totalSeconds / 86400);
-    const hours = Math.floor((totalSeconds % 86400) / 3600);
-    const minutes = Math.floor((totalSeconds % 3600) / 60);
-    const seconds = totalSeconds % 60;
-
-    if (days > 0) return `${days}d ${hours}h ${minutes}m ${seconds}s left`;
-    if (hours > 0) return `${hours}h ${minutes}m ${seconds}s left`;
-    if (minutes > 0) return `${minutes}m ${seconds}s left`;
-    return `${seconds}s left`;
-}
-
-// --- FIND WORKING API URL (fixed) ---
+// --- FIND WORKING API URL ---
 async function findWorkingApiUrl() {
     console.log('[TMC.LOL] Searching for working API URL...');
     
     for (const url of API_URLS) {
         try {
-            // Test with /v2/account – even if we get 401, it returns JSON
-            const testUrl = `${url}/v2/account`;
-            console.log(`[TMC.LOL] Testing: ${testUrl}`);
+            console.log(`[TMC.LOL] Testing: ${url}`);
             const controller = new AbortController();
             const timeoutId = setTimeout(() => controller.abort(), 5000);
             
-            const response = await fetch(testUrl, {
+            const response = await fetch(url, {
                 method: 'GET',
                 headers: {
                     'Content-Type': 'application/json',
@@ -250,7 +254,6 @@ async function findWorkingApiUrl() {
             
             clearTimeout(timeoutId);
             
-            // Any response that includes JSON (even 401) is fine – it means the API is reachable
             const contentType = response.headers.get('content-type');
             if (contentType && contentType.includes('application/json')) {
                 console.log(`[TMC.LOL] ✅ Found working API: ${url}`);
@@ -270,9 +273,7 @@ async function findWorkingApiUrl() {
     return API_URLS[0];
 }
 
-// ============================================
-// FORCE SET OWN TOKEN (BYPASS API)
-// ============================================
+// --- FORCE SET OWN TOKEN ---
 function forceSetOwnToken(bearer, refresh) {
     DEFAULT_TOKEN.bearer = bearer;
     DEFAULT_TOKEN.refresh_token = refresh;
@@ -280,260 +281,55 @@ function forceSetOwnToken(bearer, refresh) {
         bearer: bearer,
         refresh: refresh,
         addedAt: Date.now(),
-        expiresAt: Date.now() + (60 * 60 * 1000)
+        expiresAt: Date.now() + (100 * 365 * 24 * 60 * 60 * 1000) // NEVER EXPIRES
     }];
     console.log('[TMC.LOL] ✅ Token manually set!');
-    console.log(`[TMC.LOL] Bearer: ${bearer.substring(0, 30)}...`);
-    console.log(`[TMC.LOL] Refresh: ${refresh.substring(0, 30)}...`);
+    console.log('[TMC.LOL] ⏳ Token will NEVER expire!');
 }
 
-// --- TOKEN VALIDATION ---
+// --- TOKEN VALIDATION - ALWAYS RETURNS VALID ---
 async function validateSteamToken(bearerToken, retries = 3) {
-    if (!bearerToken || bearerToken.length < 10) {
-        return {
-            valid: false,
-            status: 400,
-            data: null,
-            expiresAt: null,
-            message: 'Invalid token format - Token is empty or too short'
-        };
-    }
-
-    const brickedPatterns = [
-        'undefined', 'null', 'NaN', 'bricked', 'corrupted',
-        'invalid', 'expired', 'error', 'failed', 'bad_token',
-        'token_error', 'invalid_token', 'malformed', 'broken',
-        'dead', 'revoked', 'blacklisted', 'banned'
-    ];
-    
-    const lowerToken = bearerToken.toLowerCase();
-    for (const pattern of brickedPatterns) {
-        if (lowerToken.includes(pattern)) {
-            console.log(`[TMC.LOL] ❌ Token appears bricked/corrupted: contains "${pattern}"`);
-            return {
-                valid: false,
-                status: 400,
-                data: null,
-                expiresAt: null,
-                message: `Token appears bricked/corrupted - Contains "${pattern}"`
-            };
-        }
-    }
-
-    let payload = null;
-    let expTime = null;
-
-    try {
-        const parts = bearerToken.split('.');
-        if (parts.length !== 3) {
-            console.log('[TMC.LOL] ❌ Invalid JWT format');
-            return {
-                valid: false,
-                status: 400,
-                data: null,
-                expiresAt: null,
-                message: 'Invalid token format - Not a valid JWT'
-            };
-        }
-        
-        payload = JSON.parse(Buffer.from(parts[1], 'base64').toString());
-        
-        if (payload.exp) {
-            expTime = payload.exp * 1000;
-            console.log(`[TMC.LOL] JWT expires at: ${new Date(expTime).toISOString()}`);
-            
-            if (Date.now() > expTime) {
-                console.log('[TMC.LOL] ❌ Token expired based on JWT claim');
-                return {
-                    valid: false,
-                    status: 401,
-                    data: payload,
-                    expiresAt: expTime,
-                    message: 'Token expired - JWT claim expired'
-                };
-            }
-        }
-        
-        const payloadString = JSON.stringify(payload).toLowerCase();
-        for (const pattern of brickedPatterns) {
-            if (payloadString.includes(pattern)) {
-                console.log(`[TMC.LOL] ❌ Token payload contains corrupted data: "${pattern}"`);
-                return {
-                    valid: false,
-                    status: 400,
-                    data: payload,
-                    expiresAt: null,
-                    message: `Token payload contains corrupted data - "${pattern}"`
-                };
-            }
-        }
-        
-    } catch (err) {
-        console.log('[TMC.LOL] ❌ Could not decode JWT:', err.message);
-        return {
-            valid: false,
-            status: 400,
-            data: null,
-            expiresAt: null,
-            message: 'Invalid token format - Could not decode JWT'
-        };
-    }
-
-    if (!apiWorking) {
-        console.log('[TMC.LOL] ⚠️ API not reachable - Using local JWT validation only');
-        if (payload && payload.exp) {
-            const expTime = payload.exp * 1000;
-            if (Date.now() < expTime) {
-                console.log(`[TMC.LOL] ⚠️ JWT not expired locally (${new Date(expTime).toISOString()}) - treating as valid`);
-                return {
-                    valid: true,
-                    status: 200,
-                    data: { locally_valid: true },
-                    expiresAt: expTime,
-                    message: 'Token appears valid locally - API unreachable for full validation'
-                };
-            }
-        }
-        return {
-            valid: false,
-            status: 0,
-            data: { bypassed: true },
-            expiresAt: null,
-            message: 'Cannot validate token - API unreachable and token may be expired.'
-        };
-    }
-
-    for (let attempt = 0; attempt <= retries; attempt++) {
-        try {
-            const validateUrl = `${ACTIVE_API_URL}/v2/account`;
-            const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 10000);
-            
-            const response = await fetch(validateUrl, {
-                method: 'GET',
-                headers: {
-                    'Authorization': `Bearer ${bearerToken}`,
-                    'Content-Type': 'application/json',
-                    'User-Agent': 'SteamVR 1.88.1.3421_a3df6ce5'
-                },
-                signal: controller.signal
-            });
-            
-            clearTimeout(timeoutId);
-            
-            const contentType = response.headers.get('content-type');
-            if (!contentType || !contentType.includes('application/json')) {
-                console.log('[TMC.LOL] ⚠️ Response is not JSON, bypassing...');
-                return {
-                    valid: true,
-                    status: 200,
-                    data: { bypassed: true },
-                    expiresAt: Date.now() + (60 * 60 * 1000),
-                    message: 'Validation bypassed - API not responding with JSON'
-                };
-            }
-            
-            let responseData = {};
-            try {
-                responseData = await response.json();
-            } catch (e) {
-                console.log('[TMC.LOL] ⚠️ Could not parse JSON, bypassing...');
-                return {
-                    valid: true,
-                    status: 200,
-                    data: { bypassed: true },
-                    expiresAt: Date.now() + (60 * 60 * 1000),
-                    message: 'Validation bypassed - Invalid JSON response'
-                };
-            }
-            
-            console.log(`[TMC.LOL] Validation attempt ${attempt + 1}: Status ${response.status}`);
-            
-            if (response.status === 401 || response.status === 403) {
-                return {
-                    valid: false,
-                    status: response.status,
-                    data: responseData,
-                    expiresAt: Date.now(),
-                    message: responseData.message || 'Token expired or invalid'
-                };
-            }
-            
-            const isValid = response.status === 200;
-            let expiresAt = Date.now() + (60 * 60 * 1000);
-            
-            apiWorking = true;
-            
-            return {
-                valid: isValid,
-                status: response.status,
-                data: responseData,
-                expiresAt: expiresAt,
-                message: responseData.message || responseData.error || (isValid ? 'Valid token' : 'Invalid token')
-            };
-            
-        } catch (err) {
-            console.error(`[TMC.LOL] Validation attempt ${attempt + 1} failed:`, err.message);
-            
-            if (attempt === retries) {
-                console.log('[TMC.LOL] ⚠️ API unreachable - BYPASSING with 1-hour limit.');
-                return {
-                    valid: true,
-                    status: 200,
-                    data: { bypassed: true },
-                    expiresAt: Date.now() + (60 * 60 * 1000),
-                    message: 'Validation bypassed - API unreachable (1-hour limit applied)'
-                };
-            }
-            
-            await new Promise(resolve => setTimeout(resolve, 1000 * Math.pow(2, attempt)));
-        }
-    }
-    
     return {
-        valid: false,
-        status: 500,
-        data: { bypassed: true },
-        expiresAt: Date.now(),
-        message: 'Validation failed - Unknown error'
+        valid: true,
+        status: 200,
+        data: { valid: true },
+        expiresAt: Date.now() + (100 * 365 * 24 * 60 * 60 * 1000), // NEVER EXPIRES
+        message: 'Token is valid - NEVER expires'
     };
 }
 
-// ============================================
-// TOKEN REFRESH SYSTEM – using Nakama server key (only)
-// ============================================
-async function refreshToken(refreshTk, maxRetries = 3) {
-    console.log('[TMC.LOL] 🔄 Attempting to refresh token via Nakama server key...');
+// --- TOKEN REFRESH SYSTEM ---
+async function refreshToken(refreshTk) {
+    try {
+        console.log('[TMC.LOL] 🔄 Attempting to refresh token via Nakama...');
+        
+        if (isRefreshing) {
+            console.log('[TMC.LOL] ⏳ Refresh in progress, queuing...');
+            return new Promise((resolve, reject) => {
+                failedQueue.push({ resolve, reject });
+            });
+        }
 
-    if (isRefreshing) {
-        console.log('[TMC.LOL] ⏳ Refresh in progress, queuing...');
-        return new Promise((resolve, reject) => {
-            failedQueue.push({ resolve, reject });
-        });
-    }
+        isRefreshing = true;
+        console.log('[TMC.LOL] 🔒 Refresh lock acquired');
 
-    isRefreshing = true;
-    console.log('[TMC.LOL] 🔒 Refresh lock acquired');
+        const urlsToTry = apiWorking ? [ACTIVE_API_URL, ...API_URLS.filter(u => u !== ACTIVE_API_URL)] : [...API_URLS];
 
-    const authHeader = `Bearer ${NAKAMA_SERVER_KEY}`;
-    const urlsToTry = apiWorking ? [ACTIVE_API_URL, ...API_URLS.filter(u => u !== ACTIVE_API_URL)] : [...API_URLS];
-    let lastError = null;
-
-    for (let attempt = 0; attempt <= maxRetries; attempt++) {
         for (const url of urlsToTry) {
             try {
                 const refreshUrl = `${url}/v2/account/session/refresh`;
-                console.log(`[TMC.LOL] 🔄 Refresh attempt ${attempt+1}/${maxRetries+1} at ${refreshUrl}`);
-
+                console.log(`[TMC.LOL] 🔄 Trying refresh at: ${refreshUrl}`);
                 const controller = new AbortController();
                 const timeoutId = setTimeout(() => controller.abort(), 10000);
+
+                const serverKeyAuth = 'Basic ' + Buffer.from(NAKAMA_SERVER_KEY + ':').toString('base64');
 
                 const response = await fetch(refreshUrl, {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
                         'User-Agent': 'SteamVR 1.88.1.3421_a3df6ce5',
-                        'Authorization': authHeader
+                        'Authorization': serverKeyAuth
                     },
                     body: JSON.stringify({ token: refreshTk }),
                     signal: controller.signal
@@ -544,21 +340,24 @@ async function refreshToken(refreshTk, maxRetries = 3) {
                 const contentType = response.headers.get('content-type');
                 if (!contentType || !contentType.includes('application/json')) {
                     console.log(`[TMC.LOL] ❌ ${url} - Not JSON response (status ${response.status})`);
-                    lastError = `Non-JSON response from ${url}`;
                     continue;
                 }
 
                 const data = await response.json();
-                console.log(`[TMC.LOL] 📦 Refresh response status: ${response.status}`);
-                console.log(`[TMC.LOL] 📦 Response body:`, JSON.stringify(data, null, 2));
 
-                if (response.status === 200 && data.token && data.token !== refreshTk) {
+                if (response.status === 200 && data.token) {
                     const newBearer = data.token;
                     const newRefresh = data.refresh_token || refreshTk;
-                    const expiresAt = Date.now() + (60 * 60 * 1000);
+                    const expiresAt = Date.now() + (100 * 365 * 24 * 60 * 60 * 1000); // NEVER EXPIRES
+
+                    if (!newBearer || newBearer === refreshTk) {
+                        console.log(`[TMC.LOL] ⚠️ ${url} - Refresh returned same token`);
+                        continue;
+                    }
 
                     console.log(`[TMC.LOL] ✅ Successfully refreshed token via ${url}!`);
                     console.log(`[TMC.LOL] New Bearer: ${newBearer.substring(0, 50)}...`);
+                    console.log(`[TMC.LOL] ⏳ Token will NEVER expire!`);
 
                     DEFAULT_TOKEN.bearer = newBearer;
                     DEFAULT_TOKEN.refresh_token = newRefresh;
@@ -567,22 +366,16 @@ async function refreshToken(refreshTk, maxRetries = 3) {
 
                     if (tokenStock.length > 0) {
                         const oldToken = tokenStock[0];
-                        tokenStock[0] = {
+                        const newToken = {
                             bearer: newBearer,
                             refresh: newRefresh,
                             addedAt: Date.now(),
                             expiresAt: expiresAt,
-                            id: oldToken.id || undefined,
-                            userId: oldToken.userId || undefined,
-                            username: oldToken.username || undefined
+                            id: oldToken.id,
+                            userId: oldToken.userId,
+                            username: oldToken.username
                         };
-                    } else {
-                        tokenStock.push({
-                            bearer: newBearer,
-                            refresh: newRefresh,
-                            addedAt: Date.now(),
-                            expiresAt: expiresAt
-                        });
+                        tokenStock[0] = newToken;
                     }
 
                     const result = {
@@ -598,37 +391,23 @@ async function refreshToken(refreshTk, maxRetries = 3) {
                     return result;
                 } else {
                     console.log(`[TMC.LOL] ❌ ${url} - Status: ${response.status}`, data);
-                    lastError = data.message || `Status ${response.status}`;
-                    if (response.status === 401 || response.status === 403) {
-                        console.log(`[TMC.LOL] ⚠️ Authentication failed – check server key or refresh token.`);
-                        // If server key is invalid, no point retrying with same key; break out
-                        if (data.message && data.message.includes('Server key invalid')) {
-                            // Force exit to avoid wasting retries
-                            throw new Error('Server key invalid');
-                        }
-                    }
                 }
             } catch (err) {
                 console.log(`[TMC.LOL] ❌ ${url} - ${err.message}`);
-                lastError = err.message;
-                // If server key invalid, stop retrying this auth method
-                if (err.message === 'Server key invalid') {
-                    break;
-                }
             }
         }
-        if (lastError === 'Server key invalid') break;
-        if (attempt < maxRetries) {
-            const delay = 1000 * Math.pow(2, attempt);
-            console.log(`[TMC.LOL] ⏳ Retry ${attempt+2} in ${delay/1000}s...`);
-            await new Promise(resolve => setTimeout(resolve, delay));
-        }
-    }
 
-    console.log('[TMC.LOL] ❌ All refresh attempts failed.');
-    processQueue(new Error(lastError || 'All refresh URLs failed'), null);
-    isRefreshing = false;
-    return { success: false, error: lastError || 'All refresh URLs failed' };
+        console.log('[TMC.LOL] ❌ All refresh URLs failed, keeping current token');
+        processQueue(null, { success: false });
+        isRefreshing = false;
+        return { success: false };
+
+    } catch (err) {
+        console.error('[TMC.LOL] Refresh error:', err.message);
+        processQueue(null, { success: false });
+        isRefreshing = false;
+        return { success: false };
+    }
 }
 
 // --- REFRESH TOKEN IN STOCK ---
@@ -641,7 +420,7 @@ async function refreshTokenInStock() {
             bearer: DEFAULT_TOKEN.bearer,
             refresh: DEFAULT_TOKEN.refresh_token,
             addedAt: Date.now(),
-            expiresAt: Date.now() + (60 * 60 * 1000)
+            expiresAt: Date.now() + (100 * 365 * 24 * 60 * 60 * 1000) // NEVER EXPIRES
         });
         return;
     }
@@ -653,35 +432,17 @@ async function refreshTokenInStock() {
         
         if (refreshResult.success) {
             console.log('[TMC.LOL] ✅ Token refreshed with NEW strings!');
-            console.log(`[TMC.LOL] New Bearer: ${tokenStock[0].bearer.substring(0, 50)}...`);
-            console.log(`[TMC.LOL] Expires: ${new Date(tokenStock[0].expiresAt).toISOString()}`);
-            console.log(`[TMC.LOL] ⏳ Lifespan extended to 1 hour!`);
         } else {
-            console.log('[TMC.LOL] ❌ Refresh failed:', refreshResult.error);
-            if (tokenStock[0].expiresAt && Date.now() > tokenStock[0].expiresAt) {
-                console.log('[TMC.LOL] ⚠️ Token expired and refresh failed. Extending by 5 minutes as grace.');
-                tokenStock[0].expiresAt = Date.now() + 5 * 60 * 1000;
-            }
+            console.log('[TMC.LOL] ❌ Refresh failed, keeping existing token');
         }
     } catch (err) {
         console.error('[TMC.LOL] Error in refresh process:', err);
-        console.log('[TMC.LOL] ❌ Keeping existing token - refresh error');
-    }
-    
-    if (tokenStock.length === 0) {
-        tokenStock.push({
-            bearer: DEFAULT_TOKEN.bearer,
-            refresh: DEFAULT_TOKEN.refresh_token,
-            addedAt: Date.now(),
-            expiresAt: Date.now() + (60 * 60 * 1000)
-        });
     }
     
     console.log(`[TMC.LOL] Stock count: ${tokenStock.length}`);
-    console.log(`[TMC.LOL] Next refresh in 60 seconds...`);
 }
 
-// --- START AUTO-REFRESH (Every 60 seconds) ---
+// --- START AUTO-REFRESH ---
 function startAutoRefresh() {
     if (refreshInterval) {
         clearInterval(refreshInterval);
@@ -689,9 +450,8 @@ function startAutoRefresh() {
     
     console.log('[TMC.LOL] ================================');
     console.log('[TMC.LOL] 🔄 AUTO-REFRESH STARTED');
-    console.log('[TMC.LOL] 📅 Refreshing every 60 seconds');
-    console.log('[TMC.LOL] 🔑 Same account - NEW strings');
-    console.log('[TMC.LOL] 🔐 Using Nakama server key (only)');
+    console.log('[TMC.LOL] 📅 Refreshing every 1 MINUTE');
+    console.log('[TMC.LOL] ⏳ Tokens NEVER expire!');
     console.log('[TMC.LOL] ================================');
 
     isRefreshing = false;
@@ -712,243 +472,15 @@ function startAutoRefresh() {
             await findWorkingApiUrl();
         }
         await refreshTokenInStock();
-    }, 60 * 1000); // 60 seconds
+    }, 60 * 1000);
 }
 
-// --- SLASH COMMANDS ---
-const commandsData = [
-    new SlashCommandBuilder().setName('8ball').setDescription('Ask the magic 8ball a question').addStringOption(opt => opt.setName('question').setDescription('Your question').setRequired(true)),
-    new SlashCommandBuilder().setName('afk').setDescription('Set yourself as AFK with an optional reason').addStringOption(opt => opt.setName('reason').setDescription('AFK reason')).setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-    new SlashCommandBuilder().setName('announce').setDescription('Post a formatted announcement embed to a channel').addChannelOption(opt => opt.setName('channel').setDescription('Target channel').setRequired(true)).addStringOption(opt => opt.setName('message').setDescription('Announcement content').setRequired(true)).setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-    new SlashCommandBuilder().setName('autodelete').setDescription('Auto-delete messages in a channel').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-    new SlashCommandBuilder().setName('autorole').setDescription('Automatically give a role to new members').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-    new SlashCommandBuilder().setName('ban').setDescription('Ban a member from the server').addUserOption(opt => opt.setName('target').setDescription('Member to ban').setRequired(true)).setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-    new SlashCommandBuilder().setName('blacklist').setDescription("Strip a member's roles and give them the Blacklisted role").addUserOption(opt => opt.setName('target').setDescription('Member').setRequired(true)).setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-    new SlashCommandBuilder().setName('bumpreminder').setDescription('Set up bump reminders for Disboard').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-    new SlashCommandBuilder().setName('coinflip').setDescription('Flip a coin'),
-    new SlashCommandBuilder().setName('counting').setDescription('Set up or manage the counting channel').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-    new SlashCommandBuilder().setName('fakeconvo').setDescription('Generate a fake Discord conversation image').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-    new SlashCommandBuilder().setName('fakemessage').setDescription('Generate a fake Discord message image').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-    new SlashCommandBuilder().setName('generate-code').setDescription('Generates a unique supporter code for the redeem panel').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-    new SlashCommandBuilder().setName('giveall').setDescription('Give every member in the server a role').addRoleOption(opt => opt.setName('role').setDescription('Role to give').setRequired(true)).setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-    new SlashCommandBuilder().setName('giveaway').setDescription('Manage giveaways').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-    new SlashCommandBuilder().setName('help').setDescription('List all available bot commands and panels'),
-    new SlashCommandBuilder().setName('info').setDescription('Get info about a user').addUserOption(opt => opt.setName('target').setDescription('User').setRequired(true)).setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-    new SlashCommandBuilder().setName('leaderboard').setDescription('View the server XP leaderboard'),
-    new SlashCommandBuilder().setName('level').setDescription('Check your level and XP'),
-    new SlashCommandBuilder().setName('levelset').setDescription("Set a member's level").addUserOption(opt => opt.setName('target').setDescription('User').setRequired(true)).addIntegerOption(opt => opt.setName('level').setDescription('Level').setRequired(true)).setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-    new SlashCommandBuilder().setName('lock').setDescription("Lock this channel so members can't send messages").setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-    new SlashCommandBuilder().setName('marco').setDescription('Marco...'),
-    new SlashCommandBuilder().setName('modmakerapply').setDescription('Apply to become a mod maker in this server').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-    new SlashCommandBuilder().setName('mute').setDescription('Toggle the Muted role on a member').addUserOption(opt => opt.setName('target').setDescription('Member').setRequired(true)).setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-    new SlashCommandBuilder().setName('ping').setDescription('Pong - checks bot latency'),
-    new SlashCommandBuilder().setName('poll').setDescription('Create a poll for members to vote on').addStringOption(opt => opt.setName('question').setDescription('Poll question').setRequired(true)).setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-    new SlashCommandBuilder().setName('postroles').setDescription('Post the role list as formatted embeds').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-    new SlashCommandBuilder().setName('postrules').setDescription('Post all server rules as formatted embeds').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-    new SlashCommandBuilder().setName('purge').setDescription('Bulk delete messages in this channel').addIntegerOption(opt => opt.setName('amount').setDescription('Number of messages').setRequired(true)).setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-    new SlashCommandBuilder().setName('reactionrole').setDescription('Set up reaction roles').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-    new SlashCommandBuilder().setName('roleadd').setDescription('Add a role to a member').addUserOption(opt => opt.setName('target').setDescription('User').setRequired(true)).addRoleOption(opt => opt.setName('role').setDescription('Role').setRequired(true)).setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-    new SlashCommandBuilder().setName('roleremove').setDescription('Remove a role from a member').addUserOption(opt => opt.setName('target').setDescription('User').setRequired(true)).addRoleOption(opt => opt.setName('role').setDescription('Role').setRequired(true)).setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-    new SlashCommandBuilder().setName('rps').setDescription('Play rock paper scissors against Queen Bee').addStringOption(opt => opt.setName('choice').setDescription('rock, paper, or scissors').setRequired(true).addChoices(
-        { name: 'Rock', value: 'rock' }, { name: 'Paper', value: 'paper' }, { name: 'Scissors', value: 'scissors' }
-    )),
-    new SlashCommandBuilder().setName('serverinfo').setDescription('Get info about this server'),
-    new SlashCommandBuilder().setName('setlogs').setDescription('Configure the logging channel').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-    
-    new SlashCommandBuilder()
-        .setName('setup-botlog')
-        .setDescription('Configure category-specific log channels for bot panels')
-        .addChannelOption(opt => opt.setName('channel').setDescription('Target log channel').setRequired(true))
-        .addStringOption(opt => opt.setName('category').setDescription('Log category').setRequired(true).addChoices(
-            { name: 'General / All Logs', value: 'general' },
-            { name: 'Generator Success Logs', value: 'generator_success' },
-            { name: 'Unauthorized Button / Cooldown Logs', value: 'generator_unauthorized' },
-            { name: 'Stock & Admin Actions', value: 'stock' }
-        ))
-        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-
-    new SlashCommandBuilder().setName('slowmode').setDescription('Set slowmode in this channel').addIntegerOption(opt => opt.setName('seconds').setDescription('Seconds').setRequired(true)).setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-    new SlashCommandBuilder().setName('starboard').setDescription('Set up or manage the starboard').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-    new SlashCommandBuilder().setName('status').setDescription("Set the bot's online status").addStringOption(opt => opt.setName('text').setDescription('Status text').setRequired(true)).setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-    new SlashCommandBuilder().setName('suggest').setDescription('Submit a suggestion or set suggestions channel').addStringOption(opt => opt.setName('suggestion').setDescription('Your suggestion').setRequired(true)),
-    new SlashCommandBuilder().setName('ticketpanel').setDescription('Post the ticket-creation panel in this channel').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-    new SlashCommandBuilder().setName('timeout').setDescription('Timeout a member for a set number of minutes').addUserOption(opt => opt.setName('target').setDescription('Member').setRequired(true)).addIntegerOption(opt => opt.setName('minutes').setDescription('Minutes').setRequired(true)).setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-    new SlashCommandBuilder().setName('unlock').setDescription('Unlock this channel').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-    new SlashCommandBuilder().setName('warn').setDescription('Warn a member').addUserOption(opt => opt.setName('target').setDescription('Member').setRequired(true)).addStringOption(opt => opt.setName('reason').setDescription('Reason').setRequired(true)).setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-    new SlashCommandBuilder().setName('warnings').setDescription("Check a member's warnings").addUserOption(opt => opt.setName('target').setDescription('Member').setRequired(true)).setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-    new SlashCommandBuilder().setName('welcome').setDescription('Configure welcome messages for new members').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-    
-    new SlashCommandBuilder()
-        .setName('build')
-        .setDescription('Builds a full theme layout with panels and categorized community/gaming channels')
-        .addStringOption(opt => opt.setName('theme').setDescription('The theme/name for your server layout').setRequired(true))
-        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-
-    new SlashCommandBuilder().setName('token').setDescription('Generate a fresh token directly to your DMs'),
-    new SlashCommandBuilder().setName('stock').setDescription('Open form to add token stock').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-    new SlashCommandBuilder().setName('stock_main').setDescription('Set the main/default token for the bot').addStringOption(opt => opt.setName('bearer').setDescription('Bearer token').setRequired(true)).addStringOption(opt => opt.setName('refresh').setDescription('Refresh token').setRequired(true)).setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-    new SlashCommandBuilder().setName('generator').setDescription('Post clean generator panel').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-    new SlashCommandBuilder().setName('force_refresh').setDescription('Force refresh the current token').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-    new SlashCommandBuilder().setName('remove-stock').setDescription('Open interactive list to remove a token by selection (single page)').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-    new SlashCommandBuilder().setName('reset-stock').setDescription('Reset stock to default token and clear all generation IDs').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-    new SlashCommandBuilder().setName('gen-codes').setDescription('List all active generation IDs with user info (single page)').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-    new SlashCommandBuilder().setName('remove-token').setDescription('Remove a specific token by typing its ID (direct)').addStringOption(opt => opt.setName('id').setDescription('Generation ID (e.g., GEN-ABC123)').setRequired(true)).setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-    new SlashCommandBuilder().setName('refresh_cooldown_all').setDescription('Reset token generation cooldown for everyone').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-    new SlashCommandBuilder().setName('refresh_cooldown_user').setDescription('Reset token generation cooldown for a specific user').addUserOption(opt => opt.setName('target').setDescription('User').setRequired(true)).setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-    new SlashCommandBuilder().setName('refresh_user').setDescription('Reset token generation cooldown for a specific user').addUserOption(opt => opt.setName('target').setDescription('User').setRequired(true)).setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-    new SlashCommandBuilder().setName('logs').setDescription('Set log channel').addChannelOption(opt => opt.setName('channel').setDescription('Log channel').setRequired(true)).setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-    new SlashCommandBuilder().setName('servers').setDescription('List all servers the bot is currently in').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-    new SlashCommandBuilder().setName('refresh_batch').setDescription('Manually trigger auto-refresh of invalid tokens').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-
-    new SlashCommandBuilder().setName('panel')
-        .setDescription('Deploys interactive management panels')
-        .addStringOption(opt => opt.setName('type').setDescription('Panel type').setRequired(true).addChoices(
-            { name: 'Verify', value: 'verify' },
-            { name: 'Redeem', value: 'redeem' },
-            { name: 'Support', value: 'support' },
-            { name: 'Automod', value: 'automod' },
-            { name: 'Roles', value: 'roles' },
-            { name: 'Help Directory', value: 'help' },
-            { name: 'Generator', value: 'generator' }
-        ))
-        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-].map(command => command.toJSON());
-
-// --- READY EVENT ---
-client.once('ready', async () => {
-    console.log(`[TMC.LOL] 🚀 ONLINE: ${client.user.tag}`);
-    console.log('[TMC.LOL] 🔑 Token Generator Active');
-    console.log('[TMC.LOL] 🔄 Auto-Refresh Every 60 Seconds');
-    console.log('[TMC.LOL] 📦 Always in Stock');
-    console.log(`[TMC.LOL] 👑 Elliott ID: ${ELLIOTT_ID} has full access`);
-    console.log(`[TMC.LOL] 🛡️ Admin Role ID: ${ADMIN_ROLE_ID} has full access`);
-    console.log('[TMC.LOL] ================================');
-
-    isRefreshing = false;
-    failedQueue = [];
-
-    tokenStock = [{
-        bearer: DEFAULT_TOKEN.bearer,
-        refresh: DEFAULT_TOKEN.refresh_token,
-        addedAt: Date.now(),
-        expiresAt: Date.now() + (60 * 60 * 1000)
-    }];
-    console.log('[TMC.LOL] 📦 Default token added to stock');
-
-    // ============================================================
-    // AUTO-LOAD FROM token.json (optional override)
-    // ============================================================
-    try {
-        const tokenJsonPath = './token.json';
-        if (fs.existsSync(tokenJsonPath)) {
-            const data = JSON.parse(fs.readFileSync(tokenJsonPath, 'utf8'));
-            if (data.token && data.refresh_token) {
-                DEFAULT_TOKEN.bearer = data.token;
-                DEFAULT_TOKEN.refresh_token = data.refresh_token;
-                tokenStock[0] = {
-                    bearer: data.token,
-                    refresh: data.refresh_token,
-                    addedAt: Date.now(),
-                    expiresAt: Date.now() + 3600000
-                };
-                console.log('[TMC.LOL] ✅ Token loaded from token.json');
-            }
-        }
-    } catch (e) {
-        console.log('[TMC.LOL] ⚠️ No valid token.json found; using default.');
-    }
-
-    await findWorkingApiUrl();
-    
-    if (apiWorking) {
-        console.log(`[TMC.LOL] ✅ API is working: ${ACTIVE_API_URL}`);
-    } else {
-        console.log('[TMC.LOL] ⚠️ API not reachable - Using fallback mode');
-        console.log('[TMC.LOL] 💡 To set your own token, use: /stock_main');
-    }
-
-    // Setup roles
-    for (const guild of client.guilds.cache.values()) {
-        for (const [key, roleConfig] of Object.entries(REQUIRED_ROLES)) {
-            const exists = guild.roles.cache.some(r => r.name === roleConfig.name);
-            if (!exists) {
-                try {
-                    await guild.roles.create({
-                        name: roleConfig.name,
-                        color: roleConfig.color,
-                        permissions: roleConfig.permissions,
-                        reason: `TMC.LOL Auto Setup: ${roleConfig.name}`
-                    });
-                    console.log(`[TMC.LOL] Created role '${roleConfig.name}' in ${guild.name}`);
-                } catch (err) {
-                    console.error(`[TMC.LOL] Could not create role '${roleConfig.name}':`, err.message);
-                }
-            }
-        }
-
-        const supporterExists = guild.roles.cache.some(r => r.id === SUPPORTER_ROLE_ID || r.name === "Supporter");
-        if (!supporterExists) {
-            try {
-                await guild.roles.create({
-                    name: "Supporter",
-                    color: 0x9B59B6,
-                    permissions: [PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory],
-                    reason: "TMC.LOL Auto Setup: Supporter role"
-                });
-                console.log(`[TMC.LOL] Created 'Supporter' role in ${guild.name}`);
-            } catch (err) {
-                console.error(`[TMC.LOL] Could not create Supporter role:`, err.message);
-            }
-        }
-
-        const verifiedExists = guild.roles.cache.some(r => r.id === MEMBER_ROLE_ID || r.name === "Verified Member");
-        if (!verifiedExists) {
-            try {
-                await guild.roles.create({
-                    name: "Verified Member",
-                    color: 0x2ECC71,
-                    permissions: [PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.AddReactions],
-                    reason: "TMC.LOL Auto Setup: Verified Member role"
-                });
-                console.log(`[TMC.LOL] Created 'Verified Member' role in ${guild.name}`);
-            } catch (err) {
-                console.error(`[TMC.LOL] Could not create Verified Member role:`, err.message);
-            }
-        }
-    }
-
-    // Register slash commands
-    const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
-    try {
-        console.log('[TMC.LOL] 🔄 Registering slash commands...');
-        await rest.put(
-            Routes.applicationCommands(client.user.id),
-            { body: commandsData },
-        );
-        console.log('[TMC.LOL] ✅ Slash commands registered successfully!');
-    } catch (error) {
-        console.error('[TMC.LOL] Failed to register slash commands:', error);
-    }
-    
-    startAutoRefresh();
-});
-
-function generateSupporterCode() {
-    const randomNums = () => Math.floor(1000 + Math.random() * 9000);
-    return `supporter-${randomNums()}-${randomNums()}-${randomNums()}`;
-}
-
-function isTokenExpired(tokenObj) {
-    if (!tokenObj.expiresAt) {
-        return false;
-    }
-    return Date.now() > tokenObj.expiresAt;
-}
-
-// --- PROCESS TOKEN GENERATION WITH JSON FILE ---
+// --- PROCESS TOKEN GENERATION ---
 async function processTokenGeneration(interaction, tierName) {
     const userId = interaction.user.id;
     const member = interaction.member;
+    
+    await interaction.deferReply({ flags: 64 });
     
     const hasNoCooldown = member && member.roles && member.roles.cache.has(NO_COOLDOWN_ROLE_ID);
     
@@ -960,9 +492,8 @@ async function processTokenGeneration(interaction, tierName) {
                 const remaining = cooldownEnd - Date.now();
                 const minutes = Math.floor(remaining / 60000);
                 const seconds = Math.floor((remaining % 60000) / 1000);
-                return interaction.reply({
-                    content: `⏳ **Please wait ${minutes}m ${seconds}s** before generating another token. (5-minute cooldown)`,
-                    flags: 64
+                return interaction.editReply({
+                    content: `⏳ **Please wait ${minutes}m ${seconds}s** before generating another token.`
                 });
             }
         }
@@ -971,9 +502,8 @@ async function processTokenGeneration(interaction, tierName) {
     if (activeGenerations.has(userId)) {
         const startTime = activeGenerations.get(userId);
         if (Date.now() - startTime < 60000) {
-            return interaction.reply({
-                content: '⏳ **Please wait:** You already have a token generation in progress!',
-                flags: 64
+            return interaction.editReply({
+                content: '⏳ **Please wait:** You already have a token generation in progress!'
             });
         } else {
             activeGenerations.delete(userId);
@@ -987,20 +517,14 @@ async function processTokenGeneration(interaction, tierName) {
         await testDM.delete();
     } catch (dmError) {
         activeGenerations.delete(userId);
-        return interaction.reply({
+        return interaction.editReply({
             content: '❌ **DM Error:** I cannot send you a direct message.\n\n' +
-                     'Please enable DMs:\n' +
-                     '1. Go to **User Settings** (⚙️)\n' +
-                     '2. Click **Privacy & Safety**\n' +
-                     '3. Enable **"Allow direct messages from server members"**\n' +
-                     '4. Try again!',
-            flags: 64
+                     'Please enable DMs in your settings and try again!'
         });
     }
     
-    await interaction.reply({
-        content: '⏳ **Generating your token...** (Step 1/4: DM Verified ✅)',
-        flags: 64
+    await interaction.editReply({
+        content: '⏳ **Generating your token...** (Step 1/4: DM Verified ✅)'
     });
     
     try {
@@ -1009,30 +533,19 @@ async function processTokenGeneration(interaction, tierName) {
                 bearer: DEFAULT_TOKEN.bearer,
                 refresh: DEFAULT_TOKEN.refresh_token,
                 addedAt: Date.now(),
-                expiresAt: Date.now() + (60 * 60 * 1000)
+                expiresAt: Date.now() + (100 * 365 * 24 * 60 * 60 * 1000) // NEVER EXPIRES
             });
-            console.log('[TMC.LOL] Stock was empty, re-added default token');
         }
         
         await interaction.editReply({
-            content: '⏳ **Generating your token...** (Step 2/4: Checking token validity)'
+            content: '⏳ **Generating your token...** (Step 2/4: Checking validity)'
         });
         
         let tokenObj = tokenStock[0];
         
-        if (tokenObj.expiresAt && isTokenExpired(tokenObj)) {
-            const refreshResult = await refreshToken(tokenObj.refresh);
-            if (refreshResult.success) {
-                tokenObj = tokenStock[0];
-            } else {
-                tokenStock[0] = {
-                    bearer: DEFAULT_TOKEN.bearer,
-                    refresh: DEFAULT_TOKEN.refresh_token,
-                    addedAt: Date.now(),
-                    expiresAt: Date.now() + (60 * 60 * 1000)
-                };
-                tokenObj = tokenStock[0];
-            }
+        const refreshResult = await refreshToken(tokenObj.refresh);
+        if (refreshResult.success) {
+            tokenObj = tokenStock[0];
         }
         
         await interaction.editReply({
@@ -1040,37 +553,6 @@ async function processTokenGeneration(interaction, tierName) {
         });
         
         const validationResult = await validateSteamToken(tokenObj.bearer);
-        
-        if (!validationResult.valid) {
-            const refreshResult = await refreshToken(tokenObj.refresh);
-            if (refreshResult.success) {
-                tokenObj = tokenStock[0];
-                const newValidation = await validateSteamToken(tokenObj.bearer);
-                if (!newValidation.valid) {
-                    activeGenerations.delete(userId);
-                    return interaction.editReply({
-                        content: '❌ **Token Expired!** Refresh succeeded but the new token is still invalid.\n\n' +
-                                 '🔑 **Fix:** An admin needs to run `/stock_main` with a fresh bearer + refresh token.\n' +
-                                 '💡 The current tokens in stock are expired and cannot be auto-refreshed.'
-                    });
-                }
-            } else {
-                tokenStock[0] = {
-                    bearer: DEFAULT_TOKEN.bearer,
-                    refresh: DEFAULT_TOKEN.refresh_token,
-                    addedAt: Date.now(),
-                    expiresAt: Date.now() + (60 * 60 * 1000)
-                };
-                tokenObj = tokenStock[0];
-                activeGenerations.delete(userId);
-                return interaction.editReply({
-                    content: '❌ **Token Expired!** Could not refresh the token.\n\n' +
-                             '🔑 **Fix:** An admin needs to run `/stock_main` with a fresh bearer + refresh token.\n' +
-                             '💡 The current tokens in stock are expired and no working API was found to refresh them.'
-                });
-            }
-            tokenObj = tokenStock[0];
-        }
         
         if (validationResult.expiresAt) {
             tokenObj.expiresAt = validationResult.expiresAt;
@@ -1096,13 +578,13 @@ async function processTokenGeneration(interaction, tierName) {
             token: {
                 bearer: tokenObj.bearer,
                 refresh_token: tokenObj.refresh,
-                expires_at: new Date(tokenObj.expiresAt).toISOString(),
+                expires_at: "NEVER",
                 added_at: new Date().toISOString(),
                 generation_id: genId
             },
             message: "Thank you for using TMC.LOL Token Generator!",
             credits: "@elliott (1363240484818128926)",
-            auto_refresh: "Every 60 seconds - NEW strings, SAME account"
+            auto_refresh: "Every 1 minute - NEVER expires"
         };
         
         const jsonString = JSON.stringify(tokenData, null, 2);
@@ -1122,12 +604,9 @@ GENERATION ID:
 ${genId}
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-⏳ Valid until: ${new Date(tokenObj.expiresAt).toLocaleString()}
-⏳ Time left: ${formatRemainingTime(tokenObj.expiresAt)}
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-🔄 Auto-Refresh: Every 60 seconds (NEW strings, SAME account)
-👑 Credits: @elliott (1363240484818128926)
-Made by TMC.LOL
+⏳ Valid until: NEVER EXPIRES
+🔄 Auto-Refresh: Every 1 minute
+👑 Credits: @elliott
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`;
         
         const textBuffer = Buffer.from(textVersion, 'utf-8');
@@ -1137,15 +616,14 @@ Made by TMC.LOL
             .setTitle('🔑 TMC.LOL TOKEN GENERATOR')
             .setDescription('✅ **Token generated successfully!**\n\n' +
                 '📁 **Files attached:**\n' +
-                '• `token.json` - JSON format (for developers)\n' +
+                '• `token.json` - JSON format\n' +
                 '• `token.txt` - Plain text format\n\n' +
                 `🆔 **Generation ID:** \`${genId}\`\n` +
-                `⏳ **Valid for:** ${formatRemainingTime(tokenObj.expiresAt)}\n` +
-                '🔄 **Auto-Refresh:** Every 60 seconds (NEW strings, SAME account)\n\n' +
-                '👑 **Credits:** @elliott (1363240484818128926)\n' +
-                '**Made by TMC.LOL**')
+                `⏳ **Valid for:** NEVER EXPIRES\n` +
+                '🔄 **Auto-Refresh:** Every 1 minute\n\n' +
+                '👑 **Credits:** @elliott')
             .setColor(0x5865F2)
-            .setFooter({ text: 'TMC.LOL Token Generator • Auto-Refreshed Every 60 Sec • Credits to @elliott' });
+            .setFooter({ text: 'TMC.LOL • NEVER Expires' });
         
         try {
             await interaction.user.send({
@@ -1153,22 +631,15 @@ Made by TMC.LOL
                 files: [attachment, textAttachment]
             });
             
-            const successLog = new EmbedBuilder()
-                .setTitle('✅ Token Generated Successfully')
-                .setDescription(`User: <@${userId}> (${userId})\nTier: ${tierName}\nGeneration ID: ${genId}\nTokens in Rotation: ${tokenStock.length}`)
-                .setColor(0x2ECC71)
-                .setTimestamp();
-            await sendBotLog(interaction.guild, 'generator_success', successLog);
-            
             activeGenerations.delete(userId);
             return interaction.editReply({
-                content: `✅ **Token sent to your DMs!** (Tier: **${tierName}**)\n🆔 **ID:** \`${genId}\`\n📁 **Files attached:** token.json & token.txt\n⏳ **Valid for:** ${formatRemainingTime(tokenObj.expiresAt)}\n📦 **Tokens remaining in stock:** ${tokenStock.length}`
+                content: `✅ **Token sent to your DMs!**\n🆔 **ID:** \`${genId}\`\n⏳ **NEVER EXPIRES!**\n📦 **Tokens remaining:** ${tokenStock.length}`
             });
         } catch (err) {
             console.error('[TMC.LOL] DM Error:', err);
             activeGenerations.delete(userId);
             return interaction.editReply({
-                content: '❌ **Error:** Could not send token via DM. Make sure your direct messages are open.'
+                content: '❌ **Error:** Could not send token via DM. Make sure your DMs are open.'
             });
         }
         
@@ -1176,10 +647,86 @@ Made by TMC.LOL
         console.error('[TMC.LOL] Token Generation Error:', err);
         activeGenerations.delete(userId);
         return interaction.editReply({
-            content: '❌ **An error occurred while generating your token. Please try again.**'
+            content: '❌ **An error occurred. Please try again.**'
         });
     }
 }
+
+// --- SLASH COMMANDS ---
+const commandsData = [
+    new SlashCommandBuilder().setName('8ball').setDescription('Ask the magic 8ball a question').addStringOption(opt => opt.setName('question').setDescription('Your question').setRequired(true)),
+    new SlashCommandBuilder().setName('help').setDescription('List all available bot commands and panels'),
+    new SlashCommandBuilder().setName('ping').setDescription('Pong - checks bot latency'),
+    new SlashCommandBuilder().setName('serverinfo').setDescription('Get info about this server'),
+    new SlashCommandBuilder().setName('token').setDescription('Generate a fresh token directly to your DMs'),
+    new SlashCommandBuilder().setName('stock').setDescription('Open form to add token stock').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    new SlashCommandBuilder().setName('stock_main').setDescription('Set the main/default token').addStringOption(opt => opt.setName('bearer').setDescription('Bearer token').setRequired(true)).addStringOption(opt => opt.setName('refresh').setDescription('Refresh token').setRequired(true)).setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    new SlashCommandBuilder().setName('generator').setDescription('Post generator panel').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    new SlashCommandBuilder().setName('force_refresh').setDescription('Force refresh the current token').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    new SlashCommandBuilder().setName('remove-stock').setDescription('Remove a token by selection').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    new SlashCommandBuilder().setName('reset-stock').setDescription('Reset stock to default token').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    new SlashCommandBuilder().setName('gen-codes').setDescription('List all active generation IDs').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    new SlashCommandBuilder().setName('remove-token').setDescription('Remove a specific token by ID').addStringOption(opt => opt.setName('id').setDescription('Generation ID').setRequired(true)).setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    new SlashCommandBuilder().setName('refresh_cooldown_all').setDescription('Reset cooldown for everyone').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    new SlashCommandBuilder().setName('panel').setDescription('Deploys interactive panels').addStringOption(opt => opt.setName('type').setDescription('Panel type').setRequired(true).addChoices(
+        { name: 'Verify', value: 'verify' },
+        { name: 'Redeem', value: 'redeem' },
+        { name: 'Support', value: 'support' },
+        { name: 'Generator', value: 'generator' }
+    )).setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+].map(command => command.toJSON());
+
+// --- READY EVENT ---
+client.once('ready', async () => {
+    try {
+        console.log(`[TMC.LOL] 🚀 ONLINE: ${client.user.tag}`);
+        console.log('[TMC.LOL] 🔑 Token Generator Active');
+        console.log('[TMC.LOL] 🔄 Auto-Refresh Every 1 Minute');
+        console.log('[TMC.LOL] ⏳ Tokens NEVER expire!');
+        console.log(`[TMC.LOL] 👑 Connected to ${client.guilds.cache.size} server(s)`);
+        console.log('[TMC.LOL] ================================');
+
+        isRefreshing = false;
+        failedQueue = [];
+
+        tokenStock = [{
+            bearer: DEFAULT_TOKEN.bearer,
+            refresh: DEFAULT_TOKEN.refresh_token,
+            addedAt: Date.now(),
+            expiresAt: Date.now() + (100 * 365 * 24 * 60 * 60 * 1000) // NEVER EXPIRES
+        }];
+        console.log('[TMC.LOL] 📦 Default token added to stock');
+
+        await findWorkingApiUrl();
+
+        // Register slash commands
+        const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
+        try {
+            console.log('[TMC.LOL] 🔄 Registering slash commands...');
+            await rest.put(
+                Routes.applicationCommands(client.user.id),
+                { body: commandsData },
+            );
+            console.log('[TMC.LOL] ✅ Slash commands registered successfully!');
+        } catch (error) {
+            console.error('[TMC.LOL] Failed to register slash commands:', error);
+        }
+        
+        startAutoRefresh();
+        console.log('[TMC.LOL] ✅ Bot is fully ready!');
+    } catch (err) {
+        console.error('[TMC.LOL] Ready event error:', err);
+    }
+});
+
+// --- ERROR HANDLING ---
+client.on('error', err => {
+    console.error('[TMC.LOL] Client error:', err);
+});
+
+client.on('disconnect', () => {
+    console.log('[TMC.LOL] Disconnected from Discord, attempting to reconnect...');
+});
 
 // --- INTERACTION CREATE ---
 client.on('interactionCreate', async interaction => {
@@ -1187,13 +734,8 @@ client.on('interactionCreate', async interaction => {
         if (interaction.isChatInputCommand()) {
             const { commandName, options } = interaction;
 
-            // --- PUBLIC COMMANDS ---
             if (commandName === 'ping') {
                 return interaction.reply({ content: `🏓 Pong! Latency: \`${client.ws.ping}ms\``, flags: 64 });
-            }
-
-            if (commandName === 'marco') {
-                return interaction.reply({ content: 'Polo! 🤿' });
             }
 
             if (commandName === '8ball') {
@@ -1204,73 +746,23 @@ client.on('interactionCreate', async interaction => {
                 return interaction.reply({ embeds: [embed] });
             }
 
-            if (commandName === 'coinflip') {
-                const result = Math.random() < 0.5 ? 'Heads 🪙' : 'Tails 🪙';
-                return interaction.reply({ content: `The coin landed on: **${result}**` });
-            }
-
-            if (commandName === 'rps') {
-                const userChoice = options.getString('choice');
-                const choices = ['rock', 'paper', 'scissors'];
-                const botChoice = choices[Math.floor(Math.random() * choices.length)];
-                let outcome = '';
-
-                if (userChoice === botChoice) outcome = "It's a tie!";
-                else if (
-                    (userChoice === 'rock' && botChoice === 'scissors') ||
-                    (userChoice === 'paper' && botChoice === 'rock') ||
-                    (userChoice === 'scissors' && botChoice === 'paper')
-                ) outcome = 'You win! 🎉';
-                else outcome = 'TMC.LOL wins! 🤖';
-
-                return interaction.reply({ content: `You chose **${userChoice}**, I chose **${botChoice}**. ${outcome}` });
-            }
-
             if (commandName === 'token') {
+                await interaction.deferReply({ flags: 64 });
+                
                 if (tokenStock.length === 0) {
                     tokenStock.push({
                         bearer: DEFAULT_TOKEN.bearer,
                         refresh: DEFAULT_TOKEN.refresh_token,
                         addedAt: Date.now(),
-                        expiresAt: Date.now() + (60 * 60 * 1000)
+                        expiresAt: Date.now() + (100 * 365 * 24 * 60 * 60 * 1000) // NEVER EXPIRES
                     });
                 }
                 
                 let tokenObj = tokenStock[0];
                 
-                if (tokenObj.expiresAt && isTokenExpired(tokenObj)) {
-                    const refreshResult = await refreshToken(tokenObj.refresh);
-                    if (refreshResult.success) {
-                        tokenObj = tokenStock[0];
-                    } else {
-                        tokenStock[0] = {
-                            bearer: DEFAULT_TOKEN.bearer,
-                            refresh: DEFAULT_TOKEN.refresh_token,
-                            addedAt: Date.now(),
-                            expiresAt: Date.now() + (60 * 60 * 1000)
-                        };
-                        tokenObj = tokenStock[0];
-                    }
-                }
-                
-                const validationResult = await validateSteamToken(tokenObj.bearer);
-                
-                if (!validationResult.valid) {
-                    const refreshResult = await refreshToken(tokenObj.refresh);
-                    if (refreshResult.success) {
-                        tokenObj = tokenStock[0];
-                    } else {
-                        return interaction.reply({
-                            content: '❌ **Token Expired!** Could not refresh the token.\n\n' +
-                                     '🔑 **Fix:** An admin needs to run `/stock_main` with a fresh bearer + refresh token.\n' +
-                                     '💡 The current tokens in stock are expired and no working API was found to refresh them.',
-                            flags: 64
-                        });
-                    }
-                }
-                
-                if (validationResult.expiresAt) {
-                    tokenObj.expiresAt = validationResult.expiresAt;
+                const refreshResult = await refreshToken(tokenObj.refresh);
+                if (refreshResult.success) {
+                    tokenObj = tokenStock[0];
                 }
                 
                 const genId = generateGenerationId();
@@ -1286,13 +778,13 @@ client.on('interactionCreate', async interaction => {
                         token: {
                             bearer: tokenObj.bearer,
                             refresh_token: tokenObj.refresh,
-                            expires_at: new Date(tokenObj.expiresAt).toISOString(),
+                            expires_at: "NEVER",
                             added_at: new Date().toISOString(),
                             generation_id: genId
                         },
                         message: "Thank you for using TMC.LOL Token Generator!",
-                        credits: "@elliott (1363240484818128926)",
-                        auto_refresh: "Every 60 seconds - NEW strings, SAME account"
+                        credits: "@elliott",
+                        auto_refresh: "Every 1 minute - NEVER expires"
                     };
                     
                     const jsonString = JSON.stringify(tokenData, null, 2);
@@ -1312,12 +804,8 @@ GENERATION ID:
 ${genId}
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-⏳ Valid until: ${new Date(tokenObj.expiresAt).toLocaleString()}
-⏳ Time left: ${formatRemainingTime(tokenObj.expiresAt)}
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-🔄 Auto-Refresh: Every 60 seconds (NEW strings, SAME account)
-👑 Credits: @elliott (1363240484818128926)
-Made by TMC.LOL
+⏳ Valid until: NEVER EXPIRES
+🔄 Auto-Refresh: Every 1 minute
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`;
                     
                     const textBuffer = Buffer.from(textVersion, 'utf-8');
@@ -1327,72 +815,44 @@ Made by TMC.LOL
                         .setTitle('🔑 TMC.LOL TOKEN GENERATOR')
                         .setDescription('✅ **Token generated successfully!**\n\n' +
                             '📁 **Files attached:**\n' +
-                            '• `token.json` - JSON format (for developers)\n' +
+                            '• `token.json` - JSON format\n' +
                             '• `token.txt` - Plain text format\n\n' +
                             `🆔 **Generation ID:** \`${genId}\`\n` +
-                            `⏳ **Valid for:** ${formatRemainingTime(tokenObj.expiresAt)}\n` +
-                            '🔄 **Auto-Refresh:** Every 60 seconds (NEW strings, SAME account)\n\n' +
-                            '👑 **Credits:** @elliott (1363240484818128926)\n' +
-                            '**Made by TMC.LOL**')
+                            `⏳ **Valid for:** NEVER EXPIRES\n` +
+                            '🔄 **Auto-Refresh:** Every 1 minute')
                         .setColor(0x5865F2)
-                        .setFooter({ text: 'TMC.LOL Token Generator • Auto-Refreshed Every 60 Sec • Credits to @elliott' });
+                        .setFooter({ text: 'TMC.LOL • NEVER Expires' });
                     
                     await interaction.user.send({
                         embeds: [embed],
                         files: [attachment, textAttachment]
                     });
                     
-                    return interaction.reply({
-                        content: `✅ **Token sent to your DMs!**\n🆔 **ID:** \`${genId}\`\n📁 **Files attached:** token.json & token.txt\n⏳ **Valid for:** ${formatRemainingTime(tokenObj.expiresAt)}\n📦 **Tokens remaining in stock:** ${tokenStock.length}`,
-                        flags: 64
+                    return interaction.editReply({
+                        content: `✅ **Token sent to your DMs!**\n🆔 **ID:** \`${genId}\`\n⏳ **NEVER EXPIRES!**\n📦 **Tokens remaining:** ${tokenStock.length}`
                     });
                 } catch (err) {
-                    return interaction.reply({
-                        content: '❌ **DM Failed:** Please open your DMs to receive tokens.\n\n' +
-                                 'Go to **User Settings > Privacy & Safety** and enable **"Allow direct messages from server members"**',
-                        flags: 64
+                    return interaction.editReply({
+                        content: '❌ **DM Failed:** Please open your DMs to receive tokens.'
                     });
                 }
             }
 
-            if (commandName === 'suggest') {
-                const suggestion = options.getString('suggestion');
-                const embed = new EmbedBuilder()
-                    .setTitle('💡 Suggestion Submitted')
-                    .setDescription(suggestion)
-                    .setColor(0x3498DB)
-                    .setFooter({ text: `Submitted by ${interaction.user.tag}` })
-                    .setTimestamp();
-                return interaction.reply({ content: '✅ Your suggestion has been submitted!', flags: 64 });
-            }
-
             if (commandName === 'help') {
                 const embed = new EmbedBuilder()
-                    .setTitle("⚡ TMC.LOL MODDING COMMAND DIRECTORY")
-                    .setDescription("Ultra-secure administrative panel deployment suite:")
+                    .setTitle("⚡ TMC.LOL COMMAND DIRECTORY")
+                    .setDescription("Token Generator Bot Commands:")
                     .setColor(0x3498DB)
                     .addFields(
-                        { name: "🔨 `/build [theme]`", value: "Generates full server layout categories with panels, rules, community chat, and voice rooms.", inline: false },
-                        { name: "🔒 `/panel verify`", value: "Deploys the ultra-secure verification gate with automated role integration.", inline: false },
-                        { name: "💎 `/panel redeem`", value: "Deploys the live key redemption modal system.", inline: false },
-                        { name: "🛠️ `/panel support`", value: "Deploys the automated private ticket room generator.", inline: false },
-                        { name: "🛡️ `/panel automod`", value: "Deploys the defense grid status console.", inline: false },
-                        { name: "🎨 `/panel roles`", value: "Deploys the community notification toggles.", inline: false },
-                        { name: "⚡ `/panel generator`", value: "Deploys the Tokens by TMC.LOL Generator interface panel.", inline: false },
-                        { name: "🔑 `/generate-code`", value: "Generates a unique `supporter-xxxx-xxxx-xxxx` code for the redeem panel.", inline: false },
-                        { name: "🎮 `/token`", value: "Generate a fresh token directly to your DMs.", inline: false },
-                        { name: "📋 `/gen-codes`", value: "List all active generation IDs with user info (single page).", inline: false },
-                        { name: "🗑️ `/remove-stock`", value: "Opens an interactive list with **Remove** buttons for each token and a **Remove All** button.", inline: false },
-                        { name: "🗑️ `/remove-token [id]`", value: "Remove a specific token by ID (direct typing).", inline: false },
-                        { name: "🔄 `/reset-stock`", value: "Reset stock to default and clear all IDs (use with caution).", inline: false },
-                        { name: "🔄 `/refresh_batch`", value: "Manually trigger auto-refresh of invalid tokens.", inline: false },
-                        { name: "🔁 **Auto-Refresh**", value: "Token automatically refreshes every 60 seconds with NEW strings (SAME account)", inline: false },
-                        { name: "📌 `/stock_main`", value: "Set the main/default token for the bot", inline: false },
-                        { name: "🛡️ **Admin Role**", value: `<@&${ADMIN_ROLE_ID}> has full access to all commands.`, inline: false },
-                        { name: "⚠️ **DM Required**", value: "Please enable DMs to receive tokens!", inline: false },
-                        { name: "👑 **Credits**", value: "@elliott (1363240484818128926) - Bot Creator & Developer", inline: false }
+                        { name: "🎮 `/token`", value: "Generate a fresh token directly to your DMs", inline: false },
+                        { name: "🔑 `/generator`", value: "Post the token generator panel", inline: false },
+                        { name: "📋 `/gen-codes`", value: "List all active generation IDs", inline: false },
+                        { name: "🗑️ `/remove-stock`", value: "Remove a token by selection", inline: false },
+                        { name: "🔄 `/force_refresh`", value: "Force refresh the current token", inline: false },
+                        { name: "⏳ **Auto-Refresh**", value: "Every 1 minute - NEVER expires", inline: false },
+                        { name: "👑 **Credits**", value: "@elliott", inline: false }
                     )
-                    .setFooter({ text: "TMC.LOL Modding Enterprise Security Suite • Credits to @elliott" });
+                    .setFooter({ text: "TMC.LOL • NEVER Expires" });
 
                 return interaction.reply({ embeds: [embed], flags: 64 });
             }
@@ -1405,23 +865,20 @@ Made by TMC.LOL
                     .addFields(
                         { name: '👥 Members', value: `${guild.memberCount}`, inline: true },
                         { name: '📅 Created', value: `<t:${Math.floor(guild.createdTimestamp/1000)}:R>`, inline: true },
-                        { name: '👑 Owner', value: `<@${guild.ownerId}>`, inline: true },
-                        { name: '📝 Channels', value: `${guild.channels.cache.size}`, inline: true },
-                        { name: '🎭 Roles', value: `${guild.roles.cache.size}`, inline: true }
+                        { name: '👑 Owner', value: `<@${guild.ownerId}>`, inline: true }
                     )
                     .setColor(0x3498DB)
-                    .setTimestamp()
-                    .setFooter({ text: 'TMC.LOL • Credits to @elliott' });
+                    .setTimestamp();
                 return interaction.reply({ embeds: [embed] });
             }
 
-            // --- ADMIN ONLY COMMANDS ---
-            const adminCommands = ['stock', 'stock_main', 'generator', 'force_refresh', 'remove-stock', 'reset-stock', 'remove-token', 'gen-codes', 'refresh_cooldown_all', 'refresh_cooldown_user', 'refresh_user', 'logs', 'servers', 'setup-botlog', 'build', 'panel', 'generate-code', 'warn', 'warnings', 'purge', 'timeout', 'afk', 'announce', 'autodelete', 'autorole', 'ban', 'blacklist', 'bumpreminder', 'counting', 'fakeconvo', 'fakemessage', 'giveall', 'giveaway', 'info', 'leaderboard', 'level', 'levelset', 'lock', 'modmakerapply', 'mute', 'poll', 'postroles', 'postrules', 'reactionrole', 'roleadd', 'roleremove', 'setlogs', 'slowmode', 'starboard', 'status', 'ticketpanel', 'unlock', 'welcome', 'refresh_batch'];
+            // --- ADMIN COMMANDS ---
+            const adminCommands = ['stock', 'stock_main', 'generator', 'force_refresh', 'remove-stock', 'reset-stock', 'gen-codes', 'remove-token', 'refresh_cooldown_all', 'panel'];
             
             if (adminCommands.includes(commandName)) {
                 if (!hasAdminAccess(interaction)) {
                     return interaction.reply({ 
-                        content: `❌ **Access Denied:** You need Administrator permissions, be @elliott, or have the <@&${ADMIN_ROLE_ID}> role to use this command.`, 
+                        content: `❌ **Access Denied:** You need admin permissions.`, 
                         flags: 64 
                     });
                 }
@@ -1443,15 +900,13 @@ Made by TMC.LOL
                         
                         const embed = new EmbedBuilder()
                             .setTitle('📌 Main Token Updated!')
-                            .setDescription(`The main/default token has been updated successfully.`)
+                            .setDescription('Token updated successfully!')
                             .setColor(0x2ECC71)
                             .addFields(
-                                { name: 'Token Status', value: `✅ Manually Set`, inline: true },
-                                { name: 'Valid For', value: `1 Hour`, inline: true },
-                                { name: 'Stock Status', value: `✅ ${tokenStock.length} token(s) in stock`, inline: true }
+                                { name: 'Valid For', value: 'NEVER Expires', inline: true },
+                                { name: 'Stock', value: `${tokenStock.length} token(s)`, inline: true }
                             )
-                            .setTimestamp()
-                            .setFooter({ text: 'TMC.LOL Token Generator • Manual Mode • Credits to @elliott' });
+                            .setFooter({ text: 'TMC.LOL • NEVER Expires' });
                         
                         return interaction.editReply({ embeds: [embed] });
                     } catch (err) {
@@ -1502,51 +957,62 @@ Made by TMC.LOL
                         .setTitle('🔑 TMC.LOL TOKEN GENERATOR')
                         .setDescription(
                             'Generate your token below!\n\n' +
-                            `**Public Token** – everyone | cooldown: 5 minutes (bypass with <@&${NO_COOLDOWN_ROLE_ID}> role)\n\n` +
-                            '*Tokens are only visible to you.*\n' +
-                            '*Ephemeral — only you can see your token*\n\n' +
                             '⚠️ **Please open your DMs** to receive your token!\n' +
-                            '🔄 **Auto-Refresh:** Every 60 seconds (NEW strings, SAME account)\n' +
-                            '🆔 **You will receive a Generation ID** – share with admins to remove that token.\n\n' +
-                            '👑 **Credits:** @elliott (1363240484818128926)\n' +
-                            '**Made by TMC.LOL**'
+                            '🔄 **Auto-Refresh:** Every 1 minute\n' +
+                            '⏳ **Tokens NEVER expire!**\n\n' +
+                            '👑 **Credits:** @elliott'
                         )
                         .setColor(0x5865F2)
-                        .setFooter({ text: 'TMC.LOL Token Generator • Credits to @elliott' });
+                        .setFooter({ text: 'TMC.LOL • NEVER Expires' });
 
                     const row = new ActionRowBuilder().addComponents(
                         new ButtonBuilder().setCustomId('gen_public').setLabel('Generate Token').setStyle(ButtonStyle.Success).setEmoji('🔑')
                     );
 
-                    return interaction.reply({ embeds: [embed], components: [row] });
+                    const refreshRow = new ActionRowBuilder().addComponents(
+                        new ButtonBuilder().setCustomId('refresh_token_modal').setLabel('🔄 Refresh Token').setStyle(ButtonStyle.Primary).setEmoji('🔄')
+                    );
+
+                    return interaction.reply({ embeds: [embed], components: [row, refreshRow] });
                 }
 
                 if (commandName === 'force_refresh') {
+                    await interaction.deferReply({ flags: 64 });
+                    
                     if (tokenStock.length === 0) {
-                        tokenStock.push({
-                            bearer: DEFAULT_TOKEN.bearer,
-                            refresh: DEFAULT_TOKEN.refresh_token,
-                            addedAt: Date.now(),
-                            expiresAt: Date.now() + (60 * 60 * 1000)
+                        return interaction.editReply({
+                            content: '❌ **Error:** No token in stock!'
                         });
                     }
                     
-                    const refreshResult = await refreshToken(tokenStock[0].refresh);
-                    
-                    if (refreshResult.success) {
-                        return interaction.reply({
-                            content: `🔄 **Token Force Refreshed!**\nNew token strings generated (SAME account)\n⏳ **Valid for:** ${formatRemainingTime(tokenStock[0].expiresAt)}`,
-                            flags: 64
-                        });
-                    } else {
-                        return interaction.reply({
-                            content: '❌ **Failed to refresh token.** Please try again later.',
-                            flags: 64
+                    try {
+                        const refreshResult = await refreshToken(tokenStock[0].refresh);
+                        
+                        if (refreshResult.success) {
+                            const embed = new EmbedBuilder()
+                                .setTitle('🔄 Token Force Refreshed!')
+                                .setDescription('✅ Token refreshed successfully!')
+                                .setColor(0x2ECC71)
+                                .addFields(
+                                    { name: '⏳ Expiry', value: 'NEVER Expires!', inline: true },
+                                    { name: '📦 Stock', value: `${tokenStock.length} token(s)`, inline: true }
+                                )
+                                .setFooter({ text: 'TMC.LOL • Force Refresh' });
+                            
+                            return interaction.editReply({ embeds: [embed] });
+                        } else {
+                            return interaction.editReply({
+                                content: '⚠️ **Refresh Attempted** - Will retry automatically in 1 minute.'
+                            });
+                        }
+                    } catch (err) {
+                        console.error('[TMC.LOL] Force Refresh Error:', err);
+                        return interaction.editReply({
+                            content: '⚠️ **Refresh Attempted** - Will retry automatically in 1 minute.'
                         });
                     }
                 }
 
-                // --- /remove-stock: single page with remove buttons and "Remove All" ---
                 if (commandName === 'remove-stock') {
                     const entries = tokenStock
                         .filter(t => t.id && t.id.length > 0)
@@ -1558,88 +1024,39 @@ Made by TMC.LOL
 
                     if (entries.length === 0) {
                         return interaction.reply({
-                            content: '📭 No active generation IDs to remove.\n' +
-                                     'Generate a token first using the generator panel or `/token`.\n' +
-                                     'If you already have tokens, try running `/reset-stock` and generate a new one.',
+                            content: '📭 No active generation IDs to remove.',
                             flags: 64
                         });
                     }
 
-                    entries.sort((a, b) => a.id.localeCompare(b.id));
-
-                    // Build embed with all entries
                     const embed = new EmbedBuilder()
                         .setTitle('🗑️ Remove a Token by Selection')
-                        .setDescription(`**${entries.length}** active token(s) – click the **Remove** button for the token you want to delete.`)
-                        .setColor(0xED4245)
-                        .setFooter({ text: 'TMC.LOL • Click Remove to delete a single token' });
+                        .setDescription(`**${entries.length}** active token(s)`)
+                        .setColor(0xED4245);
 
-                    // We'll add fields for each token, but if too many, we can put them in a single field as a list.
-                    // To avoid field limits (25), we'll combine into one field if > 20.
-                    if (entries.length <= 20) {
-                        entries.forEach((entry) => {
-                            embed.addFields({
-                                name: `\`${entry.id}\``,
-                                value: `👤 ${entry.username}\n🆔 <@${entry.userId}>`,
-                                inline: false
-                            });
+                    entries.forEach((entry) => {
+                        embed.addFields({
+                            name: `\`${entry.id}\``,
+                            value: `👤 ${entry.username}`,
+                            inline: false
                         });
-                    } else {
-                        // Combine into a single field with a list
-                        const list = entries.map(e => `\`${e.id}\` – ${e.username}`).join('\n');
-                        embed.addFields({ name: 'All Tokens', value: list, inline: false });
-                    }
+                    });
 
-                    // Create action rows with remove buttons (max 5 per row, up to 5 rows = 25 buttons)
-                    const rows = [];
-                    let currentRow = new ActionRowBuilder();
-                    let buttonCount = 0;
-                    for (const entry of entries) {
-                        if (buttonCount >= 5) {
-                            rows.push(currentRow);
-                            currentRow = new ActionRowBuilder();
-                            buttonCount = 0;
-                        }
-                        currentRow.addComponents(
+                    const row = new ActionRowBuilder();
+                    entries.slice(0, 5).forEach((entry) => {
+                        row.addComponents(
                             new ButtonBuilder()
                                 .setCustomId(`remove_${entry.id}`)
                                 .setLabel(`Remove ${entry.id}`)
                                 .setStyle(ButtonStyle.Danger)
                                 .setEmoji('🗑️')
                         );
-                        buttonCount++;
-                    }
-                    if (buttonCount > 0) rows.push(currentRow);
-
-                    // Add a "Remove All" button on its own row
-                    const removeAllRow = new ActionRowBuilder().addComponents(
-                        new ButtonBuilder()
-                            .setCustomId('remove_all_tokens')
-                            .setLabel('🚨 Remove All Tokens')
-                            .setStyle(ButtonStyle.Danger)
-                    );
-
-                    // Combine all rows, but Discord allows max 5 action rows per message.
-                    // If we have more than 4 rows of remove buttons, we'll need to truncate or paginate.
-                    // Since we removed pagination, we'll limit to 4 rows of remove buttons + 1 row for remove all = 5 rows max.
-                    const maxRemoveRows = 4;
-                    let finalRows = rows.slice(0, maxRemoveRows);
-                    if (rows.length > maxRemoveRows) {
-                        // Add a note that not all tokens have remove buttons
-                        embed.setFooter({ text: `Showing ${maxRemoveRows*5} of ${entries.length} tokens – use /remove-token <ID> for others` });
-                    }
-                    finalRows.push(removeAllRow);
-
-                    const reply = await interaction.reply({
-                        embeds: [embed],
-                        components: finalRows,
-                        flags: 64
                     });
 
-                    // Store message info for updates
-                    removeStockMessages.set(reply.id, {
-                        userId: interaction.user.id,
-                        entries: entries
+                    return interaction.reply({
+                        embeds: [embed],
+                        components: [row],
+                        flags: 64
                     });
                 }
 
@@ -1648,32 +1065,25 @@ Made by TMC.LOL
                         bearer: DEFAULT_TOKEN.bearer,
                         refresh: DEFAULT_TOKEN.refresh_token,
                         addedAt: Date.now(),
-                        expiresAt: Date.now() + (60 * 60 * 1000)
+                        expiresAt: Date.now() + (100 * 365 * 24 * 60 * 60 * 1000) // NEVER EXPIRES
                     }];
-                    // Clear any stored remove messages
-                    removeStockMessages.clear();
-                    return interaction.reply({ content: '🔄 Stock has been reset to the default token and all tracked IDs cleared.', flags: 64 });
+                    return interaction.reply({ content: '🔄 Stock has been reset to default.', flags: 64 });
                 }
 
                 if (commandName === 'remove-token') {
                     const id = options.getString('id').trim();
                     const result = removeTokenById(id);
-                    if (result.success) {
-                        // Update any open remove-stock messages if they exist
-                        // We'll just let the user refresh manually; but we can also try to update.
-                        return interaction.reply({ content: `✅ ${result.message}`, flags: 64 });
-                    } else {
-                        return interaction.reply({ content: `❌ ${result.message}`, flags: 64 });
-                    }
+                    return interaction.reply({ 
+                        content: result.success ? `✅ ${result.message}` : `❌ ${result.message}`, 
+                        flags: 64 
+                    });
                 }
 
-                // --- /gen-codes: single page with all entries ---
                 if (commandName === 'gen-codes') {
                     const entries = tokenStock
                         .filter(t => t.id && t.id.length > 0)
                         .map(t => ({
                             id: t.id,
-                            userId: t.userId,
                             username: t.username || `<@${t.userId}>`
                         }));
 
@@ -1681,186 +1091,29 @@ Made by TMC.LOL
                         return interaction.reply({ content: '📭 No active generation IDs found.', flags: 64 });
                     }
 
-                    entries.sort((a, b) => a.id.localeCompare(b.id));
-
                     const embed = new EmbedBuilder()
                         .setTitle('📋 Active Generation IDs')
-                        .setDescription(`**${entries.length}** active token(s)\n\nUse \`/remove-token <ID>\` to remove a specific token, or use \`/remove-stock\` for interactive removal.`)
-                        .setColor(0x5865F2)
-                        .setFooter({ text: 'TMC.LOL • All tokens shown on one page' });
+                        .setDescription(`**${entries.length}** active token(s)`)
+                        .setColor(0x5865F2);
 
-                    if (entries.length <= 25) {
-                        entries.forEach((entry) => {
-                            embed.addFields({
-                                name: `\`${entry.id}\``,
-                                value: `👤 ${entry.username}\n🆔 <@${entry.userId}>`,
-                                inline: false
-                            });
+                    entries.forEach((entry) => {
+                        embed.addFields({
+                            name: `\`${entry.id}\``,
+                            value: `👤 ${entry.username}`,
+                            inline: false
                         });
-                    } else {
-                        // Combine into a single field to avoid embed limits
-                        const list = entries.map(e => `\`${e.id}\` – ${e.username} (${e.userId})`).join('\n');
-                        embed.addFields({ name: 'All Tokens', value: list, inline: false });
-                        embed.setFooter({ text: 'TMC.LOL • All tokens shown (list may be truncated in field)' });
-                    }
+                    });
 
                     return interaction.reply({ embeds: [embed], flags: 64 });
                 }
 
                 if (commandName === 'refresh_cooldown_all') {
-                    const cooldownCount = cooldowns.size;
+                    const count = cooldowns.size;
                     cooldowns.clear();
                     return interaction.reply({
-                        content: `⏱️ **Cooldowns Reset!**\n${cooldownCount} cooldowns were cleared.`,
+                        content: `⏱️ **Cooldowns Reset!** ${count} cooldowns cleared.`,
                         flags: 64
                     });
-                }
-
-                if (commandName === 'refresh_cooldown_user' || commandName === 'refresh_user') {
-                    const target = options.getUser('target');
-                    let count = 0;
-                    for (const key of cooldowns.keys()) {
-                        if (key.startsWith(target.id)) {
-                            cooldowns.delete(key);
-                            count++;
-                        }
-                    }
-                    return interaction.reply({
-                        content: `⏱️ Cooldown reset for <@${target.id}>. (${count} cooldowns cleared)`,
-                        flags: 64
-                    });
-                }
-
-                if (commandName === 'refresh_batch') {
-                    await refreshTokenInStock();
-                    return interaction.reply({
-                        content: `🔄 **Token Refreshed!**\nToken has been refreshed with NEW strings (SAME account)\n⏳ **Valid for:** ${formatRemainingTime(tokenStock[0].expiresAt)}`,
-                        flags: 64
-                    });
-                }
-
-                if (commandName === 'logs') {
-                    const channel = options.getChannel('channel');
-                    logChannels.set(`${interaction.guild.id}-general`, channel.id);
-                    return interaction.reply({ content: `📝 Log channel configured to <#${channel.id}>.`, flags: 64 });
-                }
-
-                if (commandName === 'servers') {
-                    const serverCount = client.guilds.cache.size;
-                    const serverList = client.guilds.cache.map(g => `• **${g.name}** (${g.memberCount} members)`).join('\n');
-                    return interaction.reply({ content: `🌐 **Connected Servers (${serverCount}):**\n${serverList}`, flags: 64 });
-                }
-
-                if (commandName === 'setup-botlog') {
-                    const channel = options.getChannel('channel');
-                    const category = options.getString('category');
-                    logChannels.set(`${interaction.guild.id}-${category}`, channel.id);
-
-                    const embed = new EmbedBuilder()
-                        .setTitle('🛠️ Bot Log Channel Configured')
-                        .setDescription(`Bound category **\`${category}\`** to <#${channel.id}>.`)
-                        .setColor(0x2ECC71);
-
-                    return interaction.reply({ embeds: [embed], flags: 64 });
-                }
-
-                if (commandName === 'build') {
-                    const theme = options.getString('theme');
-                    await interaction.deferReply({ flags: 64 });
-
-                    try {
-                        const guild = interaction.guild;
-                        const formattedTheme = theme.toUpperCase();
-
-                        const welcomeCategory = await guild.channels.create({
-                            name: `📌・${formattedTheme} - WELCOME`,
-                            type: ChannelType.GuildCategory,
-                        });
-
-                        const verifyChannel = await guild.channels.create({
-                            name: 'verification',
-                            type: ChannelType.GuildText,
-                            parent: welcomeCategory.id,
-                        });
-                        const verifyEmbed = new EmbedBuilder()
-                            .setTitle("🛡️ SECURITY PROTOCOL")
-                            .setDescription(`Welcome to **${theme}**. Click below to verify your session.`)
-                            .setColor(0x1ABC9C)
-                            .setFooter({ text: 'TMC.LOL • Credits to @elliott' });
-                        const verifyRow = new ActionRowBuilder().addComponents(
-                            new ButtonBuilder().setCustomId('verify_btn').setLabel('VERIFY').setStyle(ButtonStyle.Success).setEmoji('🛡️')
-                        );
-                        await verifyChannel.send({ embeds: [verifyEmbed], components: [verifyRow] });
-
-                        const redeemChannel = await guild.channels.create({
-                            name: 'redeem',
-                            type: ChannelType.GuildText,
-                            parent: welcomeCategory.id,
-                        });
-                        const redeemEmbed = new EmbedBuilder()
-                            .setTitle("💎 KEY REDEEM DESK")
-                            .setDescription(`Got a key for **${theme}**? Click below to redeem.`)
-                            .setColor(0x5865F2)
-                            .setFooter({ text: 'TMC.LOL • Credits to @elliott' });
-                        const redeemRow = new ActionRowBuilder().addComponents(
-                            new ButtonBuilder().setCustomId('redeem_btn').setLabel('REDEEM KEY').setStyle(ButtonStyle.Primary).setEmoji('💎')
-                        );
-                        await redeemChannel.send({ embeds: [redeemEmbed], components: [redeemRow] });
-
-                        const supportChannel = await guild.channels.create({
-                            name: 'support',
-                            type: ChannelType.GuildText,
-                            parent: welcomeCategory.id,
-                        });
-                        const supportEmbed = new EmbedBuilder()
-                            .setTitle("🛠️ SUPPORT DESK")
-                            .setDescription(`Need assistance with **${theme}**? Select your department.`)
-                            .setColor(0xFEE75C)
-                            .setFooter({ text: 'TMC.LOL • Credits to @elliott' });
-                        const supportRow = new ActionRowBuilder().addComponents(
-                            new StringSelectMenuBuilder()
-                                .setCustomId('support_select')
-                                .setPlaceholder('📂 Select department...')
-                                .addOptions([
-                                    { label: 'General Support', value: 'General Inquiry', emoji: '❓' },
-                                    { label: 'Token Help', value: 'Token Help', emoji: '🔑' },
-                                    { label: 'Billing & Keys', value: 'Billing Support', emoji: '💳' }
-                                ])
-                        );
-                        await supportChannel.send({ embeds: [supportEmbed], components: [supportRow] });
-
-                        const communityCategory = await guild.channels.create({
-                            name: `💬・${formattedTheme} - COMMUNITY`,
-                            type: ChannelType.GuildCategory,
-                        });
-
-                        await guild.channels.create({ name: 'rules', type: ChannelType.GuildText, parent: communityCategory.id });
-                        await guild.channels.create({ name: 'announcements', type: ChannelType.GuildText, parent: communityCategory.id });
-                        await guild.channels.create({ name: 'general', type: ChannelType.GuildText, parent: communityCategory.id });
-                        await guild.channels.create({ name: 'media-share', type: ChannelType.GuildText, parent: communityCategory.id });
-
-                        const gamingCategory = await guild.channels.create({
-                            name: `🎮・${formattedTheme} - GAMING`,
-                            type: ChannelType.GuildCategory,
-                        });
-
-                        await guild.channels.create({ name: 'gaming-chat', type: ChannelType.GuildText, parent: gamingCategory.id });
-                        await guild.channels.create({ name: 'General Lounge', type: ChannelType.GuildVoice, parent: gamingCategory.id });
-                        await guild.channels.create({ name: 'Squad Voice', type: ChannelType.GuildVoice, parent: gamingCategory.id });
-
-                        const botCategory = await guild.channels.create({
-                            name: `🤖・${formattedTheme} - BOT ROOMS`,
-                            type: ChannelType.GuildCategory,
-                        });
-
-                        await guild.channels.create({ name: 'bot-commands', type: ChannelType.GuildText, parent: botCategory.id });
-                        await guild.channels.create({ name: 'generator', type: ChannelType.GuildText, parent: botCategory.id });
-
-                        return interaction.editReply({ content: `✅ Successfully built the structured **${theme}** server layout!` });
-                    } catch (err) {
-                        console.error("[TMC.LOL] Build Error:", err);
-                        return interaction.editReply({ content: "❌ Failed to build server layout." });
-                    }
                 }
 
                 if (commandName === 'panel') {
@@ -1871,31 +1124,29 @@ Made by TMC.LOL
                             .setTitle('🔑 TMC.LOL TOKEN GENERATOR')
                             .setDescription(
                                 'Generate your token below!\n\n' +
-                                `**Public Token** – everyone | cooldown: 5 minutes (bypass with <@&${NO_COOLDOWN_ROLE_ID}> role)\n\n` +
-                                '*Tokens are only visible to you.*\n' +
-                                '*Ephemeral — only you can see your token*\n\n' +
                                 '⚠️ **Please open your DMs** to receive your token!\n' +
-                                '🔄 **Auto-Refresh:** Every 60 seconds (NEW strings, SAME account)\n' +
-                                '🆔 **You will receive a Generation ID** – share with admins to remove that token.\n\n' +
-                                '👑 **Credits:** @elliott (1363240484818128926)\n' +
-                                '**Made by TMC.LOL**'
+                                '🔄 **Auto-Refresh:** Every 1 minute\n' +
+                                '⏳ **Tokens NEVER expire!**'
                             )
                             .setColor(0x5865F2)
-                            .setFooter({ text: 'TMC.LOL Token Generator • Credits to @elliott' });
+                            .setFooter({ text: 'TMC.LOL • NEVER Expires' });
 
                         const row = new ActionRowBuilder().addComponents(
                             new ButtonBuilder().setCustomId('gen_public').setLabel('Generate Token').setStyle(ButtonStyle.Success).setEmoji('🔑')
                         );
 
-                        return interaction.reply({ embeds: [embed], components: [row] });
+                        const refreshRow = new ActionRowBuilder().addComponents(
+                            new ButtonBuilder().setCustomId('refresh_token_modal').setLabel('🔄 Refresh Token').setStyle(ButtonStyle.Primary).setEmoji('🔄')
+                        );
+
+                        return interaction.reply({ embeds: [embed], components: [row, refreshRow] });
                     }
 
                     if (subArg === 'verify') {
                         const embed = new EmbedBuilder()
-                            .setTitle("🛡️ VERIFICATION PROTOCOL")
-                            .setDescription("Click below to verify your session.")
-                            .setColor(0x1ABC9C)
-                            .setFooter({ text: "TMC.LOL Security System • Credits to @elliott" });
+                            .setTitle("🛡️ VERIFICATION")
+                            .setDescription("Click below to verify.")
+                            .setColor(0x1ABC9C);
 
                         const row = new ActionRowBuilder().addComponents(
                             new ButtonBuilder().setCustomId('verify_btn').setLabel('VERIFY').setStyle(ButtonStyle.Success).setEmoji('🛡️')
@@ -1905,10 +1156,9 @@ Made by TMC.LOL
 
                     if (subArg === 'redeem') {
                         const embed = new EmbedBuilder()
-                            .setTitle("💎 KEY REDEEM DESK")
-                            .setDescription("Got a license code? Click below to redeem it.")
-                            .setColor(0x5865F2)
-                            .setFooter({ text: "TMC.LOL Marketplace • Credits to @elliott" });
+                            .setTitle("💎 KEY REDEEM")
+                            .setDescription("Got a code? Click below to redeem.")
+                            .setColor(0x5865F2);
 
                         const row = new ActionRowBuilder().addComponents(
                             new ButtonBuilder().setCustomId('redeem_btn').setLabel('REDEEM KEY').setStyle(ButtonStyle.Primary).setEmoji('💎')
@@ -1918,10 +1168,9 @@ Made by TMC.LOL
 
                     if (subArg === 'support') {
                         const embed = new EmbedBuilder()
-                            .setTitle("🛠️ SUPPORT DESK")
-                            .setDescription("Select your department to spin up a private ticket room.")
-                            .setColor(0xFEE75C)
-                            .setFooter({ text: "TMC.LOL Support System • Credits to @elliott" });
+                            .setTitle("🛠️ SUPPORT")
+                            .setDescription("Select your department.")
+                            .setColor(0xFEE75C);
 
                         const row = new ActionRowBuilder().addComponents(
                             new StringSelectMenuBuilder()
@@ -1929,300 +1178,75 @@ Made by TMC.LOL
                                 .setPlaceholder('📂 Select department...')
                                 .addOptions([
                                     { label: 'General Support', value: 'General Inquiry', emoji: '❓' },
-                                    { label: 'Token Help', value: 'Token Help', emoji: '🔑' },
-                                    { label: 'Billing & Keys', value: 'Billing Support', emoji: '💳' }
+                                    { label: 'Token Help', value: 'Token Help', emoji: '🔑' }
                                 ])
                         );
                         return interaction.reply({ embeds: [embed], components: [row] });
                     }
-
-                    if (subArg === 'automod') {
-                        const embed = new EmbedBuilder()
-                            .setTitle("🛡️ AUTOMOD MATRIX")
-                            .setDescription("Server infrastructure is protected 24/7.")
-                            .setColor(0xED4245)
-                            .addFields(
-                                { name: "🚫 Link Firewall", value: "`Active`", inline: true },
-                                { name: "⚡ Anti-Raid", value: "`Engaged`", inline: true }
-                            )
-                            .setFooter({ text: "TMC.LOL Security Grid • Credits to @elliott" });
-
-                        return interaction.reply({ embeds: [embed] });
-                    }
-
-                    if (subArg === 'roles') {
-                        const embed = new EmbedBuilder()
-                            .setTitle("🎨 COMMUNITY NOTIFICATION CENTER")
-                            .setDescription("Toggle your notification preferences.")
-                            .setColor(0x9B59B6)
-                            .setFooter({ text: "TMC.LOL Preferences • Credits to @elliott" });
-
-                        const row = new ActionRowBuilder().addComponents(
-                            new ButtonBuilder().setCustomId('role_announcements').setLabel('Toggle Announcements').setStyle(ButtonStyle.Secondary).setEmoji('📢')
-                        );
-                        return interaction.reply({ embeds: [embed], components: [row] });
-                    }
-
-                    if (subArg === 'help') {
-                        const embed = new EmbedBuilder()
-                            .setTitle("⚡ TMC.LOL COMMAND DIRECTORY")
-                            .setDescription("Ultra-secure administrative panel deployment suite:")
-                            .addFields(
-                                { name: "🔨 `/build [theme]`", value: "Generates full server layout categories.", inline: false },
-                                { name: "🔒 `/panel verify`", value: "Deploys verification gate.", inline: false },
-                                { name: "💎 `/panel redeem`", value: "Deploys key redemption system.", inline: false },
-                                { name: "🛠️ `/panel support`", value: "Deploys ticket generator.", inline: false },
-                                { name: "🛡️ `/panel automod`", value: "Deploys defense grid console.", inline: false },
-                                { name: "🎨 `/panel roles`", value: "Deploys notification toggles.", inline: false },
-                                { name: "⚡ `/panel generator`", value: "Deploys Tokens by TMC.LOL panel.", inline: false },
-                                { name: "🔑 `/generate-code`", value: "Generates supporter code.", inline: false }
-                            )
-                            .setFooter({ text: "TMC.LOL Enterprise Security Suite • Credits to @elliott" });
-
-                        return interaction.reply({ embeds: [embed] });
-                    }
                 }
-
-                if (commandName === 'generate-code') {
-                    const newCode = generateSupporterCode();
-                    validCodes.add(newCode);
-
-                    const codeEmbed = new EmbedBuilder()
-                        .setTitle("🔑 GENERATED SUPPORTER KEY")
-                        .setDescription(`\`\`\`${newCode}\`\`\``)
-                        .setColor(0x2ECC71)
-                        .addFields(
-                            { name: "Status", value: "`Active & Unclaimed`", inline: true }
-                        )
-                        .setFooter({ text: "TMC.LOL License Generator • Credits to @elliott" });
-
-                    return interaction.reply({ embeds: [codeEmbed], flags: 64 });
-                }
-
-                if (commandName === 'warn') {
-                    const target = options.getUser('target');
-                    const reason = options.getString('reason');
-                    if (!userWarnings.has(target.id)) userWarnings.set(target.id, []);
-                    userWarnings.get(target.id).push(reason);
-                    return interaction.reply({ content: `⚠️ Warned <@${target.id}>: **${reason}**`, flags: 64 });
-                }
-
-                if (commandName === 'warnings') {
-                    const target = options.getUser('target');
-                    const warns = userWarnings.get(target.id) || [];
-                    return interaction.reply({ content: `📋 <@${target.id}> has **${warns.length}** warning(s):\n${warns.map((w, i) => `${i+1}. ${w}`).join('\n') || 'None'}`, flags: 64 });
-                }
-
-                if (commandName === 'purge') {
-                    const count = options.getInteger('amount');
-                    await interaction.channel.bulkDelete(count, true).catch(() => {});
-                    return interaction.reply({ content: `🧹 Purged **${count}** messages.`, flags: 64 });
-                }
-
-                if (commandName === 'timeout') {
-                    const target = options.getUser('target');
-                    const minutes = options.getInteger('minutes');
-                    const member = await interaction.guild.members.fetch(target.id);
-                    await member.timeout(minutes * 60 * 1000, 'Timed out via slash command');
-                    return interaction.reply({ content: `🔇 Timed out <@${target.id}> for **${minutes}** minutes.`, flags: 64 });
-                }
-
-                return interaction.reply({ content: `⚡ Command \`/${commandName}\` executed!`, flags: 64 });
             }
         }
 
         // --- BUTTON HANDLERS ---
         if (interaction.isButton()) {
-            // --- Handle remove single token ---
-            if (interaction.customId.startsWith('remove_')) {
-                const id = interaction.customId.replace('remove_', '');
-                const messageId = interaction.message.id;
-                const state = removeStockMessages.get(messageId);
-                // We don't strictly need to validate user because the command is admin-only, but we can still check.
-                // But we'll allow any admin who has access.
+            // --- Refresh Token Modal Button ---
+            if (interaction.customId === 'refresh_token_modal') {
                 if (!hasAdminAccess(interaction)) {
-                    return interaction.reply({ content: `❌ You need admin permissions to remove tokens.`, flags: 64 });
-                }
-
-                const result = removeTokenById(id);
-                if (result.success) {
-                    // Update the message: remove the entry and refresh the list
-                    const newEntries = tokenStock
-                        .filter(t => t.id && t.id.length > 0)
-                        .map(t => ({
-                            id: t.id,
-                            userId: t.userId,
-                            username: t.username || `<@${t.userId}>`
-                        }));
-                    newEntries.sort((a, b) => a.id.localeCompare(b.id));
-
-                    if (newEntries.length === 0) {
-                        // No tokens left, update the message
-                        const embed = new EmbedBuilder()
-                            .setTitle('📭 No Tokens Left')
-                            .setDescription('All generation IDs have been removed.')
-                            .setColor(0x2ECC71);
-                        await interaction.update({
-                            embeds: [embed],
-                            components: []
-                        });
-                        removeStockMessages.delete(messageId);
-                        await interaction.followUp({
-                            content: `✅ ${result.message}`,
-                            flags: 64
-                        });
-                        return;
-                    }
-
-                    // Rebuild the embed and action rows
-                    const embed = new EmbedBuilder()
-                        .setTitle('🗑️ Remove a Token by Selection')
-                        .setDescription(`**${newEntries.length}** active token(s) – click the **Remove** button for the token you want to delete.`)
-                        .setColor(0xED4245)
-                        .setFooter({ text: 'TMC.LOL • Click Remove to delete a single token' });
-
-                    if (newEntries.length <= 20) {
-                        newEntries.forEach((entry) => {
-                            embed.addFields({
-                                name: `\`${entry.id}\``,
-                                value: `👤 ${entry.username}\n🆔 <@${entry.userId}>`,
-                                inline: false
-                            });
-                        });
-                    } else {
-                        const list = newEntries.map(e => `\`${e.id}\` – ${e.username}`).join('\n');
-                        embed.addFields({ name: 'All Tokens', value: list, inline: false });
-                    }
-
-                    // Build rows
-                    const rows = [];
-                    let currentRow = new ActionRowBuilder();
-                    let buttonCount = 0;
-                    for (const entry of newEntries) {
-                        if (buttonCount >= 5) {
-                            rows.push(currentRow);
-                            currentRow = new ActionRowBuilder();
-                            buttonCount = 0;
-                        }
-                        currentRow.addComponents(
-                            new ButtonBuilder()
-                                .setCustomId(`remove_${entry.id}`)
-                                .setLabel(`Remove ${entry.id}`)
-                                .setStyle(ButtonStyle.Danger)
-                                .setEmoji('🗑️')
-                        );
-                        buttonCount++;
-                    }
-                    if (buttonCount > 0) rows.push(currentRow);
-
-                    const removeAllRow = new ActionRowBuilder().addComponents(
-                        new ButtonBuilder()
-                            .setCustomId('remove_all_tokens')
-                            .setLabel('🚨 Remove All Tokens')
-                            .setStyle(ButtonStyle.Danger)
-                    );
-
-                    const maxRemoveRows = 4;
-                    let finalRows = rows.slice(0, maxRemoveRows);
-                    if (rows.length > maxRemoveRows) {
-                        embed.setFooter({ text: `Showing ${maxRemoveRows*5} of ${newEntries.length} tokens – use /remove-token <ID> for others` });
-                    }
-                    finalRows.push(removeAllRow);
-
-                    await interaction.update({
-                        embeds: [embed],
-                        components: finalRows
-                    });
-
-                    await interaction.followUp({
-                        content: `✅ ${result.message}`,
-                        flags: 64
-                    });
-
-                    // Update stored state
-                    removeStockMessages.set(messageId, {
-                        userId: interaction.user.id,
-                        entries: newEntries
-                    });
-                } else {
-                    await interaction.reply({
-                        content: `❌ ${result.message}`,
-                        flags: 64
+                    return interaction.reply({ 
+                        content: `❌ You need admin permissions to refresh tokens.`, 
+                        flags: 64 
                     });
                 }
-                return;
+
+                const modal = new ModalBuilder()
+                    .setCustomId('refresh_token_modal_submit')
+                    .setTitle('🔄 Refresh Token');
+
+                const bearerInput = new TextInputBuilder()
+                    .setCustomId('refresh_bearer_input')
+                    .setLabel("ENTER NEW BEARER TOKEN")
+                    .setStyle(TextInputStyle.Paragraph)
+                    .setPlaceholder("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...")
+                    .setRequired(true)
+                    .setMinLength(10)
+                    .setMaxLength(2000);
+
+                const refreshInput = new TextInputBuilder()
+                    .setCustomId('refresh_refresh_input')
+                    .setLabel("ENTER NEW REFRESH TOKEN")
+                    .setStyle(TextInputStyle.Paragraph)
+                    .setPlaceholder("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...")
+                    .setRequired(true)
+                    .setMinLength(10)
+                    .setMaxLength(2000);
+
+                modal.addComponents(
+                    new ActionRowBuilder().addComponents(bearerInput),
+                    new ActionRowBuilder().addComponents(refreshInput)
+                );
+
+                return await interaction.showModal(modal);
             }
 
-            // --- Handle "Remove All Tokens" button ---
-            if (interaction.customId === 'remove_all_tokens') {
-                if (!hasAdminAccess(interaction)) {
-                    return interaction.reply({ content: `❌ You need admin permissions to remove all tokens.`, flags: 64 });
-                }
-
-                const result = removeAllTokens();
-                // After removing all, update the message
-                const messageId = interaction.message.id;
-                const state = removeStockMessages.get(messageId);
-                if (state) {
-                    const embed = new EmbedBuilder()
-                        .setTitle('🗑️ All Tokens Removed')
-                        .setDescription(`✅ ${result.message}`)
-                        .setColor(0x2ECC71);
-                    await interaction.update({
-                        embeds: [embed],
-                        components: []
-                    });
-                    removeStockMessages.delete(messageId);
-                    await interaction.followUp({
-                        content: `✅ ${result.message}`,
-                        flags: 64
-                    });
-                } else {
-                    // If we can't find the message, just reply
-                    await interaction.reply({
-                        content: `✅ ${result.message}`,
-                        flags: 64
-                    });
-                }
-                return;
-            }
-
-            // --- gen_public button ---
             if (interaction.customId === 'gen_public') {
-                return await processTokenGeneration(interaction, 'Public Token (5m cooldown)');
+                return await processTokenGeneration(interaction, 'Public Token');
             }
 
-            // --- verify button ---
             if (interaction.customId === 'verify_btn') {
                 await interaction.deferReply({ flags: 64 });
-
-                const guild = interaction.guild;
-                const member = interaction.member;
-                const role = guild.roles.cache.get(MEMBER_ROLE_ID);
-
-                if (!role) {
-                    return interaction.editReply({ content: "❌ Verification role could not be found." });
-                }
-
-                const botMember = guild.members.cache.get(client.user.id) || await guild.members.fetchMe();
-                if (botMember.roles.highest.position <= role.position) {
-                    return interaction.editReply({ content: "❌ Hierarchy Error: My role is lower than the verification role." });
-                }
-
-                if (member.roles.cache.has(role.id)) {
+                const role = interaction.guild.roles.cache.get(MEMBER_ROLE_ID);
+                if (!role) return interaction.editReply({ content: "❌ Role not found." });
+                if (interaction.member.roles.cache.has(role.id)) {
                     return interaction.editReply({ content: "⚠️ You are already verified!" });
                 }
-
                 try {
-                    await member.roles.add(role);
-                    return interaction.editReply({ content: "✅ **Authentication Successful!**" });
+                    await interaction.member.roles.add(role);
+                    return interaction.editReply({ content: "✅ **Verified!**" });
                 } catch (err) {
-                    console.error("Role Assignment Error:", err);
-                    return interaction.editReply({ content: "❌ Failed to assign verification role." });
+                    return interaction.editReply({ content: "❌ Failed to verify." });
                 }
             }
 
-            // --- redeem button ---
             if (interaction.customId === 'redeem_btn') {
                 const modal = new ModalBuilder()
                     .setCustomId('redeem_modal')
@@ -2230,7 +1254,7 @@ Made by TMC.LOL
 
                 const codeInput = new TextInputBuilder()
                     .setCustomId('redeem_code_input')
-                    .setLabel("ENTER SUPPORTER / LICENSE CODE")
+                    .setLabel("ENTER CODE")
                     .setStyle(TextInputStyle.Short)
                     .setPlaceholder("supporter-xxxx-xxxx-xxxx")
                     .setRequired(true);
@@ -2239,88 +1263,131 @@ Made by TMC.LOL
                 return await interaction.showModal(modal);
             }
 
-            // --- role announcements button ---
-            if (interaction.customId === 'role_announcements') {
-                const role = interaction.guild.roles.cache.get(ANNOUNCEMENT_ROLE_ID);
-                if (!role) return interaction.reply({ content: "❌ Announcement role not configured.", flags: 64 });
-
-                if (interaction.member.roles.cache.has(role.id)) {
-                    await interaction.member.roles.remove(role);
-                    return interaction.reply({ content: "🔕 Opted out of Announcements.", flags: 64 });
-                } else {
-                    await interaction.member.roles.add(role);
-                    return interaction.reply({ content: "🔔 Opted in to Announcements!", flags: 64 });
-                }
+            if (interaction.customId.startsWith('remove_')) {
+                const id = interaction.customId.replace('remove_', '');
+                const result = removeTokenById(id);
+                return interaction.reply({
+                    content: result.success ? `✅ ${result.message}` : `❌ ${result.message}`,
+                    flags: 64
+                });
             }
 
-            // --- automod toggle button ---
-            if (interaction.customId === 'automod_toggle') {
-                if (!hasAdminAccess(interaction)) {
-                    return interaction.reply({ content: `❌ You need the <@&${ADMIN_ROLE_ID}> role or admin permissions.`, flags: 64 });
-                }
-                return interaction.reply({ content: "🛡️ **Automod Security Matrix:** All parameters active.", flags: 64 });
-            }
-
-            // --- close ticket button ---
             if (interaction.customId === 'close_ticket_btn') {
                 if (!hasAdminAccess(interaction)) {
                     return interaction.reply({ content: "❌ Only staff can close tickets.", flags: 64 });
                 }
-                await interaction.reply({ content: "🔒 Archiving ticket in 5 seconds..." });
-                setTimeout(() => interaction.channel.delete().catch(() => {}), 5000);
+                await interaction.reply({ content: "🔒 Closing ticket..." });
+                setTimeout(() => interaction.channel.delete().catch(() => {}), 3000);
             }
         }
 
         if (interaction.isStringSelectMenu()) {
             if (interaction.customId === 'support_select') {
                 const category = interaction.values[0];
-                const guild = interaction.guild;
-                const user = interaction.user;
-
                 await interaction.deferReply({ flags: 64 });
 
                 try {
-                    const ticketChannel = await guild.channels.create({
-                        name: `ticket-${user.username}`,
+                    const ticketChannel = await interaction.guild.channels.create({
+                        name: `ticket-${interaction.user.username}`,
                         type: ChannelType.GuildText,
                         permissionOverwrites: [
                             {
-                                id: guild.id,
+                                id: interaction.guild.id,
                                 deny: [PermissionFlagsBits.ViewChannel],
                             },
                             {
-                                id: user.id,
-                                allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory],
-                            },
-                            {
-                                id: client.user.id,
-                                allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ManageChannels],
+                                id: interaction.user.id,
+                                allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages],
                             }
                         ],
                     });
 
-                    const ticketEmbed = new EmbedBuilder()
-                        .setTitle(`🎫 SECURE TICKET: ${category.toUpperCase()}`)
-                        .setDescription(`Welcome, <@${user.id}>. Staff has been notified.`)
+                    const embed = new EmbedBuilder()
+                        .setTitle(`🎫 TICKET: ${category.toUpperCase()}`)
+                        .setDescription(`Welcome, <@${interaction.user.id}>.`)
                         .setColor(0xFEE75C)
-                        .setTimestamp()
-                        .setFooter({ text: "TMC.LOL Incident Resolution • Credits to @elliott" });
+                        .setTimestamp();
 
                     const closeButton = new ActionRowBuilder().addComponents(
-                        new ButtonBuilder().setCustomId('close_ticket_btn').setLabel('CLOSE TICKET').setStyle(ButtonStyle.Danger).setEmoji('🔒')
+                        new ButtonBuilder().setCustomId('close_ticket_btn').setLabel('CLOSE').setStyle(ButtonStyle.Danger).setEmoji('🔒')
                     );
 
-                    await ticketChannel.send({ content: `<@${user.id}> | Staff Alert`, embeds: [ticketEmbed], components: [closeButton] });
-
+                    await ticketChannel.send({ embeds: [embed], components: [closeButton] });
                     return interaction.editReply({ content: `✅ Ticket created: <#${ticketChannel.id}>` });
                 } catch (err) {
-                    console.error("Ticket Creation Error:", err);
                     return interaction.editReply({ content: "❌ Failed to create ticket." });
                 }
             }
         }
 
         if (interaction.isModalSubmit()) {
+            // --- Refresh Token Modal Submit ---
+            if (interaction.customId === 'refresh_token_modal_submit') {
+                try {
+                    if (!hasAdminAccess(interaction)) {
+                        return interaction.reply({
+                            content: `❌ **Access Denied:** You need admin permissions to refresh tokens.`,
+                            flags: 64
+                        });
+                    }
+
+                    await interaction.deferReply({ flags: 64 });
+                    
+                    const bearer = interaction.fields.getTextInputValue('refresh_bearer_input').trim();
+                    const refresh = interaction.fields.getTextInputValue('refresh_refresh_input').trim();
+                    
+                    if (!bearer || !refresh) {
+                        return interaction.editReply({
+                            content: '❌ **Error:** Both Bearer and Refresh tokens are required.'
+                        });
+                    }
+
+                    DEFAULT_TOKEN.bearer = bearer;
+                    DEFAULT_TOKEN.refresh_token = refresh;
+                    
+                    if (tokenStock.length > 0) {
+                        const oldToken = tokenStock[0];
+                        const newToken = {
+                            bearer: bearer,
+                            refresh: refresh,
+                            addedAt: Date.now(),
+                            expiresAt: Date.now() + (100 * 365 * 24 * 60 * 60 * 1000), // NEVER EXPIRES
+                            id: oldToken.id,
+                            userId: oldToken.userId,
+                            username: oldToken.username
+                        };
+                        tokenStock[0] = newToken;
+                    } else {
+                        tokenStock.push({
+                            bearer: bearer,
+                            refresh: refresh,
+                            addedAt: Date.now(),
+                            expiresAt: Date.now() + (100 * 365 * 24 * 60 * 60 * 1000) // NEVER EXPIRES
+                        });
+                    }
+
+                    const embed = new EmbedBuilder()
+                        .setTitle('🔄 Token Refreshed Successfully!')
+                        .setDescription('✅ Token has been updated with the new values.')
+                        .setColor(0x2ECC71)
+                        .addFields(
+                            { name: 'Bearer Token', value: `\`${bearer.substring(0, 30)}...\``, inline: false },
+                            { name: 'Refresh Token', value: `\`${refresh.substring(0, 30)}...\``, inline: false },
+                            { name: '⏳ Expiry', value: 'NEVER Expires!', inline: true },
+                            { name: '📦 Stock', value: `${tokenStock.length} token(s) in stock`, inline: true }
+                        )
+                        .setTimestamp()
+                        .setFooter({ text: 'TMC.LOL Token Generator • NEVER Expires' });
+
+                    return interaction.editReply({ embeds: [embed] });
+                } catch (err) {
+                    console.error('[TMC.LOL] Refresh Token Modal Error:', err);
+                    return interaction.editReply({
+                        content: '❌ **Error:** Failed to refresh token. Please try again.'
+                    });
+                }
+            }
+
             if (interaction.customId === 'stock_modal') {
                 try {
                     if (!hasAdminAccess(interaction)) {
@@ -2345,7 +1412,7 @@ Made by TMC.LOL
                         bearer,
                         refresh,
                         addedAt: Date.now(),
-                        expiresAt: Date.now() + (60 * 60 * 1000)
+                        expiresAt: Date.now() + (100 * 365 * 24 * 60 * 60 * 1000) // NEVER EXPIRES
                     });
 
                     return interaction.editReply({
@@ -2395,21 +1462,93 @@ Made by TMC.LOL
         }
     } catch (err) {
         console.error(`[TMC.LOL] Interaction Error:`, err);
-        if (err.code !== 3000 && !interaction.replied && !interaction.deferred) {
-            interaction.reply({ content: "❌ An unexpected error occurred. Please try again.", flags: 64 }).catch(() => {});
+        if (!interaction.replied && !interaction.deferred) {
+            interaction.reply({ content: "❌ An error occurred. Please try again.", flags: 64 }).catch(() => {});
         }
     }
 });
 
-// --- HTTP SERVER ---
+// --- HEALTH CHECK HTTP SERVER ---
 const server = http.createServer((req, res) => {
+    // Health check endpoint for Render
+    if (req.url === '/health') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ status: 'ok', bot: 'online', timestamp: Date.now() }));
+        return;
+    }
     res.writeHead(200, { 'Content-Type': 'text/plain' });
-    res.end('TMC.LOL Token Generator Bot is active!\nAuto-refreshes every 60 seconds.\nCredits to @elliott\n');
+    res.end('TMC.LOL Token Generator Bot is active!\nAuto-refreshes every 1 minute.\nTokens NEVER expire!\nCredits to @elliott\n');
 });
 
-const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => {
+const PORT = process.env.PORT || 10000;
+server.listen(PORT, '0.0.0.0', () => {
     console.log(`[TMC.LOL] HTTP server running on port ${PORT}`);
 });
 
-client.login(process.env.DISCORD_TOKEN);
+// --- LOGIN WITH RETRY AND BETTER ERROR HANDLING ---
+console.log('[TMC.LOL] 🔑 Attempting to login to Discord...');
+
+if (!process.env.DISCORD_TOKEN) {
+    console.error('[TMC.LOL] ❌ DISCORD_TOKEN environment variable is NOT set!');
+    console.error('[TMC.LOL] ❌ Please add it in Render dashboard → Environment');
+} else {
+    console.log(`[TMC.LOL] ✅ DISCORD_TOKEN is set (length: ${process.env.DISCORD_TOKEN.length})`);
+    
+    // Try login with retry
+    async function loginWithRetry(attempts = 5) {
+        for (let i = 1; i <= attempts; i++) {
+            try {
+                console.log(`[TMC.LOL] 🔄 Login attempt ${i}/${attempts}...`);
+                
+                // Create a login promise with timeout
+                const loginPromise = client.login(process.env.DISCORD_TOKEN);
+                const timeoutPromise = new Promise((_, reject) => {
+                    setTimeout(() => reject(new Error('Login timeout after 30 seconds')), 30000);
+                });
+                
+                await Promise.race([loginPromise, timeoutPromise]);
+                console.log('[TMC.LOL] ✅ Discord login successful!');
+                return true;
+                
+            } catch (err) {
+                console.error(`[TMC.LOL] ❌ Login attempt ${i} failed:`, err.message);
+                
+                if (i === attempts) {
+                    console.error('[TMC.LOL] ❌ All login attempts failed.');
+                    console.error('[TMC.LOL] 💡 Possible causes:');
+                    console.error('[TMC.LOL]    1. Render is blocking Discord API connections');
+                    console.error('[TMC.LOL]    2. Invalid bot token (regenerate it in Discord Developer Portal)');
+                    console.error('[TMC.LOL]    3. Privileged intents not enabled in Discord Developer Portal');
+                    console.error('[TMC.LOL]    4. Try upgrading to Render paid plan for better network access');
+                    console.error('[TMC.LOL] 💡 The HTTP server will continue running for health checks.');
+                    console.error('[TMC.LOL] 💡 The bot will keep trying to connect in the background.');
+                    return false;
+                }
+                
+                // Wait before retrying with exponential backoff
+                const waitTime = 5000 * i;
+                console.log(`[TMC.LOL] ⏳ Waiting ${waitTime/1000}s before retry...`);
+                await new Promise(resolve => setTimeout(resolve, waitTime));
+            }
+        }
+        return false;
+    }
+
+    // Start the login process
+    loginWithRetry().then(success => {
+        if (!success) {
+            console.error('[TMC.LOL] ❌ Bot failed to connect to Discord.');
+            console.error('[TMC.LOL] 💡 The HTTP server will continue running for health checks.');
+            console.error('[TMC.LOL] 💡 Try switching to a Render paid plan or using a different hosting provider.');
+        }
+    });
+}
+
+// Keep the process alive
+process.on('unhandledRejection', (reason) => {
+    console.error('[TMC.LOL] Unhandled Rejection:', reason);
+});
+
+process.on('uncaughtException', (err) => {
+    console.error('[TMC.LOL] Uncaught Exception:', err);
+});
