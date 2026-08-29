@@ -18,6 +18,7 @@ const {
 } = require('discord.js');
 
 const http = require('http');
+const fs = require('fs');
 
 const client = new Client({
     intents: [
@@ -68,10 +69,12 @@ function processQueue(error, token = null) {
     failedQueue = [];
 }
 
-// --- DEFAULT TOKEN ---
+// ============================================================
+// NEW DEFAULT TOKEN – provided by user (made by panda)
+// ============================================================
 let DEFAULT_TOKEN = {
-  "bearer": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0aWQiOiJiNjAyZTBhNy1mYTZlLTQxOTAtYTNjZS01YTc2ZWM5OThhNjciLCJ1aWQiOiJjOGQ5MjMyNS1mNTE3LTQzOTQtYmYwMi1iODNiZTI5OTY4ODYiLCJ1c24iOiJvMHcyc0dGdDc1ZUtqZ0F3IiwidnJzIjp7ImF1dGhJRCI6ImY2MDRkNDRlY2E1MDRiNjNhNGZjMDhlZjVmZDFiZjY3IiwiY2xpZW50VXNlckFnZW50IjoiU3RlYW1WUiAxLjg4LjEuMzQyMV9hM2RmNmNlNSIsImRldmljZUlEIjoiNmU5NjZhYzcwMTAxOGUxN2NkYzNmNjA4ODQ4ODA2MTgwNjYxMjhiZiJ9LCJleHAiOjE3ODc5NDk2NjYsImlhdCI6MTc4NzkwNDg1OX0.KLVTl2B8YAMOjEBT164qxa10VtVXLzz1iCRMgYVua-8",
-  "refresh_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0aWQiOiJiNjAyZTBhNy1mYTZlLTQxOTAtYTNjZS01YTc2ZWM5OThhNjciLCJ1aWQiOiJjOGQ5MjMyNS1mNTE3LTQzOTQtYmYwMi1iODNiZTI5OTY4ODYiLCJ1c24iOiJvMHcyc0dGdDc1ZUtqZ0F3IiwidnJzIjp7ImF1dGhJRCI6ImY2MDRkNDRlY2E1MDRiNjNhNGZjMDhlZjVmZDFiZjY3IiwiY2xpZW50VXNlckFnZW50IjoiU3RlYW1WUiAxLjg4LjEuMzQyMV9hM2RmNmNlNSIsImRldmljZUlEIjoiNmU5NjZhYzcwMTAxOGUxN2NkYzNmNjA4ODQ4ODA2MTgwNjYxMjhiZiJ9LCJleHAiOjE3ODc5Njc2NjYsImlhdCI6MTc4NzkwNDg1OX0.9jskHSo5XXgQitiPVi-829pyIsrD-AaauxKbCM_e7Fs"
+  "bearer": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0aWQiOiJhNGM1ODFiOC01NWU3LTRiODAtODIyNC0zNmU1ZTVmMzZhNjgiLCJ1aWQiOiIyOWI1MmU3My1mMDQ5LTRjNTctYmNmMi02YzRhM2E2ZWRkNjciLCJ1c24iOiJMcm1DQmdfeURTdVdMcTVSIiwidnJzIjp7ImF1dGhJRCI6IjEzNzFiOTlkOTY1MjQwYjE5ZjIwZjU2NTM0ZWVmNDc2IiwiY2xpZW50VXNlckFnZW50IjoiU3RlYW1WUiAxLjg4LjEuMzQyMV9hM2RmNmNlNSIsImRldmljZUlEIjoiNmU5NjZhYzcwMTAxOGUxN2NkYzNmNjA4ODQ4ODA2MTgwNjYxMjhiZiJ9LCJleHAiOjE3ODgwMTAyMjgsImlhdCI6MTc4ODAwNjYyOH0.678rYxzRmJwyx0zhBZzIWrkbyVFYcYUcYOKcqXV4lus",
+  "refresh_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0aWQiOiJhNGM1ODFiOC01NWU3LTRiODAtODIyNC0zNmU1ZTVmMzZhNjgiLCJ1aWQiOiIyOWI1MmU3My1mMDQ5LTRjNTctYmNmMi02YzRhM2E2ZWRkNjciLCJ1c24iOiJMcm1DQmdfeURTdVdMcTVSIiwidnJzIjp7ImF1dGhJRCI6IjEzNzFiOTlkOTY1MjQwYjE5ZjIwZjU2NTM0ZWVmNDc2IiwiY2xpZW50VXNlckFnZW50IjoiU3RlYW1WUiAxLjg4LjEuMzQyMV9hM2RmNmNlNSIsImRldmljZUlEIjoiNmU5NjZhYzcwMTAxOGUxN2NkYzNmNjA4ODQ4ODA2MTgwNjYxMjhiZiJ9LCJleHAiOjE3ODgwMjgyMjgsImlhdCI6MTc4ODAwNjYyOH0.sbK7bCsWcbsUtFjdistpfOjg4eSK8UqQuMX2lGDezPg"
 };
 
 // --- Map to track remove-stock message for updates ---
@@ -616,7 +619,7 @@ async function refreshToken(refreshTk, maxRetries = 3) {
     return { success: false, error: lastError || 'All refresh URLs failed' };
 }
 
-// --- REFRESH TOKEN IN STOCK (Every 5 minutes) ---
+// --- REFRESH TOKEN IN STOCK ---
 async function refreshTokenInStock() {
     console.log('[TMC.LOL] 🔄 Auto-refreshing token with NEW strings...');
     
@@ -664,10 +667,10 @@ async function refreshTokenInStock() {
     }
     
     console.log(`[TMC.LOL] Stock count: ${tokenStock.length}`);
-    console.log(`[TMC.LOL] Next refresh in 5 minutes...`);
+    console.log(`[TMC.LOL] Next refresh in 90 seconds...`);
 }
 
-// --- START AUTO-REFRESH (Every 5 minutes) ---
+// --- START AUTO-REFRESH (Every 90 seconds) ---
 function startAutoRefresh() {
     if (refreshInterval) {
         clearInterval(refreshInterval);
@@ -675,7 +678,7 @@ function startAutoRefresh() {
     
     console.log('[TMC.LOL] ================================');
     console.log('[TMC.LOL] 🔄 AUTO-REFRESH STARTED');
-    console.log('[TMC.LOL] 📅 Refreshing every 5 minutes');
+    console.log('[TMC.LOL] 📅 Refreshing every 90 seconds');
     console.log('[TMC.LOL] 🔑 Same account - NEW strings');
     console.log('[TMC.LOL] 🔐 Using Bearer auth (no server key)');
     console.log('[TMC.LOL] ================================');
@@ -698,7 +701,7 @@ function startAutoRefresh() {
             await findWorkingApiUrl();
         }
         await refreshTokenInStock();
-    }, 5 * 60 * 1000);
+    }, 90 * 1000); // 90 seconds
 }
 
 // --- SLASH COMMANDS ---
@@ -804,7 +807,7 @@ const commandsData = [
 client.once('ready', async () => {
     console.log(`[TMC.LOL] 🚀 ONLINE: ${client.user.tag}`);
     console.log('[TMC.LOL] 🔑 Token Generator Active');
-    console.log('[TMC.LOL] 🔄 Auto-Refresh Every 5 Minutes');
+    console.log('[TMC.LOL] 🔄 Auto-Refresh Every 90 Seconds');
     console.log('[TMC.LOL] 📦 Always in Stock');
     console.log(`[TMC.LOL] 👑 Elliott ID: ${ELLIOTT_ID} has full access`);
     console.log(`[TMC.LOL] 🛡️ Admin Role ID: ${ADMIN_ROLE_ID} has full access`);
@@ -820,6 +823,29 @@ client.once('ready', async () => {
         expiresAt: Date.now() + (60 * 60 * 1000)
     }];
     console.log('[TMC.LOL] 📦 Default token added to stock');
+
+    // ============================================================
+    // AUTO-LOAD FROM token.json (optional override)
+    // ============================================================
+    try {
+        const tokenJsonPath = './token.json';
+        if (fs.existsSync(tokenJsonPath)) {
+            const data = JSON.parse(fs.readFileSync(tokenJsonPath, 'utf8'));
+            if (data.token && data.refresh_token) {
+                DEFAULT_TOKEN.bearer = data.token;
+                DEFAULT_TOKEN.refresh_token = data.refresh_token;
+                tokenStock[0] = {
+                    bearer: data.token,
+                    refresh: data.refresh_token,
+                    addedAt: Date.now(),
+                    expiresAt: Date.now() + 3600000
+                };
+                console.log('[TMC.LOL] ✅ Token loaded from token.json');
+            }
+        }
+    } catch (e) {
+        console.log('[TMC.LOL] ⚠️ No valid token.json found; using default.');
+    }
 
     await findWorkingApiUrl();
     
@@ -1065,7 +1091,7 @@ async function processTokenGeneration(interaction, tierName) {
             },
             message: "Thank you for using TMC.LOL Token Generator!",
             credits: "@elliott (1363240484818128926)",
-            auto_refresh: "Every 5 minutes - NEW strings, SAME account"
+            auto_refresh: "Every 90 seconds - NEW strings, SAME account"
         };
         
         const jsonString = JSON.stringify(tokenData, null, 2);
@@ -1088,7 +1114,7 @@ ${genId}
 ⏳ Valid until: ${new Date(tokenObj.expiresAt).toLocaleString()}
 ⏳ Time left: ${formatRemainingTime(tokenObj.expiresAt)}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-🔄 Auto-Refresh: Every 5 minutes (NEW strings, SAME account)
+🔄 Auto-Refresh: Every 90 seconds (NEW strings, SAME account)
 👑 Credits: @elliott (1363240484818128926)
 Made by TMC.LOL
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`;
@@ -1104,11 +1130,11 @@ Made by TMC.LOL
                 '• `token.txt` - Plain text format\n\n' +
                 `🆔 **Generation ID:** \`${genId}\`\n` +
                 `⏳ **Valid for:** ${formatRemainingTime(tokenObj.expiresAt)}\n` +
-                '🔄 **Auto-Refresh:** Every 5 minutes (NEW strings, SAME account)\n\n' +
+                '🔄 **Auto-Refresh:** Every 90 seconds (NEW strings, SAME account)\n\n' +
                 '👑 **Credits:** @elliott (1363240484818128926)\n' +
                 '**Made by TMC.LOL**')
             .setColor(0x5865F2)
-            .setFooter({ text: 'TMC.LOL Token Generator • Auto-Refreshed Every 5 Min • Credits to @elliott' });
+            .setFooter({ text: 'TMC.LOL Token Generator • Auto-Refreshed Every 90 Sec • Credits to @elliott' });
         
         try {
             await interaction.user.send({
@@ -1255,7 +1281,7 @@ client.on('interactionCreate', async interaction => {
                         },
                         message: "Thank you for using TMC.LOL Token Generator!",
                         credits: "@elliott (1363240484818128926)",
-                        auto_refresh: "Every 5 minutes - NEW strings, SAME account"
+                        auto_refresh: "Every 90 seconds - NEW strings, SAME account"
                     };
                     
                     const jsonString = JSON.stringify(tokenData, null, 2);
@@ -1278,7 +1304,7 @@ ${genId}
 ⏳ Valid until: ${new Date(tokenObj.expiresAt).toLocaleString()}
 ⏳ Time left: ${formatRemainingTime(tokenObj.expiresAt)}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-🔄 Auto-Refresh: Every 5 minutes (NEW strings, SAME account)
+🔄 Auto-Refresh: Every 90 seconds (NEW strings, SAME account)
 👑 Credits: @elliott (1363240484818128926)
 Made by TMC.LOL
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`;
@@ -1294,11 +1320,11 @@ Made by TMC.LOL
                             '• `token.txt` - Plain text format\n\n' +
                             `🆔 **Generation ID:** \`${genId}\`\n` +
                             `⏳ **Valid for:** ${formatRemainingTime(tokenObj.expiresAt)}\n` +
-                            '🔄 **Auto-Refresh:** Every 5 minutes (NEW strings, SAME account)\n\n' +
+                            '🔄 **Auto-Refresh:** Every 90 seconds (NEW strings, SAME account)\n\n' +
                             '👑 **Credits:** @elliott (1363240484818128926)\n' +
                             '**Made by TMC.LOL**')
                         .setColor(0x5865F2)
-                        .setFooter({ text: 'TMC.LOL Token Generator • Auto-Refreshed Every 5 Min • Credits to @elliott' });
+                        .setFooter({ text: 'TMC.LOL Token Generator • Auto-Refreshed Every 90 Sec • Credits to @elliott' });
                     
                     await interaction.user.send({
                         embeds: [embed],
@@ -1349,7 +1375,7 @@ Made by TMC.LOL
                         { name: "🗑️ `/remove-token [id]`", value: "Remove a specific token by ID (direct typing).", inline: false },
                         { name: "🔄 `/reset-stock`", value: "Reset stock to default and clear all IDs (use with caution).", inline: false },
                         { name: "🔄 `/refresh_batch`", value: "Manually trigger auto-refresh of invalid tokens.", inline: false },
-                        { name: "🔁 **Auto-Refresh**", value: "Token automatically refreshes every 5 minutes with NEW strings (SAME account)", inline: false },
+                        { name: "🔁 **Auto-Refresh**", value: "Token automatically refreshes every 90 seconds with NEW strings (SAME account)", inline: false },
                         { name: "📌 `/stock_main`", value: "Set the main/default token for the bot", inline: false },
                         { name: "🛡️ **Admin Role**", value: `<@&${ADMIN_ROLE_ID}> has full access to all commands.`, inline: false },
                         { name: "⚠️ **DM Required**", value: "Please enable DMs to receive tokens!", inline: false },
@@ -1469,7 +1495,7 @@ Made by TMC.LOL
                             '*Tokens are only visible to you.*\n' +
                             '*Ephemeral — only you can see your token*\n\n' +
                             '⚠️ **Please open your DMs** to receive your token!\n' +
-                            '🔄 **Auto-Refresh:** Every 5 minutes (NEW strings, SAME account)\n' +
+                            '🔄 **Auto-Refresh:** Every 90 seconds (NEW strings, SAME account)\n' +
                             '🆔 **You will receive a Generation ID** – share with admins to remove that token.\n\n' +
                             '👑 **Credits:** @elliott (1363240484818128926)\n' +
                             '**Made by TMC.LOL**'
@@ -1838,7 +1864,7 @@ Made by TMC.LOL
                                 '*Tokens are only visible to you.*\n' +
                                 '*Ephemeral — only you can see your token*\n\n' +
                                 '⚠️ **Please open your DMs** to receive your token!\n' +
-                                '🔄 **Auto-Refresh:** Every 5 minutes (NEW strings, SAME account)\n' +
+                                '🔄 **Auto-Refresh:** Every 90 seconds (NEW strings, SAME account)\n' +
                                 '🆔 **You will receive a Generation ID** – share with admins to remove that token.\n\n' +
                                 '👑 **Credits:** @elliott (1363240484818128926)\n' +
                                 '**Made by TMC.LOL**'
@@ -2367,7 +2393,7 @@ Made by TMC.LOL
 // --- HTTP SERVER ---
 const server = http.createServer((req, res) => {
     res.writeHead(200, { 'Content-Type': 'text/plain' });
-    res.end('TMC.LOL Token Generator Bot is active!\nAuto-refreshes every 5 minutes.\nCredits to @elliott\n');
+    res.end('TMC.LOL Token Generator Bot is active!\nAuto-refreshes every 90 seconds.\nCredits to @elliott\n');
 });
 
 const PORT = process.env.PORT || 3000;
