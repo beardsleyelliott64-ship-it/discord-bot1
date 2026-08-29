@@ -45,16 +45,12 @@ const GENERATION_COOLDOWN = 5 * 60 * 1000;
 
 // --- API CONFIGURATION ---
 const NAKAMA_SERVER = 'https://animalcompany.us-east1.nakamacloud.io';
-const NAKAMA_SERVER_KEY = process.env.NAKAMA_SERVER_KEY || 'defaultkey';
 const API_URLS = [ NAKAMA_SERVER ];
 
 let ACTIVE_API_URL = API_URLS[0];
 let apiWorking = false;
 
-const hasServerKey = NAKAMA_SERVER_KEY && NAKAMA_SERVER_KEY.length > 0;
-if (!hasServerKey) {
-    console.log('[TMC.LOL] ⚠️ NAKAMA_SERVER_KEY not set - token refresh will fail with "Server key required"');
-}
+// No server key needed – we use Bearer auth with the refresh token itself.
 
 // --- Token refresh queue system ---
 let isRefreshing = false;
@@ -497,39 +493,45 @@ async function validateSteamToken(bearerToken, retries = 3) {
 }
 
 // ============================================
-// TOKEN REFRESH SYSTEM WITH QUEUE
+// TOKEN REFRESH SYSTEM – NO NAKAMA KEY
+// Uses Bearer auth with the refresh token itself.
 // ============================================
-async function refreshToken(refreshTk) {
-    try {
-        console.log('[TMC.LOL] 🔄 Attempting to refresh token via Nakama...');
-        
-        if (isRefreshing) {
-            console.log('[TMC.LOL] ⏳ Refresh in progress, queuing...');
-            return new Promise((resolve, reject) => {
-                failedQueue.push({ resolve, reject });
-            });
-        }
+async function refreshToken(refreshTk, maxRetries = 3) {
+    console.log('[TMC.LOL] 🔄 Attempting to refresh token via Bearer auth...');
 
-        isRefreshing = true;
-        console.log('[TMC.LOL] 🔒 Refresh lock acquired');
+    if (isRefreshing) {
+        console.log('[TMC.LOL] ⏳ Refresh in progress, queuing...');
+        return new Promise((resolve, reject) => {
+            failedQueue.push({ resolve, reject });
+        });
+    }
 
-        const urlsToTry = apiWorking ? [ACTIVE_API_URL, ...API_URLS.filter(u => u !== ACTIVE_API_URL)] : [...API_URLS];
+    isRefreshing = true;
+    console.log('[TMC.LOL] 🔒 Refresh lock acquired');
 
+    // Build Authorization header using the refresh token itself as Bearer
+    const authHeader = `Bearer ${refreshTk}`;
+
+    const urlsToTry = apiWorking ? [ACTIVE_API_URL, ...API_URLS.filter(u => u !== ACTIVE_API_URL)] : [...API_URLS];
+    let lastError = null;
+
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
         for (const url of urlsToTry) {
             try {
                 const refreshUrl = `${url}/v2/account/session/refresh`;
-                console.log(`[TMC.LOL] 🔄 Trying refresh at: ${refreshUrl}`);
+                console.log(`[TMC.LOL] 🔄 Refresh attempt ${attempt+1}/${maxRetries+1} at ${refreshUrl}`);
+
                 const controller = new AbortController();
                 const timeoutId = setTimeout(() => controller.abort(), 10000);
 
-                const serverKeyAuth = 'Basic ' + Buffer.from(NAKAMA_SERVER_KEY + ':').toString('base64');
-
+                // POST with empty body – the token is in the Authorization header.
+                // Some Nakama servers expect the refresh token in body as well; we send it both ways.
                 const response = await fetch(refreshUrl, {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
                         'User-Agent': 'SteamVR 1.88.1.3421_a3df6ce5',
-                        'Authorization': serverKeyAuth
+                        'Authorization': authHeader
                     },
                     body: JSON.stringify({ token: refreshTk }),
                     signal: controller.signal
@@ -540,24 +542,22 @@ async function refreshToken(refreshTk) {
                 const contentType = response.headers.get('content-type');
                 if (!contentType || !contentType.includes('application/json')) {
                     console.log(`[TMC.LOL] ❌ ${url} - Not JSON response (status ${response.status})`);
+                    lastError = `Non-JSON response from ${url}`;
                     continue;
                 }
 
                 const data = await response.json();
 
-                if (response.status === 200 && data.token) {
+                // Success: expect token field and that it's different from the old refresh token
+                if (response.status === 200 && data.token && data.token !== refreshTk) {
                     const newBearer = data.token;
                     const newRefresh = data.refresh_token || refreshTk;
                     const expiresAt = Date.now() + (60 * 60 * 1000);
 
-                    if (!newBearer || newBearer === refreshTk) {
-                        console.log(`[TMC.LOL] ⚠️ ${url} - Refresh returned same token`);
-                        continue;
-                    }
-
                     console.log(`[TMC.LOL] ✅ Successfully refreshed token via ${url}!`);
                     console.log(`[TMC.LOL] New Bearer: ${newBearer.substring(0, 50)}...`);
 
+                    // Update default and stock
                     DEFAULT_TOKEN.bearer = newBearer;
                     DEFAULT_TOKEN.refresh_token = newRefresh;
                     ACTIVE_API_URL = url;
@@ -565,16 +565,22 @@ async function refreshToken(refreshTk) {
 
                     if (tokenStock.length > 0) {
                         const oldToken = tokenStock[0];
-                        const newToken = {
+                        tokenStock[0] = {
                             bearer: newBearer,
                             refresh: newRefresh,
                             addedAt: Date.now(),
                             expiresAt: expiresAt,
-                            id: oldToken.id,
-                            userId: oldToken.userId,
-                            username: oldToken.username
+                            id: oldToken.id || undefined,
+                            userId: oldToken.userId || undefined,
+                            username: oldToken.username || undefined
                         };
-                        tokenStock[0] = newToken;
+                    } else {
+                        tokenStock.push({
+                            bearer: newBearer,
+                            refresh: newRefresh,
+                            addedAt: Date.now(),
+                            expiresAt: expiresAt
+                        });
                     }
 
                     const result = {
@@ -590,23 +596,24 @@ async function refreshToken(refreshTk) {
                     return result;
                 } else {
                     console.log(`[TMC.LOL] ❌ ${url} - Status: ${response.status}`, data);
+                    lastError = data.message || `Status ${response.status}`;
                 }
             } catch (err) {
                 console.log(`[TMC.LOL] ❌ ${url} - ${err.message}`);
+                lastError = err.message;
             }
         }
-
-        console.log('[TMC.LOL] ❌ All refresh URLs failed');
-        processQueue(new Error('All refresh URLs failed'), null);
-        isRefreshing = false;
-        return { success: false };
-
-    } catch (err) {
-        console.error('[TMC.LOL] Refresh error:', err.message);
-        processQueue(err, null);
-        isRefreshing = false;
-        return { success: false };
+        if (attempt < maxRetries) {
+            const delay = 1000 * Math.pow(2, attempt);
+            console.log(`[TMC.LOL] ⏳ Retry ${attempt+2} in ${delay/1000}s...`);
+            await new Promise(resolve => setTimeout(resolve, delay));
+        }
     }
+
+    console.log('[TMC.LOL] ❌ All refresh attempts failed.');
+    processQueue(new Error(lastError || 'All refresh URLs failed'), null);
+    isRefreshing = false;
+    return { success: false, error: lastError || 'All refresh URLs failed' };
 }
 
 // --- REFRESH TOKEN IN STOCK (Every 5 minutes) ---
@@ -635,13 +642,16 @@ async function refreshTokenInStock() {
             console.log(`[TMC.LOL] Expires: ${new Date(tokenStock[0].expiresAt).toISOString()}`);
             console.log(`[TMC.LOL] ⏳ Lifespan extended to 1 hour!`);
         } else {
-            console.log('[TMC.LOL] ❌ Refresh failed, keeping existing token');
-            tokenStock[0].expiresAt = Date.now() + (60 * 60 * 1000);
-            tokenStock[0].addedAt = Date.now();
+            console.log('[TMC.LOL] ❌ Refresh failed:', refreshResult.error);
+            // Extend expiry by 5 minutes as a grace period to avoid immediate expiration.
+            if (tokenStock[0].expiresAt && Date.now() > tokenStock[0].expiresAt) {
+                console.log('[TMC.LOL] ⚠️ Token expired and refresh failed. Extending by 5 minutes as grace.');
+                tokenStock[0].expiresAt = Date.now() + 5 * 60 * 1000;
+            }
         }
     } catch (err) {
         console.error('[TMC.LOL] Error in refresh process:', err);
-        console.log('[TMC.LOL] ❌ Keeping existing token - refresh failed');
+        console.log('[TMC.LOL] ❌ Keeping existing token - refresh error');
     }
     
     if (tokenStock.length === 0) {
@@ -667,6 +677,7 @@ function startAutoRefresh() {
     console.log('[TMC.LOL] 🔄 AUTO-REFRESH STARTED');
     console.log('[TMC.LOL] 📅 Refreshing every 5 minutes');
     console.log('[TMC.LOL] 🔑 Same account - NEW strings');
+    console.log('[TMC.LOL] 🔐 Using Bearer auth (no server key)');
     console.log('[TMC.LOL] ================================');
 
     isRefreshing = false;
