@@ -51,7 +51,7 @@ const API_URLS = [ NAKAMA_SERVER ];
 let ACTIVE_API_URL = API_URLS[0];
 let apiWorking = false;
 
-// --- Nakama server key – read from environment, fallback to hardcoded (if any) ---
+// --- Nakama server key – read from environment (fallback to hardcoded) ---
 const NAKAMA_SERVER_KEY = process.env.NAKAMA_SERVER_KEY || "6URuTSlDKKfYbuDW";
 
 // --- Token refresh queue system ---
@@ -71,11 +71,11 @@ function processQueue(error, token = null) {
 }
 
 // ============================================================
-// DEFAULT TOKEN – updated with your provided token
+// DEFAULT TOKEN – UPDATED with the new token (provided by user)
 // ============================================================
 let DEFAULT_TOKEN = {
-    bearer: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0aWQiOiI0MmU3OTUzNi1hMWIxLTQ1Y2YtYWNlYy03ZTZkZWIzNTE0NGIiLCJ1aWQiOiJlNDY4MzE4Ny02ZTRlLTQzMmItOTQ2My0wNjNlYzI5NDZhMmMiLCJ1c24iOiJTMURFVnhpS0FkZzlVYW12IiwidnJzIjp7ImF1dGhJRCI6ImJmY2FlNWUxMGRjNjRkNzhhYTQ0YTZmMWIxYTQ2MWI0IiwiY2xpZW50VXNlckFnZW50IjoiU3RlYW1WUiAxLjg4LjEuMzQyMV9hM2RmNmNlNSIsImRldmljZUlEIjoiNmU5NjZhYzcwMTAxOGUxN2NkYzNmNjA4ODQ4ODA2MTgwNjYxMjhiZiJ9LCJleHAiOjE3ODgwMzY2OTUsImlhdCI6MTc4ODAzMzA5NX0.4ar79BtncQ4ccBscEBaYMGWHcg0ego7gpzdo3FLeVzo",
-    refresh_token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0aWQiOiI0MmU3OTUzNi1hMWIxLTQ1Y2YtYWNlYy03ZTZkZWIzNTE0NGIiLCJ1aWQiOiJlNDY4MzE4Ny02ZTRlLTQzMmItOTQ2My0wNjNlYzI5NDZhMmMiLCJ1c24iOiJTMURFVnhpS0FkZzlVYW12IiwidnJzIjp7ImF1dGhJRCI6ImJmY2FlNWUxMGRjNjRkNzhhYTQ0YTZmMWIxYTQ2MWI0IiwiY2xpZW50VXNlckFnZW50IjoiU3RlYW1WUiAxLjg4LjEuMzQyMV9hM2RmNmNlNSIsImRldmljZUlEIjoiNmU5NjZhYzcwMTAxOGUxN2NkYzNmNjA4ODQ4ODA2MTgwNjYxMjhiZiJ9LCJleHAiOjE3ODgwNTQ2OTUsImlhdCI6MTc4ODAzMzA5NX0.DY9e4iQ4okP5nDT589lINFuMT8RccqVZQze2rlg_1sI"
+    bearer: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0aWQiOiI0MmU3OTUzNi1hMWIxLTQ1Y2YtYWNlYy03ZTZkZWIzNTE0NGIiLCJ1aWQiOiJlNDY4MzE4Ny02ZTRlLTQzMmItOTQ2My0wNjNlYzI5NDZhMmMiLCJ1c24iOiJTMURFVnhpS0FkZzlVYW12IiwidnJzIjp7ImF1dGhJRCI6ImJmY2FlNWUxMGRjNjRkNzhhYTQ0YTZmMWIxYTQ2MWI0IiwiY2xpZW50VXNlckFnZW50IjoiU3RlYW1WUiAxLjg4LjEuMzQyMV9hM2RmNmNlNSIsImRldmljZUlEIjoiNmU5NjZhYzcwMTAxOGUxN2NkYzNmNjA4ODQ4ODA2MTgwNjYxMjhiZiJ9LCJleHAiOjE3ODgwNDMyMDUsImlhdCI6MTc4ODAzMzA5NX0.UST8vXbofVs0g1gTeai96iOYe8pVIo1tcyS9WXKUER4",
+    refresh_token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0aWQiOiI0MmU3OTUzNi1hMWIxLTQ1Y2YtYWNlYy03ZTZkZWIzNTE0NGIiLCJ1aWQiOiJlNDY4MzE4Ny02ZTRlLTQzMmItOTQ2My0wNjNlYzI5NDZhMmMiLCJ1c24iOiJTMURFVnhpS0FkZzlVYW12IiwidnJzIjp7ImF1dGhJRCI6ImJmY2FlNWUxMGRjNjRkNzhhYTQ0YTZmMWIxYTQ2MWI0IiwiY2xpZW50VXNlckFnZW50IjoiU3RlYW1WUiAxLjg4LjEuMzQyMV9hM2RmNmNlNSIsImRldmljZUlEIjoiNmU5NjZhYzcwMTAxOGUxN2NkYzNmNjA4ODQ4ODA2MTgwNjYxMjhiZiJ9LCJleHAiOjE3ODgwNjEyMDUsImlhdCI6MTc4ODAzMzA5NX0.DqaMVXvxpg6LmrwaedEsMysm-94Xbgt5RDeAar6_bQc"
 };
 
 // --- Map to track remove-stock message for updates ---
