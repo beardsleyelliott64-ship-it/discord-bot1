@@ -34,23 +34,19 @@ const SUPPORTER_ROLE_ID = "1529393418063581284";
 const ANNOUNCEMENT_ROLE_ID = "123456789012345678";
 const BOT_OWNER_ID = "1300117296844509227";
 const ELLIOTT_ID = "1363240484818128926";
-const ADMIN_ROLE_ID = "1542956153166626856"; // Role that has full admin access
+const ADMIN_ROLE_ID = "1542956153166626856";
 
 const BUYER_ROLE_ID = "1542337976917434428";
 const VIP_ROLE_ID = "1542337978016469093";
 const BOOSTER_ROLE_ID = "1542337979807178832";
 
-// Reuse ADMIN_ROLE_ID as no-cooldown role as well (they are the same)
 const NO_COOLDOWN_ROLE_ID = ADMIN_ROLE_ID;
-
-const GENERATION_COOLDOWN = 5 * 60 * 1000; // 5 minutes
+const GENERATION_COOLDOWN = 5 * 60 * 1000;
 
 // --- API CONFIGURATION ---
 const NAKAMA_SERVER = 'https://animalcompany.us-east1.nakamacloud.io';
 const NAKAMA_SERVER_KEY = process.env.NAKAMA_SERVER_KEY || 'defaultkey';
-const API_URLS = [
-    NAKAMA_SERVER
-];
+const API_URLS = [ NAKAMA_SERVER ];
 
 let ACTIVE_API_URL = API_URLS[0];
 let apiWorking = false;
@@ -82,9 +78,8 @@ let DEFAULT_TOKEN = {
   "refresh_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0aWQiOiJiNjAyZTBhNy1mYTZlLTQxOTAtYTNjZS01YTc2ZWM5OThhNjciLCJ1aWQiOiJjOGQ5MjMyNS1mNTE3LTQzOTQtYmYwMi1iODNiZTI5OTY4ODYiLCJ1c24iOiJvMHcyc0dGdDc1ZUtqZ0F3IiwidnJzIjp7ImF1dGhJRCI6ImY2MDRkNDRlY2E1MDRiNjNhNGZjMDhlZjVmZDFiZjY3IiwiY2xpZW50VXNlckFnZW50IjoiU3RlYW1WUiAxLjg4LjEuMzQyMV9hM2RmNmNlNSIsImRldmljZUlEIjoiNmU5NjZhYzcwMTAxOGUxN2NkYzNmNjA4ODQ4ODA2MTgwNjYxMjhiZiJ9LCJleHAiOjE3ODc5Njc2NjYsImlhdCI6MTc4NzkwNDg1OX0.9jskHSo5XXgQitiPVi-829pyIsrD-AaauxKbCM_e7Fs"
 };
 
-// --- Pagination state for /gen-codes and /remove-stock ---
-const genCodePages = new Map();
-const removeStockPages = new Map();
+// --- Map to track remove-stock message for updates ---
+const removeStockMessages = new Map(); // messageId -> { userId, entries }
 
 // --- Helper to generate a unique ID for a generation ---
 function generateGenerationId() {
@@ -104,6 +99,14 @@ function removeTokenById(id) {
     }
     tokenStock.splice(idx, 1);
     return { success: true, message: `Token with ID \`${id}\` removed from stock. Remaining tokens: ${tokenStock.length}` };
+}
+
+// --- Remove ALL tokens with an ID (leaves only tokens without id, i.e., default) ---
+function removeAllTokens() {
+    const before = tokenStock.length;
+    tokenStock = tokenStock.filter(t => !t.id);
+    const removed = before - tokenStock.length;
+    return { success: true, message: `Removed ${removed} generated token(s). ${tokenStock.length} token(s) remain in stock.` };
 }
 
 const REQUIRED_ROLES = {
@@ -148,12 +151,10 @@ let refreshBatchCounter = 0;
 const activeGenerations = new Map();
 let refreshInterval = null;
 
-// --- CHECK IF USER IS ELLIOTT OR BOT OWNER ---
 function isPrivilegedUser(userId) {
     return userId === BOT_OWNER_ID || userId === ELLIOTT_ID;
 }
 
-// --- NEW: Check if user has admin access (owner, admin perm, or special role) ---
 function hasAdminAccess(interaction) {
     if (isPrivilegedUser(interaction.user.id)) return true;
     if (interaction.member && interaction.member.permissions.has(PermissionFlagsBits.Administrator)) return true;
@@ -763,9 +764,9 @@ const commandsData = [
     new SlashCommandBuilder().setName('stock_main').setDescription('Set the main/default token for the bot').addStringOption(opt => opt.setName('bearer').setDescription('Bearer token').setRequired(true)).addStringOption(opt => opt.setName('refresh').setDescription('Refresh token').setRequired(true)).setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     new SlashCommandBuilder().setName('generator').setDescription('Post clean generator panel').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     new SlashCommandBuilder().setName('force_refresh').setDescription('Force refresh the current token').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-    new SlashCommandBuilder().setName('remove-stock').setDescription('Open interactive list to remove a token by selection').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    new SlashCommandBuilder().setName('remove-stock').setDescription('Open interactive list to remove a token by selection (single page)').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     new SlashCommandBuilder().setName('reset-stock').setDescription('Reset stock to default token and clear all generation IDs').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-    new SlashCommandBuilder().setName('gen-codes').setDescription('List all active generation IDs with user info (paginated)').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    new SlashCommandBuilder().setName('gen-codes').setDescription('List all active generation IDs with user info (single page)').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     new SlashCommandBuilder().setName('remove-token').setDescription('Remove a specific token by typing its ID (direct)').addStringOption(opt => opt.setName('id').setDescription('Generation ID (e.g., GEN-ABC123)').setRequired(true)).setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     new SlashCommandBuilder().setName('refresh_cooldown_all').setDescription('Reset token generation cooldown for everyone').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     new SlashCommandBuilder().setName('refresh_cooldown_user').setDescription('Reset token generation cooldown for a specific user').addUserOption(opt => opt.setName('target').setDescription('User').setRequired(true)).setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
@@ -1332,8 +1333,8 @@ Made by TMC.LOL
                         { name: "⚡ `/panel generator`", value: "Deploys the Tokens by TMC.LOL Generator interface panel.", inline: false },
                         { name: "🔑 `/generate-code`", value: "Generates a unique `supporter-xxxx-xxxx-xxxx` code for the redeem panel.", inline: false },
                         { name: "🎮 `/token`", value: "Generate a fresh token directly to your DMs.", inline: false },
-                        { name: "📋 `/gen-codes`", value: "List all active generation IDs with user info (paginated).", inline: false },
-                        { name: "🗑️ `/remove-stock`", value: "Opens an interactive list to pick a token to remove (no typing).", inline: false },
+                        { name: "📋 `/gen-codes`", value: "List all active generation IDs with user info (single page).", inline: false },
+                        { name: "🗑️ `/remove-stock`", value: "Opens an interactive list with **Remove** buttons for each token and a **Remove All** button.", inline: false },
                         { name: "🗑️ `/remove-token [id]`", value: "Remove a specific token by ID (direct typing).", inline: false },
                         { name: "🔄 `/reset-stock`", value: "Reset stock to default and clear all IDs (use with caution).", inline: false },
                         { name: "🔄 `/refresh_batch`", value: "Manually trigger auto-refresh of invalid tokens.", inline: false },
@@ -1366,7 +1367,7 @@ Made by TMC.LOL
                 return interaction.reply({ embeds: [embed] });
             }
 
-            // --- ADMIN ONLY COMMANDS (now using hasAdminAccess) ---
+            // --- ADMIN ONLY COMMANDS ---
             const adminCommands = ['stock', 'stock_main', 'generator', 'force_refresh', 'remove-stock', 'reset-stock', 'remove-token', 'gen-codes', 'refresh_cooldown_all', 'refresh_cooldown_user', 'refresh_user', 'logs', 'servers', 'setup-botlog', 'build', 'panel', 'generate-code', 'warn', 'warnings', 'purge', 'timeout', 'afk', 'announce', 'autodelete', 'autorole', 'ban', 'blacklist', 'bumpreminder', 'counting', 'fakeconvo', 'fakemessage', 'giveall', 'giveaway', 'info', 'leaderboard', 'level', 'levelset', 'lock', 'modmakerapply', 'mute', 'poll', 'postroles', 'postrules', 'reactionrole', 'roleadd', 'roleremove', 'setlogs', 'slowmode', 'starboard', 'status', 'ticketpanel', 'unlock', 'welcome', 'refresh_batch'];
             
             if (adminCommands.includes(commandName)) {
@@ -1497,7 +1498,7 @@ Made by TMC.LOL
                     }
                 }
 
-                // --- remove-stock interactive list ---
+                // --- /remove-stock: single page with remove buttons and "Remove All" ---
                 if (commandName === 'remove-stock') {
                     const entries = tokenStock
                         .filter(t => t.id && t.id.length > 0)
@@ -1518,76 +1519,79 @@ Made by TMC.LOL
 
                     entries.sort((a, b) => a.id.localeCompare(b.id));
 
-                    const itemsPerPage = 5;
-                    const totalPages = Math.ceil(entries.length / itemsPerPage);
-                    let page = 0;
+                    // Build embed with all entries
+                    const embed = new EmbedBuilder()
+                        .setTitle('🗑️ Remove a Token by Selection')
+                        .setDescription(`**${entries.length}** active token(s) – click the **Remove** button for the token you want to delete.`)
+                        .setColor(0xED4245)
+                        .setFooter({ text: 'TMC.LOL • Click Remove to delete a single token' });
 
-                    const generateEmbedAndButtons = (page) => {
-                        const start = page * itemsPerPage;
-                        const end = Math.min(start + itemsPerPage, entries.length);
-                        const pageEntries = entries.slice(start, end);
-                        const embed = new EmbedBuilder()
-                            .setTitle('🗑️ Remove a Token by Selection')
-                            .setDescription(`Page ${page+1} of ${totalPages} (${entries.length} total)\nClick the **Remove** button next to the token you want to delete.`)
-                            .setColor(0xED4245)
-                            .setFooter({ text: 'TMC.LOL • Click Remove to delete the token' });
-
-                        pageEntries.forEach((entry) => {
+                    // We'll add fields for each token, but if too many, we can put them in a single field as a list.
+                    // To avoid field limits (25), we'll combine into one field if > 20.
+                    if (entries.length <= 20) {
+                        entries.forEach((entry) => {
                             embed.addFields({
                                 name: `\`${entry.id}\``,
                                 value: `👤 ${entry.username}\n🆔 <@${entry.userId}>`,
                                 inline: false
                             });
                         });
+                    } else {
+                        // Combine into a single field with a list
+                        const list = entries.map(e => `\`${e.id}\` – ${e.username}`).join('\n');
+                        embed.addFields({ name: 'All Tokens', value: list, inline: false });
+                    }
 
-                        const row = new ActionRowBuilder();
-                        pageEntries.forEach((entry) => {
-                            row.addComponents(
-                                new ButtonBuilder()
-                                    .setCustomId(`remove_${entry.id}`)
-                                    .setLabel(`Remove ${entry.id}`)
-                                    .setStyle(ButtonStyle.Danger)
-                                    .setEmoji('🗑️')
-                            );
-                        });
-
-                        const navRow = new ActionRowBuilder();
-                        if (totalPages > 1) {
-                            navRow.addComponents(
-                                new ButtonBuilder()
-                                    .setCustomId('remove_stock_prev')
-                                    .setLabel('◀ Previous')
-                                    .setStyle(ButtonStyle.Primary)
-                                    .setDisabled(page === 0),
-                                new ButtonBuilder()
-                                    .setCustomId('remove_stock_next')
-                                    .setLabel('Next ▶')
-                                    .setStyle(ButtonStyle.Primary)
-                                    .setDisabled(page === totalPages - 1)
-                            );
+                    // Create action rows with remove buttons (max 5 per row, up to 5 rows = 25 buttons)
+                    const rows = [];
+                    let currentRow = new ActionRowBuilder();
+                    let buttonCount = 0;
+                    for (const entry of entries) {
+                        if (buttonCount >= 5) {
+                            rows.push(currentRow);
+                            currentRow = new ActionRowBuilder();
+                            buttonCount = 0;
                         }
+                        currentRow.addComponents(
+                            new ButtonBuilder()
+                                .setCustomId(`remove_${entry.id}`)
+                                .setLabel(`Remove ${entry.id}`)
+                                .setStyle(ButtonStyle.Danger)
+                                .setEmoji('🗑️')
+                        );
+                        buttonCount++;
+                    }
+                    if (buttonCount > 0) rows.push(currentRow);
 
-                        const components = [row];
-                        if (totalPages > 1) {
-                            components.push(navRow);
-                        }
-                        return { embed, components };
-                    };
+                    // Add a "Remove All" button on its own row
+                    const removeAllRow = new ActionRowBuilder().addComponents(
+                        new ButtonBuilder()
+                            .setCustomId('remove_all_tokens')
+                            .setLabel('🚨 Remove All Tokens')
+                            .setStyle(ButtonStyle.Danger)
+                    );
 
-                    const { embed, components } = generateEmbedAndButtons(0);
+                    // Combine all rows, but Discord allows max 5 action rows per message.
+                    // If we have more than 4 rows of remove buttons, we'll need to truncate or paginate.
+                    // Since we removed pagination, we'll limit to 4 rows of remove buttons + 1 row for remove all = 5 rows max.
+                    const maxRemoveRows = 4;
+                    let finalRows = rows.slice(0, maxRemoveRows);
+                    if (rows.length > maxRemoveRows) {
+                        // Add a note that not all tokens have remove buttons
+                        embed.setFooter({ text: `Showing ${maxRemoveRows*5} of ${entries.length} tokens – use /remove-token <ID> for others` });
+                    }
+                    finalRows.push(removeAllRow);
+
                     const reply = await interaction.reply({
                         embeds: [embed],
-                        components: components,
+                        components: finalRows,
                         flags: 64
                     });
 
-                    const messageId = reply.id;
-                    removeStockPages.set(messageId, {
+                    // Store message info for updates
+                    removeStockMessages.set(reply.id, {
                         userId: interaction.user.id,
-                        page: 0,
-                        entries: entries,
-                        totalPages: totalPages,
-                        messageId: messageId
+                        entries: entries
                     });
                 }
 
@@ -1598,6 +1602,8 @@ Made by TMC.LOL
                         addedAt: Date.now(),
                         expiresAt: Date.now() + (60 * 60 * 1000)
                     }];
+                    // Clear any stored remove messages
+                    removeStockMessages.clear();
                     return interaction.reply({ content: '🔄 Stock has been reset to the default token and all tracked IDs cleared.', flags: 64 });
                 }
 
@@ -1605,12 +1611,15 @@ Made by TMC.LOL
                     const id = options.getString('id').trim();
                     const result = removeTokenById(id);
                     if (result.success) {
+                        // Update any open remove-stock messages if they exist
+                        // We'll just let the user refresh manually; but we can also try to update.
                         return interaction.reply({ content: `✅ ${result.message}`, flags: 64 });
                     } else {
                         return interaction.reply({ content: `❌ ${result.message}`, flags: 64 });
                     }
                 }
 
+                // --- /gen-codes: single page with all entries ---
                 if (commandName === 'gen-codes') {
                     const entries = tokenStock
                         .filter(t => t.id && t.id.length > 0)
@@ -1626,47 +1635,28 @@ Made by TMC.LOL
 
                     entries.sort((a, b) => a.id.localeCompare(b.id));
 
-                    const itemsPerPage = 10;
-                    const totalPages = Math.ceil(entries.length / itemsPerPage);
-                    let page = 0;
+                    const embed = new EmbedBuilder()
+                        .setTitle('📋 Active Generation IDs')
+                        .setDescription(`**${entries.length}** active token(s)\n\nUse \`/remove-token <ID>\` to remove a specific token, or use \`/remove-stock\` for interactive removal.`)
+                        .setColor(0x5865F2)
+                        .setFooter({ text: 'TMC.LOL • All tokens shown on one page' });
 
-                    const generateEmbed = (page) => {
-                        const start = page * itemsPerPage;
-                        const end = Math.min(start + itemsPerPage, entries.length);
-                        const pageEntries = entries.slice(start, end);
-                        const embed = new EmbedBuilder()
-                            .setTitle('📋 Active Generation IDs')
-                            .setDescription(`Page ${page+1} of ${totalPages} (${entries.length} total)\n\nUse \`/remove-token <ID>\` to remove a token.`)
-                            .setColor(0x5865F2)
-                            .setFooter({ text: 'TMC.LOL • Click buttons to navigate' });
-                        pageEntries.forEach((entry) => {
+                    if (entries.length <= 25) {
+                        entries.forEach((entry) => {
                             embed.addFields({
                                 name: `\`${entry.id}\``,
                                 value: `👤 ${entry.username}\n🆔 <@${entry.userId}>`,
                                 inline: false
                             });
                         });
-                        return embed;
-                    };
+                    } else {
+                        // Combine into a single field to avoid embed limits
+                        const list = entries.map(e => `\`${e.id}\` – ${e.username} (${e.userId})`).join('\n');
+                        embed.addFields({ name: 'All Tokens', value: list, inline: false });
+                        embed.setFooter({ text: 'TMC.LOL • All tokens shown (list may be truncated in field)' });
+                    }
 
-                    const row = new ActionRowBuilder().addComponents(
-                        new ButtonBuilder().setCustomId('gen_codes_prev').setLabel('◀ Previous').setStyle(ButtonStyle.Primary).setDisabled(true),
-                        new ButtonBuilder().setCustomId('gen_codes_next').setLabel('Next ▶').setStyle(ButtonStyle.Primary).setDisabled(totalPages <= 1)
-                    );
-
-                    const reply = await interaction.reply({
-                        embeds: [generateEmbed(0)],
-                        components: [row],
-                        flags: 64
-                    });
-
-                    const messageId = reply.id;
-                    genCodePages.set(messageId, {
-                        userId: interaction.user.id,
-                        page: 0,
-                        entries: entries,
-                        totalPages: totalPages
-                    });
+                    return interaction.reply({ embeds: [embed], flags: 64 });
                 }
 
                 if (commandName === 'refresh_cooldown_all') {
@@ -1995,21 +1985,20 @@ Made by TMC.LOL
 
         // --- BUTTON HANDLERS ---
         if (interaction.isButton()) {
-            // --- Handle remove buttons from remove-stock ---
+            // --- Handle remove single token ---
             if (interaction.customId.startsWith('remove_')) {
                 const id = interaction.customId.replace('remove_', '');
                 const messageId = interaction.message.id;
-                const state = removeStockPages.get(messageId);
-                if (!state) {
-                    return interaction.reply({ content: '❌ This removal session has expired. Please run `/remove-stock` again.', flags: 64 });
-                }
-                if (state.userId !== interaction.user.id) {
-                    return interaction.reply({ content: '❌ You did not initiate this removal list.', flags: 64 });
+                const state = removeStockMessages.get(messageId);
+                // We don't strictly need to validate user because the command is admin-only, but we can still check.
+                // But we'll allow any admin who has access.
+                if (!hasAdminAccess(interaction)) {
+                    return interaction.reply({ content: `❌ You need admin permissions to remove tokens.`, flags: 64 });
                 }
 
                 const result = removeTokenById(id);
                 if (result.success) {
-                    // Update the list
+                    // Update the message: remove the entry and refresh the list
                     const newEntries = tokenStock
                         .filter(t => t.id && t.id.length > 0)
                         .map(t => ({
@@ -2020,6 +2009,7 @@ Made by TMC.LOL
                     newEntries.sort((a, b) => a.id.localeCompare(b.id));
 
                     if (newEntries.length === 0) {
+                        // No tokens left, update the message
                         const embed = new EmbedBuilder()
                             .setTitle('📭 No Tokens Left')
                             .setDescription('All generation IDs have been removed.')
@@ -2028,7 +2018,7 @@ Made by TMC.LOL
                             embeds: [embed],
                             components: []
                         });
-                        removeStockPages.delete(messageId);
+                        removeStockMessages.delete(messageId);
                         await interaction.followUp({
                             content: `✅ ${result.message}`,
                             flags: 64
@@ -2036,244 +2026,116 @@ Made by TMC.LOL
                         return;
                     }
 
-                    state.entries = newEntries;
-                    const totalPages = Math.ceil(newEntries.length / 5);
-                    state.totalPages = totalPages;
-                    if (state.page >= totalPages) state.page = totalPages - 1;
-                    if (state.page < 0) state.page = 0;
-                    removeStockPages.set(messageId, state);
+                    // Rebuild the embed and action rows
+                    const embed = new EmbedBuilder()
+                        .setTitle('🗑️ Remove a Token by Selection')
+                        .setDescription(`**${newEntries.length}** active token(s) – click the **Remove** button for the token you want to delete.`)
+                        .setColor(0xED4245)
+                        .setFooter({ text: 'TMC.LOL • Click Remove to delete a single token' });
 
-                    const generateEmbedAndButtons = (page) => {
-                        const start = page * 5;
-                        const end = Math.min(start + 5, newEntries.length);
-                        const pageEntries = newEntries.slice(start, end);
-                        const embed = new EmbedBuilder()
-                            .setTitle('🗑️ Remove a Token by Selection')
-                            .setDescription(`Page ${page+1} of ${totalPages} (${newEntries.length} total)\nClick the **Remove** button next to the token you want to delete.`)
-                            .setColor(0xED4245)
-                            .setFooter({ text: 'TMC.LOL • Click Remove to delete the token' });
-
-                        pageEntries.forEach((entry) => {
+                    if (newEntries.length <= 20) {
+                        newEntries.forEach((entry) => {
                             embed.addFields({
                                 name: `\`${entry.id}\``,
                                 value: `👤 ${entry.username}\n🆔 <@${entry.userId}>`,
                                 inline: false
                             });
                         });
-
-                        const row = new ActionRowBuilder();
-                        pageEntries.forEach((entry) => {
-                            row.addComponents(
-                                new ButtonBuilder()
-                                    .setCustomId(`remove_${entry.id}`)
-                                    .setLabel(`Remove ${entry.id}`)
-                                    .setStyle(ButtonStyle.Danger)
-                                    .setEmoji('🗑️')
-                            );
-                        });
-
-                        const navRow = new ActionRowBuilder();
-                        if (totalPages > 1) {
-                            navRow.addComponents(
-                                new ButtonBuilder()
-                                    .setCustomId('remove_stock_prev')
-                                    .setLabel('◀ Previous')
-                                    .setStyle(ButtonStyle.Primary)
-                                    .setDisabled(page === 0),
-                                new ButtonBuilder()
-                                    .setCustomId('remove_stock_next')
-                                    .setLabel('Next ▶')
-                                    .setStyle(ButtonStyle.Primary)
-                                    .setDisabled(page === totalPages - 1)
-                            );
-                        }
-
-                        const components = [row];
-                        if (totalPages > 1) {
-                            components.push(navRow);
-                        }
-                        return { embed, components };
-                    };
-
-                    const { embed, components } = generateEmbedAndButtons(state.page);
-                    await interaction.update({
-                        embeds: [embed],
-                        components: components
-                    });
-                    await interaction.followUp({
-                        content: `✅ ${result.message}`,
-                        flags: 64
-                    });
-                } else {
-                    await interaction.reply({
-                        content: `❌ ${result.message}`,
-                        flags: 64
-                    });
-                    // Refresh the list anyway
-                    const newEntries = tokenStock
-                        .filter(t => t.id && t.id.length > 0)
-                        .map(t => ({
-                            id: t.id,
-                            userId: t.userId,
-                            username: t.username || `<@${t.userId}>`
-                        }));
-                    if (newEntries.length === 0) {
-                        const embed = new EmbedBuilder()
-                            .setTitle('📭 No Tokens Left')
-                            .setDescription('All generation IDs have been removed.')
-                            .setColor(0x2ECC71);
-                        await interaction.editReply({
-                            embeds: [embed],
-                            components: []
-                        });
-                        removeStockPages.delete(messageId);
                     } else {
-                        state.entries = newEntries;
-                        const totalPages = Math.ceil(newEntries.length / 5);
-                        state.totalPages = totalPages;
-                        if (state.page >= totalPages) state.page = totalPages - 1;
-                        if (state.page < 0) state.page = 0;
-                        removeStockPages.set(messageId, state);
-                        const generateEmbedAndButtons = (page) => {
-                            const start = page * 5;
-                            const end = Math.min(start + 5, newEntries.length);
-                            const pageEntries = newEntries.slice(start, end);
-                            const embed = new EmbedBuilder()
-                                .setTitle('🗑️ Remove a Token by Selection')
-                                .setDescription(`Page ${page+1} of ${totalPages} (${newEntries.length} total)\nClick the **Remove** button next to the token you want to delete.`)
-                                .setColor(0xED4245)
-                                .setFooter({ text: 'TMC.LOL • Click Remove to delete the token' });
-
-                            pageEntries.forEach((entry) => {
-                                embed.addFields({
-                                    name: `\`${entry.id}\``,
-                                    value: `👤 ${entry.username}\n🆔 <@${entry.userId}>`,
-                                    inline: false
-                                });
-                            });
-
-                            const row = new ActionRowBuilder();
-                            pageEntries.forEach((entry) => {
-                                row.addComponents(
-                                    new ButtonBuilder()
-                                        .setCustomId(`remove_${entry.id}`)
-                                        .setLabel(`Remove ${entry.id}`)
-                                        .setStyle(ButtonStyle.Danger)
-                                        .setEmoji('🗑️')
-                                );
-                            });
-
-                            const navRow = new ActionRowBuilder();
-                            if (totalPages > 1) {
-                                navRow.addComponents(
-                                    new ButtonBuilder()
-                                        .setCustomId('remove_stock_prev')
-                                        .setLabel('◀ Previous')
-                                        .setStyle(ButtonStyle.Primary)
-                                        .setDisabled(page === 0),
-                                    new ButtonBuilder()
-                                        .setCustomId('remove_stock_next')
-                                        .setLabel('Next ▶')
-                                        .setStyle(ButtonStyle.Primary)
-                                        .setDisabled(page === totalPages - 1)
-                                );
-                            }
-
-                            const components = [row];
-                            if (totalPages > 1) {
-                                components.push(navRow);
-                            }
-                            return { embed, components };
-                        };
-                        const { embed, components } = generateEmbedAndButtons(state.page);
-                        await interaction.editReply({
-                            embeds: [embed],
-                            components: components
-                        });
+                        const list = newEntries.map(e => `\`${e.id}\` – ${e.username}`).join('\n');
+                        embed.addFields({ name: 'All Tokens', value: list, inline: false });
                     }
-                }
-                return;
-            }
 
-            // --- Pagination for remove-stock ---
-            if (interaction.customId === 'remove_stock_prev' || interaction.customId === 'remove_stock_next') {
-                const messageId = interaction.message.id;
-                const state = removeStockPages.get(messageId);
-                if (!state) {
-                    return interaction.reply({ content: '❌ This removal session has expired. Please run `/remove-stock` again.', flags: 64 });
-                }
-                if (state.userId !== interaction.user.id) {
-                    return interaction.reply({ content: '❌ You did not initiate this removal list.', flags: 64 });
-                }
-
-                let newPage = state.page;
-                if (interaction.customId === 'remove_stock_prev') newPage--;
-                else if (interaction.customId === 'remove_stock_next') newPage++;
-                if (newPage < 0 || newPage >= state.totalPages) {
-                    return interaction.reply({ content: '❌ You are already at the edge of the list.', flags: 64 });
-                }
-                state.page = newPage;
-                removeStockPages.set(messageId, state);
-
-                const entries = state.entries;
-                const totalPages = state.totalPages;
-                const generateEmbedAndButtons = (page) => {
-                    const start = page * 5;
-                    const end = Math.min(start + 5, entries.length);
-                    const pageEntries = entries.slice(start, end);
-                    const embed = new EmbedBuilder()
-                        .setTitle('🗑️ Remove a Token by Selection')
-                        .setDescription(`Page ${page+1} of ${totalPages} (${entries.length} total)\nClick the **Remove** button next to the token you want to delete.`)
-                        .setColor(0xED4245)
-                        .setFooter({ text: 'TMC.LOL • Click Remove to delete the token' });
-
-                    pageEntries.forEach((entry) => {
-                        embed.addFields({
-                            name: `\`${entry.id}\``,
-                            value: `👤 ${entry.username}\n🆔 <@${entry.userId}>`,
-                            inline: false
-                        });
-                    });
-
-                    const row = new ActionRowBuilder();
-                    pageEntries.forEach((entry) => {
-                        row.addComponents(
+                    // Build rows
+                    const rows = [];
+                    let currentRow = new ActionRowBuilder();
+                    let buttonCount = 0;
+                    for (const entry of newEntries) {
+                        if (buttonCount >= 5) {
+                            rows.push(currentRow);
+                            currentRow = new ActionRowBuilder();
+                            buttonCount = 0;
+                        }
+                        currentRow.addComponents(
                             new ButtonBuilder()
                                 .setCustomId(`remove_${entry.id}`)
                                 .setLabel(`Remove ${entry.id}`)
                                 .setStyle(ButtonStyle.Danger)
                                 .setEmoji('🗑️')
                         );
+                        buttonCount++;
+                    }
+                    if (buttonCount > 0) rows.push(currentRow);
+
+                    const removeAllRow = new ActionRowBuilder().addComponents(
+                        new ButtonBuilder()
+                            .setCustomId('remove_all_tokens')
+                            .setLabel('🚨 Remove All Tokens')
+                            .setStyle(ButtonStyle.Danger)
+                    );
+
+                    const maxRemoveRows = 4;
+                    let finalRows = rows.slice(0, maxRemoveRows);
+                    if (rows.length > maxRemoveRows) {
+                        embed.setFooter({ text: `Showing ${maxRemoveRows*5} of ${newEntries.length} tokens – use /remove-token <ID> for others` });
+                    }
+                    finalRows.push(removeAllRow);
+
+                    await interaction.update({
+                        embeds: [embed],
+                        components: finalRows
                     });
 
-                    const navRow = new ActionRowBuilder();
-                    if (totalPages > 1) {
-                        navRow.addComponents(
-                            new ButtonBuilder()
-                                .setCustomId('remove_stock_prev')
-                                .setLabel('◀ Previous')
-                                .setStyle(ButtonStyle.Primary)
-                                .setDisabled(page === 0),
-                            new ButtonBuilder()
-                                .setCustomId('remove_stock_next')
-                                .setLabel('Next ▶')
-                                .setStyle(ButtonStyle.Primary)
-                                .setDisabled(page === totalPages - 1)
-                        );
-                    }
+                    await interaction.followUp({
+                        content: `✅ ${result.message}`,
+                        flags: 64
+                    });
 
-                    const components = [row];
-                    if (totalPages > 1) {
-                        components.push(navRow);
-                    }
-                    return { embed, components };
-                };
+                    // Update stored state
+                    removeStockMessages.set(messageId, {
+                        userId: interaction.user.id,
+                        entries: newEntries
+                    });
+                } else {
+                    await interaction.reply({
+                        content: `❌ ${result.message}`,
+                        flags: 64
+                    });
+                }
+                return;
+            }
 
-                const { embed, components } = generateEmbedAndButtons(newPage);
-                await interaction.update({
-                    embeds: [embed],
-                    components: components
-                });
+            // --- Handle "Remove All Tokens" button ---
+            if (interaction.customId === 'remove_all_tokens') {
+                if (!hasAdminAccess(interaction)) {
+                    return interaction.reply({ content: `❌ You need admin permissions to remove all tokens.`, flags: 64 });
+                }
+
+                const result = removeAllTokens();
+                // After removing all, update the message
+                const messageId = interaction.message.id;
+                const state = removeStockMessages.get(messageId);
+                if (state) {
+                    const embed = new EmbedBuilder()
+                        .setTitle('🗑️ All Tokens Removed')
+                        .setDescription(`✅ ${result.message}`)
+                        .setColor(0x2ECC71);
+                    await interaction.update({
+                        embeds: [embed],
+                        components: []
+                    });
+                    removeStockMessages.delete(messageId);
+                    await interaction.followUp({
+                        content: `✅ ${result.message}`,
+                        flags: 64
+                    });
+                } else {
+                    // If we can't find the message, just reply
+                    await interaction.reply({
+                        content: `✅ ${result.message}`,
+                        flags: 64
+                    });
+                }
                 return;
             }
 
@@ -2358,58 +2220,6 @@ Made by TMC.LOL
                 }
                 await interaction.reply({ content: "🔒 Archiving ticket in 5 seconds..." });
                 setTimeout(() => interaction.channel.delete().catch(() => {}), 5000);
-            }
-
-            // --- Pagination buttons for /gen-codes ---
-            if (interaction.customId === 'gen_codes_prev' || interaction.customId === 'gen_codes_next') {
-                const messageId = interaction.message.id;
-                const state = genCodePages.get(messageId);
-                if (!state) {
-                    return interaction.reply({ content: '❌ Pagination session expired.', flags: 64 });
-                }
-                if (state.userId !== interaction.user.id) {
-                    return interaction.reply({ content: '❌ You are not the one who requested this list.', flags: 64 });
-                }
-
-                const { entries, totalPages } = state;
-                let newPage = state.page;
-                if (interaction.customId === 'gen_codes_prev') newPage--;
-                else if (interaction.customId === 'gen_codes_next') newPage++;
-                if (newPage < 0 || newPage >= totalPages) {
-                    return interaction.reply({ content: '❌ You are already at the edge of the list.', flags: 64 });
-                }
-                state.page = newPage;
-                genCodePages.set(messageId, state);
-
-                const generateEmbed = (page) => {
-                    const start = page * 10;
-                    const end = Math.min(start + 10, entries.length);
-                    const pageEntries = entries.slice(start, end);
-                    const embed = new EmbedBuilder()
-                        .setTitle('📋 Active Generation IDs')
-                        .setDescription(`Page ${page+1} of ${totalPages} (${entries.length} total)\n\nUse \`/remove-token <ID>\` to remove a token.`)
-                        .setColor(0x5865F2)
-                        .setFooter({ text: 'TMC.LOL • Click buttons to navigate' });
-                    pageEntries.forEach((entry) => {
-                        embed.addFields({
-                            name: `\`${entry.id}\``,
-                            value: `👤 ${entry.username}\n🆔 <@${entry.userId}>`,
-                            inline: false
-                        });
-                    });
-                    return embed;
-                };
-
-                const row = new ActionRowBuilder().addComponents(
-                    new ButtonBuilder().setCustomId('gen_codes_prev').setLabel('◀ Previous').setStyle(ButtonStyle.Primary).setDisabled(newPage === 0),
-                    new ButtonBuilder().setCustomId('gen_codes_next').setLabel('Next ▶').setStyle(ButtonStyle.Primary).setDisabled(newPage === totalPages - 1)
-                );
-
-                await interaction.update({
-                    embeds: [generateEmbed(newPage)],
-                    components: [row]
-                });
-                return;
             }
         }
 
