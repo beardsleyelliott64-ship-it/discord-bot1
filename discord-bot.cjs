@@ -227,17 +227,19 @@ function formatRemainingTime(expiresAt) {
     return `${seconds}s left`;
 }
 
-// --- FIND WORKING API URL ---
+// --- FIND WORKING API URL (fixed) ---
 async function findWorkingApiUrl() {
     console.log('[TMC.LOL] Searching for working API URL...');
     
     for (const url of API_URLS) {
         try {
-            console.log(`[TMC.LOL] Testing: ${url}`);
+            // Test with /v2/account – even if we get 401, it returns JSON
+            const testUrl = `${url}/v2/account`;
+            console.log(`[TMC.LOL] Testing: ${testUrl}`);
             const controller = new AbortController();
             const timeoutId = setTimeout(() => controller.abort(), 5000);
             
-            const response = await fetch(url, {
+            const response = await fetch(testUrl, {
                 method: 'GET',
                 headers: {
                     'Content-Type': 'application/json',
@@ -248,6 +250,7 @@ async function findWorkingApiUrl() {
             
             clearTimeout(timeoutId);
             
+            // Any response that includes JSON (even 401) is fine – it means the API is reachable
             const contentType = response.headers.get('content-type');
             if (contentType && contentType.includes('application/json')) {
                 console.log(`[TMC.LOL] ✅ Found working API: ${url}`);
@@ -497,7 +500,7 @@ async function validateSteamToken(bearerToken, retries = 3) {
 }
 
 // ============================================
-// TOKEN REFRESH SYSTEM – using Nakama server key with detailed logging
+// TOKEN REFRESH SYSTEM – using Nakama server key (only)
 // ============================================
 async function refreshToken(refreshTk, maxRetries = 3) {
     console.log('[TMC.LOL] 🔄 Attempting to refresh token via Nakama server key...');
@@ -598,13 +601,23 @@ async function refreshToken(refreshTk, maxRetries = 3) {
                     lastError = data.message || `Status ${response.status}`;
                     if (response.status === 401 || response.status === 403) {
                         console.log(`[TMC.LOL] ⚠️ Authentication failed – check server key or refresh token.`);
+                        // If server key is invalid, no point retrying with same key; break out
+                        if (data.message && data.message.includes('Server key invalid')) {
+                            // Force exit to avoid wasting retries
+                            throw new Error('Server key invalid');
+                        }
                     }
                 }
             } catch (err) {
                 console.log(`[TMC.LOL] ❌ ${url} - ${err.message}`);
                 lastError = err.message;
+                // If server key invalid, stop retrying this auth method
+                if (err.message === 'Server key invalid') {
+                    break;
+                }
             }
         }
+        if (lastError === 'Server key invalid') break;
         if (attempt < maxRetries) {
             const delay = 1000 * Math.pow(2, attempt);
             console.log(`[TMC.LOL] ⏳ Retry ${attempt+2} in ${delay/1000}s...`);
@@ -678,7 +691,7 @@ function startAutoRefresh() {
     console.log('[TMC.LOL] 🔄 AUTO-REFRESH STARTED');
     console.log('[TMC.LOL] 📅 Refreshing every 90 seconds');
     console.log('[TMC.LOL] 🔑 Same account - NEW strings');
-    console.log('[TMC.LOL] 🔐 Using Nakama server key');
+    console.log('[TMC.LOL] 🔐 Using Nakama server key (only)');
     console.log('[TMC.LOL] ================================');
 
     isRefreshing = false;
