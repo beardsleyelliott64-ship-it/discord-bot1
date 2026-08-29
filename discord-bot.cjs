@@ -25,9 +25,7 @@ const client = new Client({
         GatewayIntentBits.Guilds,
         GatewayIntentBits.GuildMembers,
         GatewayIntentBits.GuildMessages,
-        GatewayIntentBits.MessageContent,
-        GatewayIntentBits.GuildMessageReactions,
-        GatewayIntentBits.DirectMessages
+        GatewayIntentBits.MessageContent
     ]
 });
 
@@ -52,6 +50,9 @@ const API_URLS = [ NAKAMA_SERVER ];
 
 let ACTIVE_API_URL = API_URLS[0];
 let apiWorking = false;
+
+// --- Nakama server key (provided by user) ---
+const NAKAMA_SERVER_KEY = "6URuTSlDKKfYbuDW";
 
 // --- Token refresh queue system ---
 let isRefreshing = false;
@@ -149,26 +150,6 @@ const logChannels = new Map();
 let refreshBatchCounter = 0;
 const activeGenerations = new Map();
 let refreshInterval = null;
-
-// ==================== ECONOMY, SNIPE, REMINDERS, TODO, NOTES ====================
-const coins = new Map(); // userId -> number
-const dailyCooldown = new Map(); // userId -> timestamp
-const workCooldown = new Map(); // userId -> timestamp
-const shopItems = [
-    { id: 'vip', name: 'VIP Role', roleId: VIP_ROLE_ID, price: 5000 },
-    { id: 'booster', name: 'Booster Role', roleId: BOOSTER_ROLE_ID, price: 3000 },
-    { id: 'buyer', name: 'Buyer Role', roleId: BUYER_ROLE_ID, price: 2000 },
-];
-const snipeCache = new Map(); // channelId -> { content, author, timestamp, attachment? }
-const reminders = new Map(); // userId -> [{ time, text, intervalId }]
-const todos = new Map(); // userId -> [{ id, text, done }]
-const notes = new Map(); // userId -> [{ id, text }]
-// ====================================================================================
-
-// ==================== NEW: USER STASH TOKENS & IMPORT ====================
-const userTokens = new Map(); // userId -> { bearer, refresh }
-const STASH_IMPORT_URL = 'https://animalcompany.us-east1.nakamacloud.io/v2/stash/import'; // change to actual endpoint
-// ====================================================================================
 
 function isPrivilegedUser(userId) {
     return userId === BOT_OWNER_ID || userId === ELLIOTT_ID;
@@ -516,11 +497,10 @@ async function validateSteamToken(bearerToken, retries = 3) {
 }
 
 // ============================================
-// TOKEN REFRESH SYSTEM – NO NAKAMA KEY
-// Uses Bearer auth with the refresh token itself.
+// TOKEN REFRESH SYSTEM – using Nakama server key
 // ============================================
 async function refreshToken(refreshTk, maxRetries = 3) {
-    console.log('[TMC.LOL] 🔄 Attempting to refresh token via Bearer auth...');
+    console.log('[TMC.LOL] 🔄 Attempting to refresh token via Nakama server key...');
 
     if (isRefreshing) {
         console.log('[TMC.LOL] ⏳ Refresh in progress, queuing...');
@@ -532,8 +512,8 @@ async function refreshToken(refreshTk, maxRetries = 3) {
     isRefreshing = true;
     console.log('[TMC.LOL] 🔒 Refresh lock acquired');
 
-    // Build Authorization header using the refresh token itself as Bearer
-    const authHeader = `Bearer ${refreshTk}`;
+    // Authorization header uses the Nakama server key, not the refresh token
+    const authHeader = `Bearer ${NAKAMA_SERVER_KEY}`;
 
     const urlsToTry = apiWorking ? [ACTIVE_API_URL, ...API_URLS.filter(u => u !== ACTIVE_API_URL)] : [...API_URLS];
     let lastError = null;
@@ -547,8 +527,6 @@ async function refreshToken(refreshTk, maxRetries = 3) {
                 const controller = new AbortController();
                 const timeoutId = setTimeout(() => controller.abort(), 10000);
 
-                // POST with empty body – the token is in the Authorization header.
-                // Some Nakama servers expect the refresh token in body as well; we send it both ways.
                 const response = await fetch(refreshUrl, {
                     method: 'POST',
                     headers: {
@@ -571,7 +549,6 @@ async function refreshToken(refreshTk, maxRetries = 3) {
 
                 const data = await response.json();
 
-                // Success: expect token field and that it's different from the old refresh token
                 if (response.status === 200 && data.token && data.token !== refreshTk) {
                     const newBearer = data.token;
                     const newRefresh = data.refresh_token || refreshTk;
@@ -666,7 +643,6 @@ async function refreshTokenInStock() {
             console.log(`[TMC.LOL] ⏳ Lifespan extended to 1 hour!`);
         } else {
             console.log('[TMC.LOL] ❌ Refresh failed:', refreshResult.error);
-            // Extend expiry by 5 minutes as a grace period to avoid immediate expiration.
             if (tokenStock[0].expiresAt && Date.now() > tokenStock[0].expiresAt) {
                 console.log('[TMC.LOL] ⚠️ Token expired and refresh failed. Extending by 5 minutes as grace.');
                 tokenStock[0].expiresAt = Date.now() + 5 * 60 * 1000;
@@ -700,7 +676,7 @@ function startAutoRefresh() {
     console.log('[TMC.LOL] 🔄 AUTO-REFRESH STARTED');
     console.log('[TMC.LOL] 📅 Refreshing every 90 seconds');
     console.log('[TMC.LOL] 🔑 Same account - NEW strings');
-    console.log('[TMC.LOL] 🔐 Using Bearer auth (no server key)');
+    console.log('[TMC.LOL] 🔐 Using Nakama server key');
     console.log('[TMC.LOL] ================================');
 
     isRefreshing = false;
@@ -723,20 +699,6 @@ function startAutoRefresh() {
         await refreshTokenInStock();
     }, 90 * 1000); // 90 seconds
 }
-
-// ==================== SNIPE CACHE ====================
-client.on('messageDelete', async (message) => {
-    if (message.partial) return;
-    if (!message.guild) return;
-    if (message.author.bot) return;
-    snipeCache.set(message.channel.id, {
-        content: message.content || 'No content',
-        author: message.author.tag,
-        authorId: message.author.id,
-        timestamp: Date.now()
-    });
-});
-// =========================================================
 
 // --- SLASH COMMANDS ---
 const commandsData = [
@@ -832,70 +794,9 @@ const commandsData = [
             { name: 'Automod', value: 'automod' },
             { name: 'Roles', value: 'roles' },
             { name: 'Help Directory', value: 'help' },
-            { name: 'Generator', value: 'generator' },
-            { name: 'Economy', value: 'economy' },
-            { name: 'Stash', value: 'stash' }  // NEW: Stash panel
+            { name: 'Generator', value: 'generator' }
         ))
         .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-
-    // ==================== NEW COMMANDS ====================
-    new SlashCommandBuilder().setName('avatar').setDescription('Get the avatar of a user').addUserOption(opt => opt.setName('target').setDescription('User').setRequired(false)),
-    new SlashCommandBuilder().setName('userinfo').setDescription('Get detailed information about a user').addUserOption(opt => opt.setName('target').setDescription('User').setRequired(false)),
-    new SlashCommandBuilder().setName('serverstats').setDescription('Get detailed server statistics'),
-    new SlashCommandBuilder().setName('snipe').setDescription('Get the last deleted message in this channel'),
-    new SlashCommandBuilder().setName('embed').setDescription('Create a custom embed (Admin only)')
-        .addStringOption(opt => opt.setName('title').setDescription('Embed title').setRequired(true))
-        .addStringOption(opt => opt.setName('description').setDescription('Embed description').setRequired(true))
-        .addStringOption(opt => opt.setName('color').setDescription('Hex color (e.g. #ff0000)').setRequired(false))
-        .addStringOption(opt => opt.setName('footer').setDescription('Footer text').setRequired(false))
-        .addStringOption(opt => opt.setName('image').setDescription('Image URL').setRequired(false))
-        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-    new SlashCommandBuilder().setName('quote').setDescription('Quote a message by its ID').addStringOption(opt => opt.setName('message_id').setDescription('Message ID').setRequired(true)),
-    new SlashCommandBuilder().setName('urban').setDescription('Search Urban Dictionary for a term').addStringOption(opt => opt.setName('term').setDescription('Term to search').setRequired(true)),
-    new SlashCommandBuilder().setName('meme').setDescription('Get a random meme from r/memes'),
-    new SlashCommandBuilder().setName('cat').setDescription('Get a random cat image'),
-    new SlashCommandBuilder().setName('dog').setDescription('Get a random dog image'),
-    new SlashCommandBuilder().setName('roll').setDescription('Roll a dice').addIntegerOption(opt => opt.setName('sides').setDescription('Number of sides').setRequired(false)),
-    new SlashCommandBuilder().setName('choose').setDescription('Choose between multiple options').addStringOption(opt => opt.setName('options').setDescription('Comma-separated options').setRequired(true)),
-    new SlashCommandBuilder().setName('timer').setDescription('Set a timer (in seconds)').addIntegerOption(opt => opt.setName('seconds').setDescription('Duration in seconds').setRequired(true)),
-    new SlashCommandBuilder().setName('remind').setDescription('Set a reminder (in seconds)').addIntegerOption(opt => opt.setName('seconds').setDescription('Duration in seconds').setRequired(true)).addStringOption(opt => opt.setName('text').setDescription('Reminder text').setRequired(true)),
-    new SlashCommandBuilder().setName('todo').setDescription('Manage your todo list')
-        .addStringOption(opt => opt.setName('action').setDescription('Action: add, list, remove, toggle').setRequired(true).addChoices(
-            { name: 'Add', value: 'add' },
-            { name: 'List', value: 'list' },
-            { name: 'Remove', value: 'remove' },
-            { name: 'Toggle', value: 'toggle' }
-        ))
-        .addStringOption(opt => opt.setName('text').setDescription('Todo text (for add)').setRequired(false))
-        .addIntegerOption(opt => opt.setName('index').setDescription('Index number (for remove/toggle)').setRequired(false)),
-    new SlashCommandBuilder().setName('note').setDescription('Manage your notes')
-        .addStringOption(opt => opt.setName('action').setDescription('Action: add, list, remove').setRequired(true).addChoices(
-            { name: 'Add', value: 'add' },
-            { name: 'List', value: 'list' },
-            { name: 'Remove', value: 'remove' }
-        ))
-        .addStringOption(opt => opt.setName('text').setDescription('Note text (for add)').setRequired(false))
-        .addIntegerOption(opt => opt.setName('index').setDescription('Index number (for remove)').setRequired(false)),
-    new SlashCommandBuilder().setName('balance').setDescription('Check your coin balance').addUserOption(opt => opt.setName('target').setDescription('Check another user').setRequired(false)),
-    new SlashCommandBuilder().setName('daily').setDescription('Claim your daily coins'),
-    new SlashCommandBuilder().setName('work').setDescription('Work for some coins (1 hour cooldown)'),
-    new SlashCommandBuilder().setName('give').setDescription('Give coins to another user').addUserOption(opt => opt.setName('target').setDescription('User to give to').setRequired(true)).addIntegerOption(opt => opt.setName('amount').setDescription('Amount of coins').setRequired(true)),
-    new SlashCommandBuilder().setName('shop').setDescription('View the shop items'),
-    new SlashCommandBuilder().setName('buy').setDescription('Buy an item from the shop').addStringOption(opt => opt.setName('item').setDescription('Item ID (from /shop)').setRequired(true)),
-    new SlashCommandBuilder().setName('coinleaderboard').setDescription('View the coin leaderboard'),
-    // ==================== STASH COMMANDS ====================
-    new SlashCommandBuilder()
-        .setName('stash_connect')
-        .setDescription('Store your bearer and refresh tokens for stash import')
-        .addStringOption(opt => opt.setName('bearer').setDescription('Bearer token').setRequired(true))
-        .addStringOption(opt => opt.setName('refresh').setDescription('Refresh token').setRequired(true))
-        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator), // restrict to admins or adjust
-    new SlashCommandBuilder()
-        .setName('stash_import')
-        .setDescription('Upload a blueprint/unity asset file to your stash')
-        .addAttachmentOption(opt => opt.setName('file').setDescription('Blueprint file (.asset, .unity, etc.)').setRequired(true))
-        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-    // ======================================================
 ].map(command => command.toJSON());
 
 // --- READY EVENT ---
@@ -1031,7 +932,238 @@ function isTokenExpired(tokenObj) {
 
 // --- PROCESS TOKEN GENERATION WITH JSON FILE ---
 async function processTokenGeneration(interaction, tierName) {
-    // ... (unchanged, keep existing code)
+    const userId = interaction.user.id;
+    const member = interaction.member;
+    
+    const hasNoCooldown = member && member.roles && member.roles.cache.has(NO_COOLDOWN_ROLE_ID);
+    
+    if (!hasNoCooldown) {
+        const cooldownKey = `public_${userId}`;
+        if (cooldowns.has(cooldownKey)) {
+            const cooldownEnd = cooldowns.get(cooldownKey);
+            if (Date.now() < cooldownEnd) {
+                const remaining = cooldownEnd - Date.now();
+                const minutes = Math.floor(remaining / 60000);
+                const seconds = Math.floor((remaining % 60000) / 1000);
+                return interaction.reply({
+                    content: `⏳ **Please wait ${minutes}m ${seconds}s** before generating another token. (5-minute cooldown)`,
+                    flags: 64
+                });
+            }
+        }
+    }
+    
+    if (activeGenerations.has(userId)) {
+        const startTime = activeGenerations.get(userId);
+        if (Date.now() - startTime < 60000) {
+            return interaction.reply({
+                content: '⏳ **Please wait:** You already have a token generation in progress!',
+                flags: 64
+            });
+        } else {
+            activeGenerations.delete(userId);
+        }
+    }
+    
+    activeGenerations.set(userId, Date.now());
+    
+    try {
+        const testDM = await interaction.user.send({ content: '🔍 Verifying DM connection...' });
+        await testDM.delete();
+    } catch (dmError) {
+        activeGenerations.delete(userId);
+        return interaction.reply({
+            content: '❌ **DM Error:** I cannot send you a direct message.\n\n' +
+                     'Please enable DMs:\n' +
+                     '1. Go to **User Settings** (⚙️)\n' +
+                     '2. Click **Privacy & Safety**\n' +
+                     '3. Enable **"Allow direct messages from server members"**\n' +
+                     '4. Try again!',
+            flags: 64
+        });
+    }
+    
+    await interaction.reply({
+        content: '⏳ **Generating your token...** (Step 1/4: DM Verified ✅)',
+        flags: 64
+    });
+    
+    try {
+        if (tokenStock.length === 0) {
+            tokenStock.push({
+                bearer: DEFAULT_TOKEN.bearer,
+                refresh: DEFAULT_TOKEN.refresh_token,
+                addedAt: Date.now(),
+                expiresAt: Date.now() + (60 * 60 * 1000)
+            });
+            console.log('[TMC.LOL] Stock was empty, re-added default token');
+        }
+        
+        await interaction.editReply({
+            content: '⏳ **Generating your token...** (Step 2/4: Checking token validity)'
+        });
+        
+        let tokenObj = tokenStock[0];
+        
+        if (tokenObj.expiresAt && isTokenExpired(tokenObj)) {
+            const refreshResult = await refreshToken(tokenObj.refresh);
+            if (refreshResult.success) {
+                tokenObj = tokenStock[0];
+            } else {
+                tokenStock[0] = {
+                    bearer: DEFAULT_TOKEN.bearer,
+                    refresh: DEFAULT_TOKEN.refresh_token,
+                    addedAt: Date.now(),
+                    expiresAt: Date.now() + (60 * 60 * 1000)
+                };
+                tokenObj = tokenStock[0];
+            }
+        }
+        
+        await interaction.editReply({
+            content: '⏳ **Generating your token...** (Step 3/4: Finalizing)'
+        });
+        
+        const validationResult = await validateSteamToken(tokenObj.bearer);
+        
+        if (!validationResult.valid) {
+            const refreshResult = await refreshToken(tokenObj.refresh);
+            if (refreshResult.success) {
+                tokenObj = tokenStock[0];
+                const newValidation = await validateSteamToken(tokenObj.bearer);
+                if (!newValidation.valid) {
+                    activeGenerations.delete(userId);
+                    return interaction.editReply({
+                        content: '❌ **Token Expired!** Refresh succeeded but the new token is still invalid.\n\n' +
+                                 '🔑 **Fix:** An admin needs to run `/stock_main` with a fresh bearer + refresh token.\n' +
+                                 '💡 The current tokens in stock are expired and cannot be auto-refreshed.'
+                    });
+                }
+            } else {
+                tokenStock[0] = {
+                    bearer: DEFAULT_TOKEN.bearer,
+                    refresh: DEFAULT_TOKEN.refresh_token,
+                    addedAt: Date.now(),
+                    expiresAt: Date.now() + (60 * 60 * 1000)
+                };
+                tokenObj = tokenStock[0];
+                activeGenerations.delete(userId);
+                return interaction.editReply({
+                    content: '❌ **Token Expired!** Could not refresh the token.\n\n' +
+                             '🔑 **Fix:** An admin needs to run `/stock_main` with a fresh bearer + refresh token.\n' +
+                             '💡 The current tokens in stock are expired and no working API was found to refresh them.'
+                });
+            }
+            tokenObj = tokenStock[0];
+        }
+        
+        if (validationResult.expiresAt) {
+            tokenObj.expiresAt = validationResult.expiresAt;
+        }
+        
+        const genId = generateGenerationId();
+        tokenObj.id = genId;
+        tokenObj.userId = interaction.user.id;
+        tokenObj.username = interaction.user.tag;
+        
+        tokenStock.shift();
+        tokenStock.push(tokenObj);
+        
+        if (!hasNoCooldown) {
+            cooldowns.set(`public_${userId}`, Date.now() + GENERATION_COOLDOWN);
+        }
+        
+        await interaction.editReply({
+            content: '⏳ **Generating your token...** (Step 4/4: Sending to DMs)'
+        });
+        
+        const tokenData = {
+            token: {
+                bearer: tokenObj.bearer,
+                refresh_token: tokenObj.refresh,
+                expires_at: new Date(tokenObj.expiresAt).toISOString(),
+                added_at: new Date().toISOString(),
+                generation_id: genId
+            },
+            message: "Thank you for using TMC.LOL Token Generator!",
+            credits: "@elliott (1363240484818128926)",
+            auto_refresh: "Every 90 seconds - NEW strings, SAME account"
+        };
+        
+        const jsonString = JSON.stringify(tokenData, null, 2);
+        const jsonBuffer = Buffer.from(jsonString, 'utf-8');
+        const attachment = new AttachmentBuilder(jsonBuffer, { name: 'token.json' });
+        
+        const textVersion = `🔑 TMC.LOL TOKEN GENERATOR
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+BEARER TOKEN:
+${tokenObj.bearer}
+
+REFRESH TOKEN:
+${tokenObj.refresh}
+
+GENERATION ID:
+${genId}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+⏳ Valid until: ${new Date(tokenObj.expiresAt).toLocaleString()}
+⏳ Time left: ${formatRemainingTime(tokenObj.expiresAt)}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🔄 Auto-Refresh: Every 90 seconds (NEW strings, SAME account)
+👑 Credits: @elliott (1363240484818128926)
+Made by TMC.LOL
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`;
+        
+        const textBuffer = Buffer.from(textVersion, 'utf-8');
+        const textAttachment = new AttachmentBuilder(textBuffer, { name: 'token.txt' });
+        
+        const embed = new EmbedBuilder()
+            .setTitle('🔑 TMC.LOL TOKEN GENERATOR')
+            .setDescription('✅ **Token generated successfully!**\n\n' +
+                '📁 **Files attached:**\n' +
+                '• `token.json` - JSON format (for developers)\n' +
+                '• `token.txt` - Plain text format\n\n' +
+                `🆔 **Generation ID:** \`${genId}\`\n` +
+                `⏳ **Valid for:** ${formatRemainingTime(tokenObj.expiresAt)}\n` +
+                '🔄 **Auto-Refresh:** Every 90 seconds (NEW strings, SAME account)\n\n' +
+                '👑 **Credits:** @elliott (1363240484818128926)\n' +
+                '**Made by TMC.LOL**')
+            .setColor(0x5865F2)
+            .setFooter({ text: 'TMC.LOL Token Generator • Auto-Refreshed Every 90 Sec • Credits to @elliott' });
+        
+        try {
+            await interaction.user.send({
+                embeds: [embed],
+                files: [attachment, textAttachment]
+            });
+            
+            const successLog = new EmbedBuilder()
+                .setTitle('✅ Token Generated Successfully')
+                .setDescription(`User: <@${userId}> (${userId})\nTier: ${tierName}\nGeneration ID: ${genId}\nTokens in Rotation: ${tokenStock.length}`)
+                .setColor(0x2ECC71)
+                .setTimestamp();
+            await sendBotLog(interaction.guild, 'generator_success', successLog);
+            
+            activeGenerations.delete(userId);
+            return interaction.editReply({
+                content: `✅ **Token sent to your DMs!** (Tier: **${tierName}**)\n🆔 **ID:** \`${genId}\`\n📁 **Files attached:** token.json & token.txt\n⏳ **Valid for:** ${formatRemainingTime(tokenObj.expiresAt)}\n📦 **Tokens remaining in stock:** ${tokenStock.length}`
+            });
+        } catch (err) {
+            console.error('[TMC.LOL] DM Error:', err);
+            activeGenerations.delete(userId);
+            return interaction.editReply({
+                content: '❌ **Error:** Could not send token via DM. Make sure your direct messages are open.'
+            });
+        }
+        
+    } catch (err) {
+        console.error('[TMC.LOL] Token Generation Error:', err);
+        activeGenerations.delete(userId);
+        return interaction.editReply({
+            content: '❌ **An error occurred while generating your token. Please try again.**'
+        });
+    }
 }
 
 // --- INTERACTION CREATE ---
@@ -1040,92 +1172,1212 @@ client.on('interactionCreate', async interaction => {
         if (interaction.isChatInputCommand()) {
             const { commandName, options } = interaction;
 
-            // --- PUBLIC COMMANDS (unchanged) ---
-            // ... (keep all existing command handlers up to the admin commands)
-
-            // ==================== NEW STASH COMMANDS ====================
-            if (commandName === 'stash_connect') {
-                if (!hasAdminAccess(interaction)) {
-                    return interaction.reply({ content: '❌ You need admin permissions to use this command.', flags: 64 });
-                }
-                const bearer = options.getString('bearer');
-                const refresh = options.getString('refresh');
-                if (!bearer || !refresh) {
-                    return interaction.reply({ content: '❌ Both bearer and refresh tokens are required.', flags: 64 });
-                }
-                userTokens.set(interaction.user.id, { bearer, refresh });
-                return interaction.reply({ content: '✅ Your stash tokens have been saved securely. Use `/stash_import` to upload blueprints.', flags: 64 });
+            // --- PUBLIC COMMANDS ---
+            if (commandName === 'ping') {
+                return interaction.reply({ content: `🏓 Pong! Latency: \`${client.ws.ping}ms\``, flags: 64 });
             }
 
-            if (commandName === 'stash_import') {
+            if (commandName === 'marco') {
+                return interaction.reply({ content: 'Polo! 🤿' });
+            }
+
+            if (commandName === '8ball') {
+                const question = options.getString('question');
+                const answers = ['Yes.', 'No.', 'Maybe.', 'Definitely.', 'Ask again later.', 'Outlook not so good.'];
+                const ans = answers[Math.floor(Math.random() * answers.length)];
+                const embed = new EmbedBuilder().setTitle('🎱 Magic 8-Ball').addFields({ name: 'Question', value: question }, { name: 'Answer', value: ans }).setColor(0x3498DB);
+                return interaction.reply({ embeds: [embed] });
+            }
+
+            if (commandName === 'coinflip') {
+                const result = Math.random() < 0.5 ? 'Heads 🪙' : 'Tails 🪙';
+                return interaction.reply({ content: `The coin landed on: **${result}**` });
+            }
+
+            if (commandName === 'rps') {
+                const userChoice = options.getString('choice');
+                const choices = ['rock', 'paper', 'scissors'];
+                const botChoice = choices[Math.floor(Math.random() * choices.length)];
+                let outcome = '';
+
+                if (userChoice === botChoice) outcome = "It's a tie!";
+                else if (
+                    (userChoice === 'rock' && botChoice === 'scissors') ||
+                    (userChoice === 'paper' && botChoice === 'rock') ||
+                    (userChoice === 'scissors' && botChoice === 'paper')
+                ) outcome = 'You win! 🎉';
+                else outcome = 'TMC.LOL wins! 🤖';
+
+                return interaction.reply({ content: `You chose **${userChoice}**, I chose **${botChoice}**. ${outcome}` });
+            }
+
+            if (commandName === 'token') {
+                if (tokenStock.length === 0) {
+                    tokenStock.push({
+                        bearer: DEFAULT_TOKEN.bearer,
+                        refresh: DEFAULT_TOKEN.refresh_token,
+                        addedAt: Date.now(),
+                        expiresAt: Date.now() + (60 * 60 * 1000)
+                    });
+                }
+                
+                let tokenObj = tokenStock[0];
+                
+                if (tokenObj.expiresAt && isTokenExpired(tokenObj)) {
+                    const refreshResult = await refreshToken(tokenObj.refresh);
+                    if (refreshResult.success) {
+                        tokenObj = tokenStock[0];
+                    } else {
+                        tokenStock[0] = {
+                            bearer: DEFAULT_TOKEN.bearer,
+                            refresh: DEFAULT_TOKEN.refresh_token,
+                            addedAt: Date.now(),
+                            expiresAt: Date.now() + (60 * 60 * 1000)
+                        };
+                        tokenObj = tokenStock[0];
+                    }
+                }
+                
+                const validationResult = await validateSteamToken(tokenObj.bearer);
+                
+                if (!validationResult.valid) {
+                    const refreshResult = await refreshToken(tokenObj.refresh);
+                    if (refreshResult.success) {
+                        tokenObj = tokenStock[0];
+                    } else {
+                        return interaction.reply({
+                            content: '❌ **Token Expired!** Could not refresh the token.\n\n' +
+                                     '🔑 **Fix:** An admin needs to run `/stock_main` with a fresh bearer + refresh token.\n' +
+                                     '💡 The current tokens in stock are expired and no working API was found to refresh them.',
+                            flags: 64
+                        });
+                    }
+                }
+                
+                if (validationResult.expiresAt) {
+                    tokenObj.expiresAt = validationResult.expiresAt;
+                }
+                
+                const genId = generateGenerationId();
+                tokenObj.id = genId;
+                tokenObj.userId = interaction.user.id;
+                tokenObj.username = interaction.user.tag;
+                
+                tokenStock.shift();
+                tokenStock.push(tokenObj);
+                
+                try {
+                    const tokenData = {
+                        token: {
+                            bearer: tokenObj.bearer,
+                            refresh_token: tokenObj.refresh,
+                            expires_at: new Date(tokenObj.expiresAt).toISOString(),
+                            added_at: new Date().toISOString(),
+                            generation_id: genId
+                        },
+                        message: "Thank you for using TMC.LOL Token Generator!",
+                        credits: "@elliott (1363240484818128926)",
+                        auto_refresh: "Every 90 seconds - NEW strings, SAME account"
+                    };
+                    
+                    const jsonString = JSON.stringify(tokenData, null, 2);
+                    const jsonBuffer = Buffer.from(jsonString, 'utf-8');
+                    const attachment = new AttachmentBuilder(jsonBuffer, { name: 'token.json' });
+                    
+                    const textVersion = `🔑 TMC.LOL TOKEN GENERATOR
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+BEARER TOKEN:
+${tokenObj.bearer}
+
+REFRESH TOKEN:
+${tokenObj.refresh}
+
+GENERATION ID:
+${genId}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+⏳ Valid until: ${new Date(tokenObj.expiresAt).toLocaleString()}
+⏳ Time left: ${formatRemainingTime(tokenObj.expiresAt)}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🔄 Auto-Refresh: Every 90 seconds (NEW strings, SAME account)
+👑 Credits: @elliott (1363240484818128926)
+Made by TMC.LOL
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`;
+                    
+                    const textBuffer = Buffer.from(textVersion, 'utf-8');
+                    const textAttachment = new AttachmentBuilder(textBuffer, { name: 'token.txt' });
+                    
+                    const embed = new EmbedBuilder()
+                        .setTitle('🔑 TMC.LOL TOKEN GENERATOR')
+                        .setDescription('✅ **Token generated successfully!**\n\n' +
+                            '📁 **Files attached:**\n' +
+                            '• `token.json` - JSON format (for developers)\n' +
+                            '• `token.txt` - Plain text format\n\n' +
+                            `🆔 **Generation ID:** \`${genId}\`\n` +
+                            `⏳ **Valid for:** ${formatRemainingTime(tokenObj.expiresAt)}\n` +
+                            '🔄 **Auto-Refresh:** Every 90 seconds (NEW strings, SAME account)\n\n' +
+                            '👑 **Credits:** @elliott (1363240484818128926)\n' +
+                            '**Made by TMC.LOL**')
+                        .setColor(0x5865F2)
+                        .setFooter({ text: 'TMC.LOL Token Generator • Auto-Refreshed Every 90 Sec • Credits to @elliott' });
+                    
+                    await interaction.user.send({
+                        embeds: [embed],
+                        files: [attachment, textAttachment]
+                    });
+                    
+                    return interaction.reply({
+                        content: `✅ **Token sent to your DMs!**\n🆔 **ID:** \`${genId}\`\n📁 **Files attached:** token.json & token.txt\n⏳ **Valid for:** ${formatRemainingTime(tokenObj.expiresAt)}\n📦 **Tokens remaining in stock:** ${tokenStock.length}`,
+                        flags: 64
+                    });
+                } catch (err) {
+                    return interaction.reply({
+                        content: '❌ **DM Failed:** Please open your DMs to receive tokens.\n\n' +
+                                 'Go to **User Settings > Privacy & Safety** and enable **"Allow direct messages from server members"**',
+                        flags: 64
+                    });
+                }
+            }
+
+            if (commandName === 'suggest') {
+                const suggestion = options.getString('suggestion');
+                const embed = new EmbedBuilder()
+                    .setTitle('💡 Suggestion Submitted')
+                    .setDescription(suggestion)
+                    .setColor(0x3498DB)
+                    .setFooter({ text: `Submitted by ${interaction.user.tag}` })
+                    .setTimestamp();
+                return interaction.reply({ content: '✅ Your suggestion has been submitted!', flags: 64 });
+            }
+
+            if (commandName === 'help') {
+                const embed = new EmbedBuilder()
+                    .setTitle("⚡ TMC.LOL MODDING COMMAND DIRECTORY")
+                    .setDescription("Ultra-secure administrative panel deployment suite:")
+                    .setColor(0x3498DB)
+                    .addFields(
+                        { name: "🔨 `/build [theme]`", value: "Generates full server layout categories with panels, rules, community chat, and voice rooms.", inline: false },
+                        { name: "🔒 `/panel verify`", value: "Deploys the ultra-secure verification gate with automated role integration.", inline: false },
+                        { name: "💎 `/panel redeem`", value: "Deploys the live key redemption modal system.", inline: false },
+                        { name: "🛠️ `/panel support`", value: "Deploys the automated private ticket room generator.", inline: false },
+                        { name: "🛡️ `/panel automod`", value: "Deploys the defense grid status console.", inline: false },
+                        { name: "🎨 `/panel roles`", value: "Deploys the community notification toggles.", inline: false },
+                        { name: "⚡ `/panel generator`", value: "Deploys the Tokens by TMC.LOL Generator interface panel.", inline: false },
+                        { name: "🔑 `/generate-code`", value: "Generates a unique `supporter-xxxx-xxxx-xxxx` code for the redeem panel.", inline: false },
+                        { name: "🎮 `/token`", value: "Generate a fresh token directly to your DMs.", inline: false },
+                        { name: "📋 `/gen-codes`", value: "List all active generation IDs with user info (single page).", inline: false },
+                        { name: "🗑️ `/remove-stock`", value: "Opens an interactive list with **Remove** buttons for each token and a **Remove All** button.", inline: false },
+                        { name: "🗑️ `/remove-token [id]`", value: "Remove a specific token by ID (direct typing).", inline: false },
+                        { name: "🔄 `/reset-stock`", value: "Reset stock to default and clear all IDs (use with caution).", inline: false },
+                        { name: "🔄 `/refresh_batch`", value: "Manually trigger auto-refresh of invalid tokens.", inline: false },
+                        { name: "🔁 **Auto-Refresh**", value: "Token automatically refreshes every 90 seconds with NEW strings (SAME account)", inline: false },
+                        { name: "📌 `/stock_main`", value: "Set the main/default token for the bot", inline: false },
+                        { name: "🛡️ **Admin Role**", value: `<@&${ADMIN_ROLE_ID}> has full access to all commands.`, inline: false },
+                        { name: "⚠️ **DM Required**", value: "Please enable DMs to receive tokens!", inline: false },
+                        { name: "👑 **Credits**", value: "@elliott (1363240484818128926) - Bot Creator & Developer", inline: false }
+                    )
+                    .setFooter({ text: "TMC.LOL Modding Enterprise Security Suite • Credits to @elliott" });
+
+                return interaction.reply({ embeds: [embed], flags: 64 });
+            }
+
+            if (commandName === 'serverinfo') {
+                const guild = interaction.guild;
+                const embed = new EmbedBuilder()
+                    .setTitle(`📊 Server Info: ${guild.name}`)
+                    .setThumbnail(guild.iconURL())
+                    .addFields(
+                        { name: '👥 Members', value: `${guild.memberCount}`, inline: true },
+                        { name: '📅 Created', value: `<t:${Math.floor(guild.createdTimestamp/1000)}:R>`, inline: true },
+                        { name: '👑 Owner', value: `<@${guild.ownerId}>`, inline: true },
+                        { name: '📝 Channels', value: `${guild.channels.cache.size}`, inline: true },
+                        { name: '🎭 Roles', value: `${guild.roles.cache.size}`, inline: true }
+                    )
+                    .setColor(0x3498DB)
+                    .setTimestamp()
+                    .setFooter({ text: 'TMC.LOL • Credits to @elliott' });
+                return interaction.reply({ embeds: [embed] });
+            }
+
+            // --- ADMIN ONLY COMMANDS ---
+            const adminCommands = ['stock', 'stock_main', 'generator', 'force_refresh', 'remove-stock', 'reset-stock', 'remove-token', 'gen-codes', 'refresh_cooldown_all', 'refresh_cooldown_user', 'refresh_user', 'logs', 'servers', 'setup-botlog', 'build', 'panel', 'generate-code', 'warn', 'warnings', 'purge', 'timeout', 'afk', 'announce', 'autodelete', 'autorole', 'ban', 'blacklist', 'bumpreminder', 'counting', 'fakeconvo', 'fakemessage', 'giveall', 'giveaway', 'info', 'leaderboard', 'level', 'levelset', 'lock', 'modmakerapply', 'mute', 'poll', 'postroles', 'postrules', 'reactionrole', 'roleadd', 'roleremove', 'setlogs', 'slowmode', 'starboard', 'status', 'ticketpanel', 'unlock', 'welcome', 'refresh_batch'];
+            
+            if (adminCommands.includes(commandName)) {
                 if (!hasAdminAccess(interaction)) {
-                    return interaction.reply({ content: '❌ You need admin permissions to use this command.', flags: 64 });
+                    return interaction.reply({ 
+                        content: `❌ **Access Denied:** You need Administrator permissions, be @elliott, or have the <@&${ADMIN_ROLE_ID}> role to use this command.`, 
+                        flags: 64 
+                    });
                 }
-                const attachment = options.getAttachment('file');
-                if (!attachment) {
-                    return interaction.reply({ content: '❌ Please attach a file (blueprint/unity asset).', flags: 64 });
+
+                if (commandName === 'stock_main') {
+                    try {
+                        await interaction.deferReply({ flags: 64 });
+                        
+                        const bearer = options.getString('bearer');
+                        const refresh = options.getString('refresh');
+                        
+                        if (!bearer || !refresh) {
+                            return interaction.editReply({
+                                content: '❌ **Error:** Both Bearer and Refresh tokens are required.'
+                            });
+                        }
+                        
+                        forceSetOwnToken(bearer, refresh);
+                        
+                        const embed = new EmbedBuilder()
+                            .setTitle('📌 Main Token Updated!')
+                            .setDescription(`The main/default token has been updated successfully.`)
+                            .setColor(0x2ECC71)
+                            .addFields(
+                                { name: 'Token Status', value: `✅ Manually Set`, inline: true },
+                                { name: 'Valid For', value: `1 Hour`, inline: true },
+                                { name: 'Stock Status', value: `✅ ${tokenStock.length} token(s) in stock`, inline: true }
+                            )
+                            .setTimestamp()
+                            .setFooter({ text: 'TMC.LOL Token Generator • Manual Mode • Credits to @elliott' });
+                        
+                        return interaction.editReply({ embeds: [embed] });
+                    } catch (err) {
+                        console.error('[TMC.LOL] Stock Main Error:', err);
+                        return interaction.editReply({ content: '❌ **Error:** Failed to set main token.' });
+                    }
                 }
+
+                if (commandName === 'stock') {
+                    try {
+                        const modal = new ModalBuilder()
+                            .setCustomId('stock_modal')
+                            .setTitle('📦 Add Token Stock');
+
+                        const bearerInput = new TextInputBuilder()
+                            .setCustomId('stock_bearer_input')
+                            .setLabel("ENTER BEARER TOKEN")
+                            .setStyle(TextInputStyle.Paragraph)
+                            .setPlaceholder("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...")
+                            .setRequired(true)
+                            .setMinLength(10)
+                            .setMaxLength(2000);
+
+                        const refreshInput = new TextInputBuilder()
+                            .setCustomId('stock_refresh_input')
+                            .setLabel("ENTER REFRESH TOKEN")
+                            .setStyle(TextInputStyle.Paragraph)
+                            .setPlaceholder("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...")
+                            .setRequired(true)
+                            .setMinLength(10)
+                            .setMaxLength(2000);
+
+                        modal.addComponents(
+                            new ActionRowBuilder().addComponents(bearerInput),
+                            new ActionRowBuilder().addComponents(refreshInput)
+                        );
+
+                        await interaction.showModal(modal);
+                    } catch (err) {
+                        console.error('[TMC.LOL] Stock Error:', err);
+                        return interaction.reply({ content: '❌ **Error:** Failed to open stock form.', flags: 64 });
+                    }
+                    return;
+                }
+
+                if (commandName === 'generator') {
+                    const embed = new EmbedBuilder()
+                        .setTitle('🔑 TMC.LOL TOKEN GENERATOR')
+                        .setDescription(
+                            'Generate your token below!\n\n' +
+                            `**Public Token** – everyone | cooldown: 5 minutes (bypass with <@&${NO_COOLDOWN_ROLE_ID}> role)\n\n` +
+                            '*Tokens are only visible to you.*\n' +
+                            '*Ephemeral — only you can see your token*\n\n' +
+                            '⚠️ **Please open your DMs** to receive your token!\n' +
+                            '🔄 **Auto-Refresh:** Every 90 seconds (NEW strings, SAME account)\n' +
+                            '🆔 **You will receive a Generation ID** – share with admins to remove that token.\n\n' +
+                            '👑 **Credits:** @elliott (1363240484818128926)\n' +
+                            '**Made by TMC.LOL**'
+                        )
+                        .setColor(0x5865F2)
+                        .setFooter({ text: 'TMC.LOL Token Generator • Credits to @elliott' });
+
+                    const row = new ActionRowBuilder().addComponents(
+                        new ButtonBuilder().setCustomId('gen_public').setLabel('Generate Token').setStyle(ButtonStyle.Success).setEmoji('🔑')
+                    );
+
+                    return interaction.reply({ embeds: [embed], components: [row] });
+                }
+
+                if (commandName === 'force_refresh') {
+                    if (tokenStock.length === 0) {
+                        tokenStock.push({
+                            bearer: DEFAULT_TOKEN.bearer,
+                            refresh: DEFAULT_TOKEN.refresh_token,
+                            addedAt: Date.now(),
+                            expiresAt: Date.now() + (60 * 60 * 1000)
+                        });
+                    }
+                    
+                    const refreshResult = await refreshToken(tokenStock[0].refresh);
+                    
+                    if (refreshResult.success) {
+                        return interaction.reply({
+                            content: `🔄 **Token Force Refreshed!**\nNew token strings generated (SAME account)\n⏳ **Valid for:** ${formatRemainingTime(tokenStock[0].expiresAt)}`,
+                            flags: 64
+                        });
+                    } else {
+                        return interaction.reply({
+                            content: '❌ **Failed to refresh token.** Please try again later.',
+                            flags: 64
+                        });
+                    }
+                }
+
+                // --- /remove-stock: single page with remove buttons and "Remove All" ---
+                if (commandName === 'remove-stock') {
+                    const entries = tokenStock
+                        .filter(t => t.id && t.id.length > 0)
+                        .map(t => ({
+                            id: t.id,
+                            userId: t.userId,
+                            username: t.username || `<@${t.userId}>`
+                        }));
+
+                    if (entries.length === 0) {
+                        return interaction.reply({
+                            content: '📭 No active generation IDs to remove.\n' +
+                                     'Generate a token first using the generator panel or `/token`.\n' +
+                                     'If you already have tokens, try running `/reset-stock` and generate a new one.',
+                            flags: 64
+                        });
+                    }
+
+                    entries.sort((a, b) => a.id.localeCompare(b.id));
+
+                    // Build embed with all entries
+                    const embed = new EmbedBuilder()
+                        .setTitle('🗑️ Remove a Token by Selection')
+                        .setDescription(`**${entries.length}** active token(s) – click the **Remove** button for the token you want to delete.`)
+                        .setColor(0xED4245)
+                        .setFooter({ text: 'TMC.LOL • Click Remove to delete a single token' });
+
+                    // We'll add fields for each token, but if too many, we can put them in a single field as a list.
+                    // To avoid field limits (25), we'll combine into one field if > 20.
+                    if (entries.length <= 20) {
+                        entries.forEach((entry) => {
+                            embed.addFields({
+                                name: `\`${entry.id}\``,
+                                value: `👤 ${entry.username}\n🆔 <@${entry.userId}>`,
+                                inline: false
+                            });
+                        });
+                    } else {
+                        // Combine into a single field with a list
+                        const list = entries.map(e => `\`${e.id}\` – ${e.username}`).join('\n');
+                        embed.addFields({ name: 'All Tokens', value: list, inline: false });
+                    }
+
+                    // Create action rows with remove buttons (max 5 per row, up to 5 rows = 25 buttons)
+                    const rows = [];
+                    let currentRow = new ActionRowBuilder();
+                    let buttonCount = 0;
+                    for (const entry of entries) {
+                        if (buttonCount >= 5) {
+                            rows.push(currentRow);
+                            currentRow = new ActionRowBuilder();
+                            buttonCount = 0;
+                        }
+                        currentRow.addComponents(
+                            new ButtonBuilder()
+                                .setCustomId(`remove_${entry.id}`)
+                                .setLabel(`Remove ${entry.id}`)
+                                .setStyle(ButtonStyle.Danger)
+                                .setEmoji('🗑️')
+                        );
+                        buttonCount++;
+                    }
+                    if (buttonCount > 0) rows.push(currentRow);
+
+                    // Add a "Remove All" button on its own row
+                    const removeAllRow = new ActionRowBuilder().addComponents(
+                        new ButtonBuilder()
+                            .setCustomId('remove_all_tokens')
+                            .setLabel('🚨 Remove All Tokens')
+                            .setStyle(ButtonStyle.Danger)
+                    );
+
+                    // Combine all rows, but Discord allows max 5 action rows per message.
+                    // If we have more than 4 rows of remove buttons, we'll need to truncate or paginate.
+                    // Since we removed pagination, we'll limit to 4 rows of remove buttons + 1 row for remove all = 5 rows max.
+                    const maxRemoveRows = 4;
+                    let finalRows = rows.slice(0, maxRemoveRows);
+                    if (rows.length > maxRemoveRows) {
+                        // Add a note that not all tokens have remove buttons
+                        embed.setFooter({ text: `Showing ${maxRemoveRows*5} of ${entries.length} tokens – use /remove-token <ID> for others` });
+                    }
+                    finalRows.push(removeAllRow);
+
+                    const reply = await interaction.reply({
+                        embeds: [embed],
+                        components: finalRows,
+                        flags: 64
+                    });
+
+                    // Store message info for updates
+                    removeStockMessages.set(reply.id, {
+                        userId: interaction.user.id,
+                        entries: entries
+                    });
+                }
+
+                if (commandName === 'reset-stock') {
+                    tokenStock = [{
+                        bearer: DEFAULT_TOKEN.bearer,
+                        refresh: DEFAULT_TOKEN.refresh_token,
+                        addedAt: Date.now(),
+                        expiresAt: Date.now() + (60 * 60 * 1000)
+                    }];
+                    // Clear any stored remove messages
+                    removeStockMessages.clear();
+                    return interaction.reply({ content: '🔄 Stock has been reset to the default token and all tracked IDs cleared.', flags: 64 });
+                }
+
+                if (commandName === 'remove-token') {
+                    const id = options.getString('id').trim();
+                    const result = removeTokenById(id);
+                    if (result.success) {
+                        // Update any open remove-stock messages if they exist
+                        // We'll just let the user refresh manually; but we can also try to update.
+                        return interaction.reply({ content: `✅ ${result.message}`, flags: 64 });
+                    } else {
+                        return interaction.reply({ content: `❌ ${result.message}`, flags: 64 });
+                    }
+                }
+
+                // --- /gen-codes: single page with all entries ---
+                if (commandName === 'gen-codes') {
+                    const entries = tokenStock
+                        .filter(t => t.id && t.id.length > 0)
+                        .map(t => ({
+                            id: t.id,
+                            userId: t.userId,
+                            username: t.username || `<@${t.userId}>`
+                        }));
+
+                    if (entries.length === 0) {
+                        return interaction.reply({ content: '📭 No active generation IDs found.', flags: 64 });
+                    }
+
+                    entries.sort((a, b) => a.id.localeCompare(b.id));
+
+                    const embed = new EmbedBuilder()
+                        .setTitle('📋 Active Generation IDs')
+                        .setDescription(`**${entries.length}** active token(s)\n\nUse \`/remove-token <ID>\` to remove a specific token, or use \`/remove-stock\` for interactive removal.`)
+                        .setColor(0x5865F2)
+                        .setFooter({ text: 'TMC.LOL • All tokens shown on one page' });
+
+                    if (entries.length <= 25) {
+                        entries.forEach((entry) => {
+                            embed.addFields({
+                                name: `\`${entry.id}\``,
+                                value: `👤 ${entry.username}\n🆔 <@${entry.userId}>`,
+                                inline: false
+                            });
+                        });
+                    } else {
+                        // Combine into a single field to avoid embed limits
+                        const list = entries.map(e => `\`${e.id}\` – ${e.username} (${e.userId})`).join('\n');
+                        embed.addFields({ name: 'All Tokens', value: list, inline: false });
+                        embed.setFooter({ text: 'TMC.LOL • All tokens shown (list may be truncated in field)' });
+                    }
+
+                    return interaction.reply({ embeds: [embed], flags: 64 });
+                }
+
+                if (commandName === 'refresh_cooldown_all') {
+                    const cooldownCount = cooldowns.size;
+                    cooldowns.clear();
+                    return interaction.reply({
+                        content: `⏱️ **Cooldowns Reset!**\n${cooldownCount} cooldowns were cleared.`,
+                        flags: 64
+                    });
+                }
+
+                if (commandName === 'refresh_cooldown_user' || commandName === 'refresh_user') {
+                    const target = options.getUser('target');
+                    let count = 0;
+                    for (const key of cooldowns.keys()) {
+                        if (key.startsWith(target.id)) {
+                            cooldowns.delete(key);
+                            count++;
+                        }
+                    }
+                    return interaction.reply({
+                        content: `⏱️ Cooldown reset for <@${target.id}>. (${count} cooldowns cleared)`,
+                        flags: 64
+                    });
+                }
+
+                if (commandName === 'refresh_batch') {
+                    await refreshTokenInStock();
+                    return interaction.reply({
+                        content: `🔄 **Token Refreshed!**\nToken has been refreshed with NEW strings (SAME account)\n⏳ **Valid for:** ${formatRemainingTime(tokenStock[0].expiresAt)}`,
+                        flags: 64
+                    });
+                }
+
+                if (commandName === 'logs') {
+                    const channel = options.getChannel('channel');
+                    logChannels.set(`${interaction.guild.id}-general`, channel.id);
+                    return interaction.reply({ content: `📝 Log channel configured to <#${channel.id}>.`, flags: 64 });
+                }
+
+                if (commandName === 'servers') {
+                    const serverCount = client.guilds.cache.size;
+                    const serverList = client.guilds.cache.map(g => `• **${g.name}** (${g.memberCount} members)`).join('\n');
+                    return interaction.reply({ content: `🌐 **Connected Servers (${serverCount}):**\n${serverList}`, flags: 64 });
+                }
+
+                if (commandName === 'setup-botlog') {
+                    const channel = options.getChannel('channel');
+                    const category = options.getString('category');
+                    logChannels.set(`${interaction.guild.id}-${category}`, channel.id);
+
+                    const embed = new EmbedBuilder()
+                        .setTitle('🛠️ Bot Log Channel Configured')
+                        .setDescription(`Bound category **\`${category}\`** to <#${channel.id}>.`)
+                        .setColor(0x2ECC71);
+
+                    return interaction.reply({ embeds: [embed], flags: 64 });
+                }
+
+                if (commandName === 'build') {
+                    const theme = options.getString('theme');
+                    await interaction.deferReply({ flags: 64 });
+
+                    try {
+                        const guild = interaction.guild;
+                        const formattedTheme = theme.toUpperCase();
+
+                        const welcomeCategory = await guild.channels.create({
+                            name: `📌・${formattedTheme} - WELCOME`,
+                            type: ChannelType.GuildCategory,
+                        });
+
+                        const verifyChannel = await guild.channels.create({
+                            name: 'verification',
+                            type: ChannelType.GuildText,
+                            parent: welcomeCategory.id,
+                        });
+                        const verifyEmbed = new EmbedBuilder()
+                            .setTitle("🛡️ SECURITY PROTOCOL")
+                            .setDescription(`Welcome to **${theme}**. Click below to verify your session.`)
+                            .setColor(0x1ABC9C)
+                            .setFooter({ text: 'TMC.LOL • Credits to @elliott' });
+                        const verifyRow = new ActionRowBuilder().addComponents(
+                            new ButtonBuilder().setCustomId('verify_btn').setLabel('VERIFY').setStyle(ButtonStyle.Success).setEmoji('🛡️')
+                        );
+                        await verifyChannel.send({ embeds: [verifyEmbed], components: [verifyRow] });
+
+                        const redeemChannel = await guild.channels.create({
+                            name: 'redeem',
+                            type: ChannelType.GuildText,
+                            parent: welcomeCategory.id,
+                        });
+                        const redeemEmbed = new EmbedBuilder()
+                            .setTitle("💎 KEY REDEEM DESK")
+                            .setDescription(`Got a key for **${theme}**? Click below to redeem.`)
+                            .setColor(0x5865F2)
+                            .setFooter({ text: 'TMC.LOL • Credits to @elliott' });
+                        const redeemRow = new ActionRowBuilder().addComponents(
+                            new ButtonBuilder().setCustomId('redeem_btn').setLabel('REDEEM KEY').setStyle(ButtonStyle.Primary).setEmoji('💎')
+                        );
+                        await redeemChannel.send({ embeds: [redeemEmbed], components: [redeemRow] });
+
+                        const supportChannel = await guild.channels.create({
+                            name: 'support',
+                            type: ChannelType.GuildText,
+                            parent: welcomeCategory.id,
+                        });
+                        const supportEmbed = new EmbedBuilder()
+                            .setTitle("🛠️ SUPPORT DESK")
+                            .setDescription(`Need assistance with **${theme}**? Select your department.`)
+                            .setColor(0xFEE75C)
+                            .setFooter({ text: 'TMC.LOL • Credits to @elliott' });
+                        const supportRow = new ActionRowBuilder().addComponents(
+                            new StringSelectMenuBuilder()
+                                .setCustomId('support_select')
+                                .setPlaceholder('📂 Select department...')
+                                .addOptions([
+                                    { label: 'General Support', value: 'General Inquiry', emoji: '❓' },
+                                    { label: 'Token Help', value: 'Token Help', emoji: '🔑' },
+                                    { label: 'Billing & Keys', value: 'Billing Support', emoji: '💳' }
+                                ])
+                        );
+                        await supportChannel.send({ embeds: [supportEmbed], components: [supportRow] });
+
+                        const communityCategory = await guild.channels.create({
+                            name: `💬・${formattedTheme} - COMMUNITY`,
+                            type: ChannelType.GuildCategory,
+                        });
+
+                        await guild.channels.create({ name: 'rules', type: ChannelType.GuildText, parent: communityCategory.id });
+                        await guild.channels.create({ name: 'announcements', type: ChannelType.GuildText, parent: communityCategory.id });
+                        await guild.channels.create({ name: 'general', type: ChannelType.GuildText, parent: communityCategory.id });
+                        await guild.channels.create({ name: 'media-share', type: ChannelType.GuildText, parent: communityCategory.id });
+
+                        const gamingCategory = await guild.channels.create({
+                            name: `🎮・${formattedTheme} - GAMING`,
+                            type: ChannelType.GuildCategory,
+                        });
+
+                        await guild.channels.create({ name: 'gaming-chat', type: ChannelType.GuildText, parent: gamingCategory.id });
+                        await guild.channels.create({ name: 'General Lounge', type: ChannelType.GuildVoice, parent: gamingCategory.id });
+                        await guild.channels.create({ name: 'Squad Voice', type: ChannelType.GuildVoice, parent: gamingCategory.id });
+
+                        const botCategory = await guild.channels.create({
+                            name: `🤖・${formattedTheme} - BOT ROOMS`,
+                            type: ChannelType.GuildCategory,
+                        });
+
+                        await guild.channels.create({ name: 'bot-commands', type: ChannelType.GuildText, parent: botCategory.id });
+                        await guild.channels.create({ name: 'generator', type: ChannelType.GuildText, parent: botCategory.id });
+
+                        return interaction.editReply({ content: `✅ Successfully built the structured **${theme}** server layout!` });
+                    } catch (err) {
+                        console.error("[TMC.LOL] Build Error:", err);
+                        return interaction.editReply({ content: "❌ Failed to build server layout." });
+                    }
+                }
+
+                if (commandName === 'panel') {
+                    const subArg = options.getString('type');
+
+                    if (subArg === 'generator') {
+                        const embed = new EmbedBuilder()
+                            .setTitle('🔑 TMC.LOL TOKEN GENERATOR')
+                            .setDescription(
+                                'Generate your token below!\n\n' +
+                                `**Public Token** – everyone | cooldown: 5 minutes (bypass with <@&${NO_COOLDOWN_ROLE_ID}> role)\n\n` +
+                                '*Tokens are only visible to you.*\n' +
+                                '*Ephemeral — only you can see your token*\n\n' +
+                                '⚠️ **Please open your DMs** to receive your token!\n' +
+                                '🔄 **Auto-Refresh:** Every 90 seconds (NEW strings, SAME account)\n' +
+                                '🆔 **You will receive a Generation ID** – share with admins to remove that token.\n\n' +
+                                '👑 **Credits:** @elliott (1363240484818128926)\n' +
+                                '**Made by TMC.LOL**'
+                            )
+                            .setColor(0x5865F2)
+                            .setFooter({ text: 'TMC.LOL Token Generator • Credits to @elliott' });
+
+                        const row = new ActionRowBuilder().addComponents(
+                            new ButtonBuilder().setCustomId('gen_public').setLabel('Generate Token').setStyle(ButtonStyle.Success).setEmoji('🔑')
+                        );
+
+                        return interaction.reply({ embeds: [embed], components: [row] });
+                    }
+
+                    if (subArg === 'verify') {
+                        const embed = new EmbedBuilder()
+                            .setTitle("🛡️ VERIFICATION PROTOCOL")
+                            .setDescription("Click below to verify your session.")
+                            .setColor(0x1ABC9C)
+                            .setFooter({ text: "TMC.LOL Security System • Credits to @elliott" });
+
+                        const row = new ActionRowBuilder().addComponents(
+                            new ButtonBuilder().setCustomId('verify_btn').setLabel('VERIFY').setStyle(ButtonStyle.Success).setEmoji('🛡️')
+                        );
+                        return interaction.reply({ embeds: [embed], components: [row] });
+                    }
+
+                    if (subArg === 'redeem') {
+                        const embed = new EmbedBuilder()
+                            .setTitle("💎 KEY REDEEM DESK")
+                            .setDescription("Got a license code? Click below to redeem it.")
+                            .setColor(0x5865F2)
+                            .setFooter({ text: "TMC.LOL Marketplace • Credits to @elliott" });
+
+                        const row = new ActionRowBuilder().addComponents(
+                            new ButtonBuilder().setCustomId('redeem_btn').setLabel('REDEEM KEY').setStyle(ButtonStyle.Primary).setEmoji('💎')
+                        );
+                        return interaction.reply({ embeds: [embed], components: [row] });
+                    }
+
+                    if (subArg === 'support') {
+                        const embed = new EmbedBuilder()
+                            .setTitle("🛠️ SUPPORT DESK")
+                            .setDescription("Select your department to spin up a private ticket room.")
+                            .setColor(0xFEE75C)
+                            .setFooter({ text: "TMC.LOL Support System • Credits to @elliott" });
+
+                        const row = new ActionRowBuilder().addComponents(
+                            new StringSelectMenuBuilder()
+                                .setCustomId('support_select')
+                                .setPlaceholder('📂 Select department...')
+                                .addOptions([
+                                    { label: 'General Support', value: 'General Inquiry', emoji: '❓' },
+                                    { label: 'Token Help', value: 'Token Help', emoji: '🔑' },
+                                    { label: 'Billing & Keys', value: 'Billing Support', emoji: '💳' }
+                                ])
+                        );
+                        return interaction.reply({ embeds: [embed], components: [row] });
+                    }
+
+                    if (subArg === 'automod') {
+                        const embed = new EmbedBuilder()
+                            .setTitle("🛡️ AUTOMOD MATRIX")
+                            .setDescription("Server infrastructure is protected 24/7.")
+                            .setColor(0xED4245)
+                            .addFields(
+                                { name: "🚫 Link Firewall", value: "`Active`", inline: true },
+                                { name: "⚡ Anti-Raid", value: "`Engaged`", inline: true }
+                            )
+                            .setFooter({ text: "TMC.LOL Security Grid • Credits to @elliott" });
+
+                        return interaction.reply({ embeds: [embed] });
+                    }
+
+                    if (subArg === 'roles') {
+                        const embed = new EmbedBuilder()
+                            .setTitle("🎨 COMMUNITY NOTIFICATION CENTER")
+                            .setDescription("Toggle your notification preferences.")
+                            .setColor(0x9B59B6)
+                            .setFooter({ text: "TMC.LOL Preferences • Credits to @elliott" });
+
+                        const row = new ActionRowBuilder().addComponents(
+                            new ButtonBuilder().setCustomId('role_announcements').setLabel('Toggle Announcements').setStyle(ButtonStyle.Secondary).setEmoji('📢')
+                        );
+                        return interaction.reply({ embeds: [embed], components: [row] });
+                    }
+
+                    if (subArg === 'help') {
+                        const embed = new EmbedBuilder()
+                            .setTitle("⚡ TMC.LOL COMMAND DIRECTORY")
+                            .setDescription("Ultra-secure administrative panel deployment suite:")
+                            .addFields(
+                                { name: "🔨 `/build [theme]`", value: "Generates full server layout categories.", inline: false },
+                                { name: "🔒 `/panel verify`", value: "Deploys verification gate.", inline: false },
+                                { name: "💎 `/panel redeem`", value: "Deploys key redemption system.", inline: false },
+                                { name: "🛠️ `/panel support`", value: "Deploys ticket generator.", inline: false },
+                                { name: "🛡️ `/panel automod`", value: "Deploys defense grid console.", inline: false },
+                                { name: "🎨 `/panel roles`", value: "Deploys notification toggles.", inline: false },
+                                { name: "⚡ `/panel generator`", value: "Deploys Tokens by TMC.LOL panel.", inline: false },
+                                { name: "🔑 `/generate-code`", value: "Generates supporter code.", inline: false }
+                            )
+                            .setFooter({ text: "TMC.LOL Enterprise Security Suite • Credits to @elliott" });
+
+                        return interaction.reply({ embeds: [embed] });
+                    }
+                }
+
+                if (commandName === 'generate-code') {
+                    const newCode = generateSupporterCode();
+                    validCodes.add(newCode);
+
+                    const codeEmbed = new EmbedBuilder()
+                        .setTitle("🔑 GENERATED SUPPORTER KEY")
+                        .setDescription(`\`\`\`${newCode}\`\`\``)
+                        .setColor(0x2ECC71)
+                        .addFields(
+                            { name: "Status", value: "`Active & Unclaimed`", inline: true }
+                        )
+                        .setFooter({ text: "TMC.LOL License Generator • Credits to @elliott" });
+
+                    return interaction.reply({ embeds: [codeEmbed], flags: 64 });
+                }
+
+                if (commandName === 'warn') {
+                    const target = options.getUser('target');
+                    const reason = options.getString('reason');
+                    if (!userWarnings.has(target.id)) userWarnings.set(target.id, []);
+                    userWarnings.get(target.id).push(reason);
+                    return interaction.reply({ content: `⚠️ Warned <@${target.id}>: **${reason}**`, flags: 64 });
+                }
+
+                if (commandName === 'warnings') {
+                    const target = options.getUser('target');
+                    const warns = userWarnings.get(target.id) || [];
+                    return interaction.reply({ content: `📋 <@${target.id}> has **${warns.length}** warning(s):\n${warns.map((w, i) => `${i+1}. ${w}`).join('\n') || 'None'}`, flags: 64 });
+                }
+
+                if (commandName === 'purge') {
+                    const count = options.getInteger('amount');
+                    await interaction.channel.bulkDelete(count, true).catch(() => {});
+                    return interaction.reply({ content: `🧹 Purged **${count}** messages.`, flags: 64 });
+                }
+
+                if (commandName === 'timeout') {
+                    const target = options.getUser('target');
+                    const minutes = options.getInteger('minutes');
+                    const member = await interaction.guild.members.fetch(target.id);
+                    await member.timeout(minutes * 60 * 1000, 'Timed out via slash command');
+                    return interaction.reply({ content: `🔇 Timed out <@${target.id}> for **${minutes}** minutes.`, flags: 64 });
+                }
+
+                return interaction.reply({ content: `⚡ Command \`/${commandName}\` executed!`, flags: 64 });
+            }
+        }
+
+        // --- BUTTON HANDLERS ---
+        if (interaction.isButton()) {
+            // --- Handle remove single token ---
+            if (interaction.customId.startsWith('remove_')) {
+                const id = interaction.customId.replace('remove_', '');
+                const messageId = interaction.message.id;
+                const state = removeStockMessages.get(messageId);
+                // We don't strictly need to validate user because the command is admin-only, but we can still check.
+                // But we'll allow any admin who has access.
+                if (!hasAdminAccess(interaction)) {
+                    return interaction.reply({ content: `❌ You need admin permissions to remove tokens.`, flags: 64 });
+                }
+
+                const result = removeTokenById(id);
+                if (result.success) {
+                    // Update the message: remove the entry and refresh the list
+                    const newEntries = tokenStock
+                        .filter(t => t.id && t.id.length > 0)
+                        .map(t => ({
+                            id: t.id,
+                            userId: t.userId,
+                            username: t.username || `<@${t.userId}>`
+                        }));
+                    newEntries.sort((a, b) => a.id.localeCompare(b.id));
+
+                    if (newEntries.length === 0) {
+                        // No tokens left, update the message
+                        const embed = new EmbedBuilder()
+                            .setTitle('📭 No Tokens Left')
+                            .setDescription('All generation IDs have been removed.')
+                            .setColor(0x2ECC71);
+                        await interaction.update({
+                            embeds: [embed],
+                            components: []
+                        });
+                        removeStockMessages.delete(messageId);
+                        await interaction.followUp({
+                            content: `✅ ${result.message}`,
+                            flags: 64
+                        });
+                        return;
+                    }
+
+                    // Rebuild the embed and action rows
+                    const embed = new EmbedBuilder()
+                        .setTitle('🗑️ Remove a Token by Selection')
+                        .setDescription(`**${newEntries.length}** active token(s) – click the **Remove** button for the token you want to delete.`)
+                        .setColor(0xED4245)
+                        .setFooter({ text: 'TMC.LOL • Click Remove to delete a single token' });
+
+                    if (newEntries.length <= 20) {
+                        newEntries.forEach((entry) => {
+                            embed.addFields({
+                                name: `\`${entry.id}\``,
+                                value: `👤 ${entry.username}\n🆔 <@${entry.userId}>`,
+                                inline: false
+                            });
+                        });
+                    } else {
+                        const list = newEntries.map(e => `\`${e.id}\` – ${e.username}`).join('\n');
+                        embed.addFields({ name: 'All Tokens', value: list, inline: false });
+                    }
+
+                    // Build rows
+                    const rows = [];
+                    let currentRow = new ActionRowBuilder();
+                    let buttonCount = 0;
+                    for (const entry of newEntries) {
+                        if (buttonCount >= 5) {
+                            rows.push(currentRow);
+                            currentRow = new ActionRowBuilder();
+                            buttonCount = 0;
+                        }
+                        currentRow.addComponents(
+                            new ButtonBuilder()
+                                .setCustomId(`remove_${entry.id}`)
+                                .setLabel(`Remove ${entry.id}`)
+                                .setStyle(ButtonStyle.Danger)
+                                .setEmoji('🗑️')
+                        );
+                        buttonCount++;
+                    }
+                    if (buttonCount > 0) rows.push(currentRow);
+
+                    const removeAllRow = new ActionRowBuilder().addComponents(
+                        new ButtonBuilder()
+                            .setCustomId('remove_all_tokens')
+                            .setLabel('🚨 Remove All Tokens')
+                            .setStyle(ButtonStyle.Danger)
+                    );
+
+                    const maxRemoveRows = 4;
+                    let finalRows = rows.slice(0, maxRemoveRows);
+                    if (rows.length > maxRemoveRows) {
+                        embed.setFooter({ text: `Showing ${maxRemoveRows*5} of ${newEntries.length} tokens – use /remove-token <ID> for others` });
+                    }
+                    finalRows.push(removeAllRow);
+
+                    await interaction.update({
+                        embeds: [embed],
+                        components: finalRows
+                    });
+
+                    await interaction.followUp({
+                        content: `✅ ${result.message}`,
+                        flags: 64
+                    });
+
+                    // Update stored state
+                    removeStockMessages.set(messageId, {
+                        userId: interaction.user.id,
+                        entries: newEntries
+                    });
+                } else {
+                    await interaction.reply({
+                        content: `❌ ${result.message}`,
+                        flags: 64
+                    });
+                }
+                return;
+            }
+
+            // --- Handle "Remove All Tokens" button ---
+            if (interaction.customId === 'remove_all_tokens') {
+                if (!hasAdminAccess(interaction)) {
+                    return interaction.reply({ content: `❌ You need admin permissions to remove all tokens.`, flags: 64 });
+                }
+
+                const result = removeAllTokens();
+                // After removing all, update the message
+                const messageId = interaction.message.id;
+                const state = removeStockMessages.get(messageId);
+                if (state) {
+                    const embed = new EmbedBuilder()
+                        .setTitle('🗑️ All Tokens Removed')
+                        .setDescription(`✅ ${result.message}`)
+                        .setColor(0x2ECC71);
+                    await interaction.update({
+                        embeds: [embed],
+                        components: []
+                    });
+                    removeStockMessages.delete(messageId);
+                    await interaction.followUp({
+                        content: `✅ ${result.message}`,
+                        flags: 64
+                    });
+                } else {
+                    // If we can't find the message, just reply
+                    await interaction.reply({
+                        content: `✅ ${result.message}`,
+                        flags: 64
+                    });
+                }
+                return;
+            }
+
+            // --- gen_public button ---
+            if (interaction.customId === 'gen_public') {
+                return await processTokenGeneration(interaction, 'Public Token (5m cooldown)');
+            }
+
+            // --- verify button ---
+            if (interaction.customId === 'verify_btn') {
+                await interaction.deferReply({ flags: 64 });
+
+                const guild = interaction.guild;
+                const member = interaction.member;
+                const role = guild.roles.cache.get(MEMBER_ROLE_ID);
+
+                if (!role) {
+                    return interaction.editReply({ content: "❌ Verification role could not be found." });
+                }
+
+                const botMember = guild.members.cache.get(client.user.id) || await guild.members.fetchMe();
+                if (botMember.roles.highest.position <= role.position) {
+                    return interaction.editReply({ content: "❌ Hierarchy Error: My role is lower than the verification role." });
+                }
+
+                if (member.roles.cache.has(role.id)) {
+                    return interaction.editReply({ content: "⚠️ You are already verified!" });
+                }
+
+                try {
+                    await member.roles.add(role);
+                    return interaction.editReply({ content: "✅ **Authentication Successful!**" });
+                } catch (err) {
+                    console.error("Role Assignment Error:", err);
+                    return interaction.editReply({ content: "❌ Failed to assign verification role." });
+                }
+            }
+
+            // --- redeem button ---
+            if (interaction.customId === 'redeem_btn') {
+                const modal = new ModalBuilder()
+                    .setCustomId('redeem_modal')
+                    .setTitle('💎 Secure Key Redemption');
+
+                const codeInput = new TextInputBuilder()
+                    .setCustomId('redeem_code_input')
+                    .setLabel("ENTER SUPPORTER / LICENSE CODE")
+                    .setStyle(TextInputStyle.Short)
+                    .setPlaceholder("supporter-xxxx-xxxx-xxxx")
+                    .setRequired(true);
+
+                modal.addComponents(new ActionRowBuilder().addComponents(codeInput));
+                return await interaction.showModal(modal);
+            }
+
+            // --- role announcements button ---
+            if (interaction.customId === 'role_announcements') {
+                const role = interaction.guild.roles.cache.get(ANNOUNCEMENT_ROLE_ID);
+                if (!role) return interaction.reply({ content: "❌ Announcement role not configured.", flags: 64 });
+
+                if (interaction.member.roles.cache.has(role.id)) {
+                    await interaction.member.roles.remove(role);
+                    return interaction.reply({ content: "🔕 Opted out of Announcements.", flags: 64 });
+                } else {
+                    await interaction.member.roles.add(role);
+                    return interaction.reply({ content: "🔔 Opted in to Announcements!", flags: 64 });
+                }
+            }
+
+            // --- automod toggle button ---
+            if (interaction.customId === 'automod_toggle') {
+                if (!hasAdminAccess(interaction)) {
+                    return interaction.reply({ content: `❌ You need the <@&${ADMIN_ROLE_ID}> role or admin permissions.`, flags: 64 });
+                }
+                return interaction.reply({ content: "🛡️ **Automod Security Matrix:** All parameters active.", flags: 64 });
+            }
+
+            // --- close ticket button ---
+            if (interaction.customId === 'close_ticket_btn') {
+                if (!hasAdminAccess(interaction)) {
+                    return interaction.reply({ content: "❌ Only staff can close tickets.", flags: 64 });
+                }
+                await interaction.reply({ content: "🔒 Archiving ticket in 5 seconds..." });
+                setTimeout(() => interaction.channel.delete().catch(() => {}), 5000);
+            }
+        }
+
+        if (interaction.isStringSelectMenu()) {
+            if (interaction.customId === 'support_select') {
+                const category = interaction.values[0];
+                const guild = interaction.guild;
                 const user = interaction.user;
-                const tokens = userTokens.get(user.id);
-                if (!tokens) {
-                    return interaction.reply({ content: '❌ You have not set your stash tokens. Use `/stash_connect` first.', flags: 64 });
-                }
 
                 await interaction.deferReply({ flags: 64 });
 
                 try {
-                    // Download the file
-                    const response = await fetch(attachment.url);
-                    if (!response.ok) throw new Error('Failed to download attachment');
-                    const buffer = Buffer.from(await response.arrayBuffer());
-
-                    // Prepare form data
-                    const form = new FormData();
-                    form.append('file', new Blob([buffer]), attachment.name);
-
-                    // Send to stash import endpoint
-                    const importResult = await fetch(STASH_IMPORT_URL, {
-                        method: 'POST',
-                        headers: {
-                            'Authorization': `Bearer ${tokens.bearer}`,
-                        },
-                        body: form,
+                    const ticketChannel = await guild.channels.create({
+                        name: `ticket-${user.username}`,
+                        type: ChannelType.GuildText,
+                        permissionOverwrites: [
+                            {
+                                id: guild.id,
+                                deny: [PermissionFlagsBits.ViewChannel],
+                            },
+                            {
+                                id: user.id,
+                                allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory],
+                            },
+                            {
+                                id: client.user.id,
+                                allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ManageChannels],
+                            }
+                        ],
                     });
 
-                    if (!importResult.ok) {
-                        const errorText = await importResult.text();
-                        throw new Error(`Import API error (${importResult.status}): ${errorText}`);
-                    }
+                    const ticketEmbed = new EmbedBuilder()
+                        .setTitle(`🎫 SECURE TICKET: ${category.toUpperCase()}`)
+                        .setDescription(`Welcome, <@${user.id}>. Staff has been notified.`)
+                        .setColor(0xFEE75C)
+                        .setTimestamp()
+                        .setFooter({ text: "TMC.LOL Incident Resolution • Credits to @elliott" });
 
-                    const resultData = await importResult.json();
-                    return interaction.editReply({
-                        content: `✅ Blueprint **${attachment.name}** imported successfully!\n\`\`\`json\n${JSON.stringify(resultData, null, 2)}\n\`\`\``
-                    });
+                    const closeButton = new ActionRowBuilder().addComponents(
+                        new ButtonBuilder().setCustomId('close_ticket_btn').setLabel('CLOSE TICKET').setStyle(ButtonStyle.Danger).setEmoji('🔒')
+                    );
+
+                    await ticketChannel.send({ content: `<@${user.id}> | Staff Alert`, embeds: [ticketEmbed], components: [closeButton] });
+
+                    return interaction.editReply({ content: `✅ Ticket created: <#${ticketChannel.id}>` });
                 } catch (err) {
-                    console.error('[TMC.LOL] Stash import error:', err);
-                    return interaction.editReply({
-                        content: `❌ Failed to import blueprint: ${err.message}`
-                    });
+                    console.error("Ticket Creation Error:", err);
+                    return interaction.editReply({ content: "❌ Failed to create ticket." });
                 }
             }
-            // =============================================================
-
-            // --- ADMIN ONLY COMMANDS (existing) ---
-            // ... (keep all existing admin command handlers, make sure to include the new ones in the adminCommands array)
-            const adminCommands = ['stock', 'stock_main', 'generator', 'force_refresh', 'remove-stock', 'reset-stock', 'remove-token', 'gen-codes', 'refresh_cooldown_all', 'refresh_cooldown_user', 'refresh_user', 'logs', 'servers', 'setup-botlog', 'build', 'panel', 'generate-code', 'warn', 'warnings', 'purge', 'timeout', 'afk', 'announce', 'autodelete', 'autorole', 'ban', 'blacklist', 'bumpreminder', 'counting', 'fakeconvo', 'fakemessage', 'giveall', 'giveaway', 'info', 'leaderboard', 'level', 'levelset', 'lock', 'modmakerapply', 'mute', 'poll', 'postroles', 'postrules', 'reactionrole', 'roleadd', 'roleremove', 'setlogs', 'slowmode', 'starboard', 'status', 'ticketpanel', 'unlock', 'welcome', 'refresh_batch', 'embed', 'stash_connect', 'stash_import'];
-            // ... rest of existing code, but we need to add the new commands to the admin check.
-
-            // We'll place the new stash commands before the adminCommands check so they are caught, but we already handled them above.
-            // So we can just leave them as is.
-
-            // ... (continue with the rest of the existing interaction handling)
         }
 
-        // --- BUTTON HANDLERS (existing) ---
-        // ... (keep existing, add new stash panel button logic)
+        if (interaction.isModalSubmit()) {
+            if (interaction.customId === 'stock_modal') {
+                try {
+                    if (!hasAdminAccess(interaction)) {
+                        return interaction.reply({
+                            content: `❌ **Access Denied:** You need the <@&${ADMIN_ROLE_ID}> role or admin permissions.`,
+                            flags: 64
+                        });
+                    }
 
-        // --- MODAL SUBMITS (existing) ---
-        // ... (keep existing, add new stash_set_modal for /panel stash)
+                    await interaction.deferReply({ flags: 64 });
+                    
+                    const bearer = interaction.fields.getTextInputValue('stock_bearer_input').trim();
+                    const refresh = interaction.fields.getTextInputValue('stock_refresh_input').trim();
+                    
+                    if (!bearer || !refresh) {
+                        return interaction.editReply({
+                            content: '❌ **Error:** Both Bearer and Refresh tokens are required.'
+                        });
+                    }
+                    
+                    tokenStock.push({
+                        bearer,
+                        refresh,
+                        addedAt: Date.now(),
+                        expiresAt: Date.now() + (60 * 60 * 1000)
+                    });
+
+                    return interaction.editReply({
+                        content: `📦 **Successfully added token to stock!**\n\nTotal tokens: \`${tokenStock.length}\``
+                    });
+                } catch (err) {
+                    console.error('[TMC.LOL] Stock Modal Error:', err);
+                    if (interaction.deferred) {
+                        return interaction.editReply({
+                            content: '❌ **Error:** Failed to process token. Please try again.'
+                        });
+                    } else {
+                        return interaction.reply({
+                            content: '❌ **Error:** Failed to process token. Please try again.',
+                            flags: 64
+                        });
+                    }
+                }
+            }
+
+            if (interaction.customId === 'redeem_modal') {
+                await interaction.deferReply({ flags: 64 });
+                const code = interaction.fields.getTextInputValue('redeem_code_input').trim();
+
+                if (validCodes.has(code)) {
+                    validCodes.delete(code);
+
+                    const guild = interaction.guild;
+                    const member = interaction.member;
+                    const supporterRole = guild.roles.cache.get(SUPPORTER_ROLE_ID);
+
+                    if (!supporterRole) {
+                        return interaction.editReply({ content: `🎉 **Code Validated!** However, the Supporter Role couldn't be found.` });
+                    }
+
+                    try {
+                        await member.roles.add(supporterRole);
+                        return interaction.editReply({ content: `🎉 **Redemption Successful!** Code \`${code}\` verified. Supporter role assigned!` });
+                    } catch (err) {
+                        console.error("Supporter Role Assignment Error:", err);
+                        return interaction.editReply({ content: `⚠️ Code valid, but failed to assign role.` });
+                    }
+                } else {
+                    return interaction.editReply({ content: `❌ **Invalid Code:** \`${code}\` does not exist or has been claimed.` });
+                }
+            }
+        }
     } catch (err) {
         console.error(`[TMC.LOL] Interaction Error:`, err);
         if (err.code !== 3000 && !interaction.replied && !interaction.deferred) {
