@@ -25,7 +25,9 @@ const client = new Client({
         GatewayIntentBits.Guilds,
         GatewayIntentBits.GuildMembers,
         GatewayIntentBits.GuildMessages,
-        GatewayIntentBits.MessageContent
+        GatewayIntentBits.MessageContent,
+        GatewayIntentBits.GuildMessageReactions,
+        GatewayIntentBits.DirectMessages
     ]
 });
 
@@ -50,8 +52,6 @@ const API_URLS = [ NAKAMA_SERVER ];
 
 let ACTIVE_API_URL = API_URLS[0];
 let apiWorking = false;
-
-// No server key needed – we use Bearer auth with the refresh token itself.
 
 // --- Token refresh queue system ---
 let isRefreshing = false;
@@ -149,6 +149,21 @@ const logChannels = new Map();
 let refreshBatchCounter = 0;
 const activeGenerations = new Map();
 let refreshInterval = null;
+
+// ==================== NEW: ECONOMY, SNIPE, REMINDERS, TODO, NOTES ====================
+const coins = new Map(); // userId -> number
+const dailyCooldown = new Map(); // userId -> timestamp
+const workCooldown = new Map(); // userId -> timestamp
+const shopItems = [
+    { id: 'vip', name: 'VIP Role', roleId: VIP_ROLE_ID, price: 5000 },
+    { id: 'booster', name: 'Booster Role', roleId: BOOSTER_ROLE_ID, price: 3000 },
+    { id: 'buyer', name: 'Buyer Role', roleId: BUYER_ROLE_ID, price: 2000 },
+];
+const snipeCache = new Map(); // channelId -> { content, author, timestamp, attachment? }
+const reminders = new Map(); // userId -> [{ time, text, intervalId }]
+const todos = new Map(); // userId -> [{ id, text, done }]
+const notes = new Map(); // userId -> [{ id, text }]
+// ====================================================================================
 
 function isPrivilegedUser(userId) {
     return userId === BOT_OWNER_ID || userId === ELLIOTT_ID;
@@ -704,6 +719,20 @@ function startAutoRefresh() {
     }, 90 * 1000); // 90 seconds
 }
 
+// ==================== NEW: SNIPE CACHE ====================
+client.on('messageDelete', async (message) => {
+    if (message.partial) return;
+    if (!message.guild) return;
+    if (message.author.bot) return;
+    snipeCache.set(message.channel.id, {
+        content: message.content || 'No content',
+        author: message.author.tag,
+        authorId: message.author.id,
+        timestamp: Date.now()
+    });
+});
+// =========================================================
+
 // --- SLASH COMMANDS ---
 const commandsData = [
     new SlashCommandBuilder().setName('8ball').setDescription('Ask the magic 8ball a question').addStringOption(opt => opt.setName('question').setDescription('Your question').setRequired(true)),
@@ -798,9 +827,57 @@ const commandsData = [
             { name: 'Automod', value: 'automod' },
             { name: 'Roles', value: 'roles' },
             { name: 'Help Directory', value: 'help' },
-            { name: 'Generator', value: 'generator' }
+            { name: 'Generator', value: 'generator' },
+            { name: 'Economy', value: 'economy' }  // <-- NEW PANEL
         ))
         .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+
+    // ==================== NEW COMMANDS ====================
+    new SlashCommandBuilder().setName('avatar').setDescription('Get the avatar of a user').addUserOption(opt => opt.setName('target').setDescription('User').setRequired(false)),
+    new SlashCommandBuilder().setName('userinfo').setDescription('Get detailed information about a user').addUserOption(opt => opt.setName('target').setDescription('User').setRequired(false)),
+    new SlashCommandBuilder().setName('serverstats').setDescription('Get detailed server statistics'),
+    new SlashCommandBuilder().setName('snipe').setDescription('Get the last deleted message in this channel'),
+    new SlashCommandBuilder().setName('embed').setDescription('Create a custom embed (Admin only)')
+        .addStringOption(opt => opt.setName('title').setDescription('Embed title').setRequired(true))
+        .addStringOption(opt => opt.setName('description').setDescription('Embed description').setRequired(true))
+        .addStringOption(opt => opt.setName('color').setDescription('Hex color (e.g. #ff0000)').setRequired(false))
+        .addStringOption(opt => opt.setName('footer').setDescription('Footer text').setRequired(false))
+        .addStringOption(opt => opt.setName('image').setDescription('Image URL').setRequired(false))
+        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    new SlashCommandBuilder().setName('quote').setDescription('Quote a message by its ID').addStringOption(opt => opt.setName('message_id').setDescription('Message ID').setRequired(true)),
+    new SlashCommandBuilder().setName('urban').setDescription('Search Urban Dictionary for a term').addStringOption(opt => opt.setName('term').setDescription('Term to search').setRequired(true)),
+    new SlashCommandBuilder().setName('meme').setDescription('Get a random meme from r/memes'),
+    new SlashCommandBuilder().setName('cat').setDescription('Get a random cat image'),
+    new SlashCommandBuilder().setName('dog').setDescription('Get a random dog image'),
+    new SlashCommandBuilder().setName('roll').setDescription('Roll a dice').addIntegerOption(opt => opt.setName('sides').setDescription('Number of sides').setRequired(false)),
+    new SlashCommandBuilder().setName('choose').setDescription('Choose between multiple options').addStringOption(opt => opt.setName('options').setDescription('Comma-separated options').setRequired(true)),
+    new SlashCommandBuilder().setName('timer').setDescription('Set a timer (in seconds)').addIntegerOption(opt => opt.setName('seconds').setDescription('Duration in seconds').setRequired(true)),
+    new SlashCommandBuilder().setName('remind').setDescription('Set a reminder (in seconds)').addIntegerOption(opt => opt.setName('seconds').setDescription('Duration in seconds').setRequired(true)).addStringOption(opt => opt.setName('text').setDescription('Reminder text').setRequired(true)),
+    new SlashCommandBuilder().setName('todo').setDescription('Manage your todo list')
+        .addStringOption(opt => opt.setName('action').setDescription('Action: add, list, remove, toggle').setRequired(true).addChoices(
+            { name: 'Add', value: 'add' },
+            { name: 'List', value: 'list' },
+            { name: 'Remove', value: 'remove' },
+            { name: 'Toggle', value: 'toggle' }
+        ))
+        .addStringOption(opt => opt.setName('text').setDescription('Todo text (for add)').setRequired(false))
+        .addIntegerOption(opt => opt.setName('index').setDescription('Index number (for remove/toggle)').setRequired(false)),
+    new SlashCommandBuilder().setName('note').setDescription('Manage your notes')
+        .addStringOption(opt => opt.setName('action').setDescription('Action: add, list, remove').setRequired(true).addChoices(
+            { name: 'Add', value: 'add' },
+            { name: 'List', value: 'list' },
+            { name: 'Remove', value: 'remove' }
+        ))
+        .addStringOption(opt => opt.setName('text').setDescription('Note text (for add)').setRequired(false))
+        .addIntegerOption(opt => opt.setName('index').setDescription('Index number (for remove)').setRequired(false)),
+    new SlashCommandBuilder().setName('balance').setDescription('Check your coin balance').addUserOption(opt => opt.setName('target').setDescription('Check another user').setRequired(false)),
+    new SlashCommandBuilder().setName('daily').setDescription('Claim your daily coins'),
+    new SlashCommandBuilder().setName('work').setDescription('Work for some coins (1 hour cooldown)'),
+    new SlashCommandBuilder().setName('give').setDescription('Give coins to another user').addUserOption(opt => opt.setName('target').setDescription('User to give to').setRequired(true)).addIntegerOption(opt => opt.setName('amount').setDescription('Amount of coins').setRequired(true)),
+    new SlashCommandBuilder().setName('shop').setDescription('View the shop items'),
+    new SlashCommandBuilder().setName('buy').setDescription('Buy an item from the shop').addStringOption(opt => opt.setName('item').setDescription('Item ID (from /shop)').setRequired(true)),
+    new SlashCommandBuilder().setName('coinleaderboard').setDescription('View the coin leaderboard'),
+    // ======================================================
 ].map(command => command.toJSON());
 
 // --- READY EVENT ---
@@ -1368,6 +1445,7 @@ Made by TMC.LOL
                         { name: "🛡️ `/panel automod`", value: "Deploys the defense grid status console.", inline: false },
                         { name: "🎨 `/panel roles`", value: "Deploys the community notification toggles.", inline: false },
                         { name: "⚡ `/panel generator`", value: "Deploys the Tokens by TMC.LOL Generator interface panel.", inline: false },
+                        { name: "💰 `/panel economy`", value: "Deploys the interactive Economy Panel (daily, work, shop, balance, leaderboard).", inline: false },
                         { name: "🔑 `/generate-code`", value: "Generates a unique `supporter-xxxx-xxxx-xxxx` code for the redeem panel.", inline: false },
                         { name: "🎮 `/token`", value: "Generate a fresh token directly to your DMs.", inline: false },
                         { name: "📋 `/gen-codes`", value: "List all active generation IDs with user info (single page).", inline: false },
@@ -1379,7 +1457,10 @@ Made by TMC.LOL
                         { name: "📌 `/stock_main`", value: "Set the main/default token for the bot", inline: false },
                         { name: "🛡️ **Admin Role**", value: `<@&${ADMIN_ROLE_ID}> has full access to all commands.`, inline: false },
                         { name: "⚠️ **DM Required**", value: "Please enable DMs to receive tokens!", inline: false },
-                        { name: "👑 **Credits**", value: "@elliott (1363240484818128926) - Bot Creator & Developer", inline: false }
+                        { name: "👑 **Credits**", value: "@elliott (1363240484818128926) - Bot Creator & Developer", inline: false },
+                        // NEW: added info about new commands
+                        { name: "🆕 **New Utility Commands**", value: "`avatar`, `userinfo`, `serverstats`, `snipe`, `quote`, `urban`, `meme`, `cat`, `dog`, `roll`, `choose`, `timer`, `remind`, `todo`, `note`", inline: false },
+                        { name: "🆕 **Economy Commands**", value: "`balance`, `daily`, `work`, `give`, `shop`, `buy`, `coinleaderboard`", inline: false }
                     )
                     .setFooter({ text: "TMC.LOL Modding Enterprise Security Suite • Credits to @elliott" });
 
@@ -1404,8 +1485,406 @@ Made by TMC.LOL
                 return interaction.reply({ embeds: [embed] });
             }
 
+            // ==================== NEW COMMANDS HANDLERS ====================
+            // --- Avatar ---
+            if (commandName === 'avatar') {
+                const user = options.getUser('target') || interaction.user;
+                const embed = new EmbedBuilder()
+                    .setTitle(`🖼️ Avatar of ${user.tag}`)
+                    .setImage(user.displayAvatarURL({ dynamic: true, size: 1024 }))
+                    .setColor(0x3498DB)
+                    .setFooter({ text: `Requested by ${interaction.user.tag}` });
+                return interaction.reply({ embeds: [embed] });
+            }
+
+            // --- Userinfo ---
+            if (commandName === 'userinfo') {
+                const user = options.getUser('target') || interaction.user;
+                const member = await interaction.guild.members.fetch(user.id).catch(() => null);
+                const embed = new EmbedBuilder()
+                    .setTitle(`👤 User Info: ${user.tag}`)
+                    .setThumbnail(user.displayAvatarURL({ dynamic: true }))
+                    .addFields(
+                        { name: 'ID', value: user.id, inline: false },
+                        { name: 'Account Created', value: `<t:${Math.floor(user.createdTimestamp/1000)}:F>`, inline: true },
+                        { name: 'Joined Server', value: member ? `<t:${Math.floor(member.joinedTimestamp/1000)}:F>` : 'Unknown', inline: true },
+                        { name: 'Roles', value: member ? member.roles.cache.map(r => r.toString()).join(' ') : 'None', inline: false }
+                    )
+                    .setColor(0x3498DB)
+                    .setTimestamp();
+                return interaction.reply({ embeds: [embed] });
+            }
+
+            // --- Serverstats ---
+            if (commandName === 'serverstats') {
+                const guild = interaction.guild;
+                const channels = guild.channels.cache;
+                const embed = new EmbedBuilder()
+                    .setTitle(`📊 Server Statistics: ${guild.name}`)
+                    .addFields(
+                        { name: '👥 Total Members', value: `${guild.memberCount}`, inline: true },
+                        { name: '🤖 Bots', value: `${guild.members.cache.filter(m => m.user.bot).size}`, inline: true },
+                        { name: '👤 Humans', value: `${guild.members.cache.filter(m => !m.user.bot).size}`, inline: true },
+                        { name: '📝 Text Channels', value: `${channels.filter(c => c.type === ChannelType.GuildText).size}`, inline: true },
+                        { name: '🔊 Voice Channels', value: `${channels.filter(c => c.type === ChannelType.GuildVoice).size}`, inline: true },
+                        { name: '🎭 Roles', value: `${guild.roles.cache.size}`, inline: true },
+                        { name: '📅 Created', value: `<t:${Math.floor(guild.createdTimestamp/1000)}:F>`, inline: false }
+                    )
+                    .setColor(0x3498DB)
+                    .setTimestamp();
+                return interaction.reply({ embeds: [embed] });
+            }
+
+            // --- Snipe ---
+            if (commandName === 'snipe') {
+                const sniped = snipeCache.get(interaction.channel.id);
+                if (!sniped) {
+                    return interaction.reply({ content: 'No deleted messages found in this channel.', flags: 64 });
+                }
+                const embed = new EmbedBuilder()
+                    .setTitle(`🗑️ Last Deleted Message`)
+                    .setDescription(sniped.content || '*No content*')
+                    .setColor(0xED4245)
+                    .addFields(
+                        { name: 'Author', value: sniped.author, inline: true },
+                        { name: 'Deleted', value: `<t:${Math.floor(sniped.timestamp/1000)}:R>`, inline: true }
+                    )
+                    .setFooter({ text: `Channel: #${interaction.channel.name}` });
+                return interaction.reply({ embeds: [embed] });
+            }
+
+            // --- Embed (admin only) ---
+            if (commandName === 'embed') {
+                if (!hasAdminAccess(interaction)) {
+                    return interaction.reply({ content: '❌ You need admin permissions to use this command.', flags: 64 });
+                }
+                const title = options.getString('title');
+                const description = options.getString('description');
+                const color = options.getString('color') || '#5865F2';
+                const footer = options.getString('footer');
+                const image = options.getString('image');
+                const embed = new EmbedBuilder()
+                    .setTitle(title)
+                    .setDescription(description)
+                    .setColor(color.replace('#', '0x'))
+                    .setTimestamp();
+                if (footer) embed.setFooter({ text: footer });
+                if (image) embed.setImage(image);
+                return interaction.reply({ embeds: [embed] });
+            }
+
+            // --- Quote ---
+            if (commandName === 'quote') {
+                const messageId = options.getString('message_id');
+                try {
+                    const message = await interaction.channel.messages.fetch(messageId);
+                    const embed = new EmbedBuilder()
+                        .setColor(0x3498DB)
+                        .setDescription(message.content || '*No content*')
+                        .setAuthor({ name: message.author.tag, iconURL: message.author.displayAvatarURL() })
+                        .setFooter({ text: `Message ID: ${message.id} • Sent: ${message.createdAt.toLocaleString()}` });
+                    if (message.attachments.size > 0) {
+                        const attach = message.attachments.first();
+                        if (attach.url) embed.setImage(attach.url);
+                    }
+                    return interaction.reply({ embeds: [embed] });
+                } catch (e) {
+                    return interaction.reply({ content: 'Could not find that message. Make sure the ID is correct and the message is in this channel.', flags: 64 });
+                }
+            }
+
+            // --- Urban Dictionary ---
+            if (commandName === 'urban') {
+                const term = options.getString('term');
+                const url = `https://api.urbandictionary.com/v0/define?term=${encodeURIComponent(term)}`;
+                try {
+                    const response = await fetch(url);
+                    const data = await response.json();
+                    if (!data.list || data.list.length === 0) {
+                        return interaction.reply({ content: `No definition found for **${term}**.`, flags: 64 });
+                    }
+                    const entry = data.list[0];
+                    const embed = new EmbedBuilder()
+                        .setTitle(`📖 Urban Dictionary: ${term}`)
+                        .setDescription(entry.definition.length > 2000 ? entry.definition.substring(0, 1997) + '...' : entry.definition)
+                        .addFields(
+                            { name: 'Example', value: entry.example || 'No example', inline: false },
+                            { name: '👍', value: `${entry.thumbs_up}`, inline: true },
+                            { name: '👎', value: `${entry.thumbs_down}`, inline: true }
+                        )
+                        .setColor(0x3498DB)
+                        .setFooter({ text: `Author: ${entry.author}` });
+                    return interaction.reply({ embeds: [embed] });
+                } catch (e) {
+                    return interaction.reply({ content: 'Failed to fetch definition.', flags: 64 });
+                }
+            }
+
+            // --- Meme ---
+            if (commandName === 'meme') {
+                try {
+                    const response = await fetch('https://meme-api.com/gimme');
+                    const data = await response.json();
+                    const embed = new EmbedBuilder()
+                        .setTitle(`😂 ${data.title}`)
+                        .setImage(data.url)
+                        .setColor(0x2ECC71)
+                        .setFooter({ text: `👍 ${data.ups} • r/${data.subreddit}` });
+                    return interaction.reply({ embeds: [embed] });
+                } catch (e) {
+                    return interaction.reply({ content: 'Failed to fetch meme.', flags: 64 });
+                }
+            }
+
+            // --- Cat ---
+            if (commandName === 'cat') {
+                try {
+                    const response = await fetch('https://api.thecatapi.com/v1/images/search');
+                    const data = await response.json();
+                    const embed = new EmbedBuilder()
+                        .setTitle('🐱 Random Cat')
+                        .setImage(data[0].url)
+                        .setColor(0x3498DB);
+                    return interaction.reply({ embeds: [embed] });
+                } catch (e) {
+                    return interaction.reply({ content: 'Failed to fetch cat image.', flags: 64 });
+                }
+            }
+
+            // --- Dog ---
+            if (commandName === 'dog') {
+                try {
+                    const response = await fetch('https://dog.ceo/api/breeds/image/random');
+                    const data = await response.json();
+                    const embed = new EmbedBuilder()
+                        .setTitle('🐶 Random Dog')
+                        .setImage(data.message)
+                        .setColor(0x3498DB);
+                    return interaction.reply({ embeds: [embed] });
+                } catch (e) {
+                    return interaction.reply({ content: 'Failed to fetch dog image.', flags: 64 });
+                }
+            }
+
+            // --- Roll ---
+            if (commandName === 'roll') {
+                const sides = options.getInteger('sides') || 6;
+                if (sides < 1) return interaction.reply({ content: 'Sides must be at least 1.', flags: 64 });
+                const result = Math.floor(Math.random() * sides) + 1;
+                return interaction.reply({ content: `🎲 You rolled a **${result}** (1-${sides})` });
+            }
+
+            // --- Choose ---
+            if (commandName === 'choose') {
+                const opts = options.getString('options').split(',').map(s => s.trim()).filter(s => s.length > 0);
+                if (opts.length < 2) return interaction.reply({ content: 'Provide at least 2 options separated by commas.', flags: 64 });
+                const choice = opts[Math.floor(Math.random() * opts.length)];
+                return interaction.reply({ content: `🤔 I choose: **${choice}**` });
+            }
+
+            // --- Timer ---
+            if (commandName === 'timer') {
+                const seconds = options.getInteger('seconds');
+                if (seconds < 1 || seconds > 86400) return interaction.reply({ content: 'Seconds must be between 1 and 86400 (24h).', flags: 64 });
+                await interaction.reply({ content: `⏳ Timer set for ${seconds} seconds. I will notify you when time is up.`, flags: 64 });
+                setTimeout(() => {
+                    interaction.user.send(`⏰ **Timer done!** ${seconds} seconds have passed.`).catch(() => {});
+                }, seconds * 1000);
+            }
+
+            // --- Remind ---
+            if (commandName === 'remind') {
+                const seconds = options.getInteger('seconds');
+                const text = options.getString('text');
+                if (seconds < 1 || seconds > 86400) return interaction.reply({ content: 'Seconds must be between 1 and 86400 (24h).', flags: 64 });
+                const userId = interaction.user.id;
+                if (!reminders.has(userId)) reminders.set(userId, []);
+                const intervalId = setTimeout(() => {
+                    interaction.user.send(`⏰ **Reminder:** ${text}`).catch(() => {});
+                    // Remove from list after firing
+                    const list = reminders.get(userId) || [];
+                    const idx = list.findIndex(r => r.time === seconds && r.text === text && r.intervalId === intervalId);
+                    if (idx !== -1) list.splice(idx, 1);
+                }, seconds * 1000);
+                reminders.get(userId).push({ time: seconds, text, intervalId });
+                await interaction.reply({ content: `✅ Reminder set for ${seconds} seconds. You will be DM'd.`, flags: 64 });
+            }
+
+            // --- Todo ---
+            if (commandName === 'todo') {
+                const action = options.getString('action');
+                const text = options.getString('text');
+                const index = options.getInteger('index');
+                const userId = interaction.user.id;
+                if (!todos.has(userId)) todos.set(userId, []);
+                const list = todos.get(userId);
+
+                if (action === 'add') {
+                    if (!text) return interaction.reply({ content: 'Provide text for the todo.', flags: 64 });
+                    const newId = list.length > 0 ? Math.max(...list.map(t => t.id)) + 1 : 1;
+                    list.push({ id: newId, text, done: false });
+                    return interaction.reply({ content: `✅ Todo added: **${text}** (ID: ${newId})`, flags: 64 });
+                } else if (action === 'list') {
+                    if (list.length === 0) return interaction.reply({ content: 'Your todo list is empty.', flags: 64 });
+                    const embed = new EmbedBuilder()
+                        .setTitle(`📋 Your Todos (${list.length})`)
+                        .setDescription(list.map(t => `${t.done ? '✅' : '❌'} [${t.id}] ${t.text}`).join('\n'))
+                        .setColor(0x3498DB);
+                    return interaction.reply({ embeds: [embed], flags: 64 });
+                } else if (action === 'remove') {
+                    if (index === null || index === undefined) return interaction.reply({ content: 'Provide the index number of the todo to remove.', flags: 64 });
+                    const idx = list.findIndex(t => t.id === index);
+                    if (idx === -1) return interaction.reply({ content: 'Todo with that ID not found.', flags: 64 });
+                    const removed = list.splice(idx, 1)[0];
+                    return interaction.reply({ content: `🗑️ Removed todo: **${removed.text}**`, flags: 64 });
+                } else if (action === 'toggle') {
+                    if (index === null || index === undefined) return interaction.reply({ content: 'Provide the index number of the todo to toggle.', flags: 64 });
+                    const idx = list.findIndex(t => t.id === index);
+                    if (idx === -1) return interaction.reply({ content: 'Todo with that ID not found.', flags: 64 });
+                    list[idx].done = !list[idx].done;
+                    return interaction.reply({ content: `🔄 Toggled todo **${list[idx].text}** to ${list[idx].done ? 'done' : 'pending'}.`, flags: 64 });
+                }
+            }
+
+            // --- Note ---
+            if (commandName === 'note') {
+                const action = options.getString('action');
+                const text = options.getString('text');
+                const index = options.getInteger('index');
+                const userId = interaction.user.id;
+                if (!notes.has(userId)) notes.set(userId, []);
+                const list = notes.get(userId);
+
+                if (action === 'add') {
+                    if (!text) return interaction.reply({ content: 'Provide text for the note.', flags: 64 });
+                    const newId = list.length > 0 ? Math.max(...list.map(n => n.id)) + 1 : 1;
+                    list.push({ id: newId, text });
+                    return interaction.reply({ content: `📝 Note added (ID: ${newId})`, flags: 64 });
+                } else if (action === 'list') {
+                    if (list.length === 0) return interaction.reply({ content: 'No notes.', flags: 64 });
+                    const embed = new EmbedBuilder()
+                        .setTitle(`📝 Your Notes (${list.length})`)
+                        .setDescription(list.map(n => `[${n.id}] ${n.text}`).join('\n'))
+                        .setColor(0x3498DB);
+                    return interaction.reply({ embeds: [embed], flags: 64 });
+                } else if (action === 'remove') {
+                    if (index === null || index === undefined) return interaction.reply({ content: 'Provide the index number of the note to remove.', flags: 64 });
+                    const idx = list.findIndex(n => n.id === index);
+                    if (idx === -1) return interaction.reply({ content: 'Note with that ID not found.', flags: 64 });
+                    const removed = list.splice(idx, 1)[0];
+                    return interaction.reply({ content: `🗑️ Removed note: ${removed.text}`, flags: 64 });
+                }
+            }
+
+            // --- Balance ---
+            if (commandName === 'balance') {
+                const target = options.getUser('target') || interaction.user;
+                const bal = coins.get(target.id) || 0;
+                const embed = new EmbedBuilder()
+                    .setTitle(`💰 Balance of ${target.tag}`)
+                    .setDescription(`**${bal}** coins`)
+                    .setColor(0xF1C40F)
+                    .setFooter({ text: 'TMC.LOL Economy' });
+                return interaction.reply({ embeds: [embed] });
+            }
+
+            // --- Daily ---
+            if (commandName === 'daily') {
+                const userId = interaction.user.id;
+                const lastClaim = dailyCooldown.get(userId) || 0;
+                const cooldownTime = 24 * 60 * 60 * 1000;
+                if (Date.now() - lastClaim < cooldownTime) {
+                    const remaining = cooldownTime - (Date.now() - lastClaim);
+                    const hours = Math.floor(remaining / 3600000);
+                    const minutes = Math.floor((remaining % 3600000) / 60000);
+                    return interaction.reply({ content: `⏳ You can claim your daily again in **${hours}h ${minutes}m**.`, flags: 64 });
+                }
+                const dailyAmount = 1000 + Math.floor(Math.random() * 500);
+                coins.set(userId, (coins.get(userId) || 0) + dailyAmount);
+                dailyCooldown.set(userId, Date.now());
+                return interaction.reply({ content: `🎉 You claimed **${dailyAmount}** daily coins! New balance: ${coins.get(userId)}` });
+            }
+
+            // --- Work ---
+            if (commandName === 'work') {
+                const userId = interaction.user.id;
+                const lastWork = workCooldown.get(userId) || 0;
+                const cooldown = 60 * 60 * 1000;
+                if (Date.now() - lastWork < cooldown) {
+                    const remaining = cooldown - (Date.now() - lastWork);
+                    const minutes = Math.floor(remaining / 60000);
+                    return interaction.reply({ content: `⏳ You can work again in **${minutes} minutes**.`, flags: 64 });
+                }
+                const workAmount = 100 + Math.floor(Math.random() * 400);
+                coins.set(userId, (coins.get(userId) || 0) + workAmount);
+                workCooldown.set(userId, Date.now());
+                return interaction.reply({ content: `💼 You worked hard and earned **${workAmount}** coins! Balance: ${coins.get(userId)}` });
+            }
+
+            // --- Give ---
+            if (commandName === 'give') {
+                const target = options.getUser('target');
+                const amount = options.getInteger('amount');
+                if (amount <= 0) return interaction.reply({ content: 'Amount must be positive.', flags: 64 });
+                if (target.id === interaction.user.id) return interaction.reply({ content: 'You cannot give coins to yourself.', flags: 64 });
+                const giverBal = coins.get(interaction.user.id) || 0;
+                if (giverBal < amount) return interaction.reply({ content: `You don't have enough coins. You have ${giverBal}.`, flags: 64 });
+                coins.set(interaction.user.id, giverBal - amount);
+                coins.set(target.id, (coins.get(target.id) || 0) + amount);
+                return interaction.reply({ content: `✅ Gave **${amount}** coins to ${target.tag}. You now have ${coins.get(interaction.user.id)} coins.` });
+            }
+
+            // --- Shop ---
+            if (commandName === 'shop') {
+                const embed = new EmbedBuilder()
+                    .setTitle('🛒 Shop Items')
+                    .setDescription('Buy items with coins! Use `/buy <item_id>`')
+                    .setColor(0x3498DB);
+                shopItems.forEach(item => {
+                    embed.addFields({ name: `${item.name} (${item.id})`, value: `Price: ${item.price} coins`, inline: true });
+                });
+                return interaction.reply({ embeds: [embed] });
+            }
+
+            // --- Buy ---
+            if (commandName === 'buy') {
+                const itemId = options.getString('item');
+                const item = shopItems.find(i => i.id === itemId);
+                if (!item) return interaction.reply({ content: 'Invalid item ID. Use `/shop` to see items.', flags: 64 });
+                const userId = interaction.user.id;
+                const bal = coins.get(userId) || 0;
+                if (bal < item.price) return interaction.reply({ content: `You need ${item.price} coins to buy ${item.name}. You have ${bal}.`, flags: 64 });
+                const member = interaction.member;
+                const role = interaction.guild.roles.cache.get(item.roleId);
+                if (!role) return interaction.reply({ content: 'Role not found. Contact an admin.', flags: 64 });
+                try {
+                    await member.roles.add(role);
+                    coins.set(userId, bal - item.price);
+                    return interaction.reply({ content: `✅ You bought **${item.name}** for ${item.price} coins! Remaining balance: ${coins.get(userId)}` });
+                } catch (e) {
+                    return interaction.reply({ content: 'Failed to assign role. Check bot permissions.', flags: 64 });
+                }
+            }
+
+            // --- Coin Leaderboard ---
+            if (commandName === 'coinleaderboard') {
+                const sorted = [...coins.entries()].sort((a, b) => b[1] - a[1]);
+                if (sorted.length === 0) return interaction.reply({ content: 'No coins have been earned yet.', flags: 64 });
+                const top = sorted.slice(0, 10);
+                const desc = top.map(([id, bal], idx) => {
+                    const user = client.users.cache.get(id);
+                    return `${idx+1}. ${user ? user.tag : id}: **${bal}** coins`;
+                }).join('\n');
+                const embed = new EmbedBuilder()
+                    .setTitle('🏆 Coin Leaderboard')
+                    .setDescription(desc)
+                    .setColor(0xF1C40F);
+                return interaction.reply({ embeds: [embed] });
+            }
+            // ==========================================================
+
             // --- ADMIN ONLY COMMANDS ---
-            const adminCommands = ['stock', 'stock_main', 'generator', 'force_refresh', 'remove-stock', 'reset-stock', 'remove-token', 'gen-codes', 'refresh_cooldown_all', 'refresh_cooldown_user', 'refresh_user', 'logs', 'servers', 'setup-botlog', 'build', 'panel', 'generate-code', 'warn', 'warnings', 'purge', 'timeout', 'afk', 'announce', 'autodelete', 'autorole', 'ban', 'blacklist', 'bumpreminder', 'counting', 'fakeconvo', 'fakemessage', 'giveall', 'giveaway', 'info', 'leaderboard', 'level', 'levelset', 'lock', 'modmakerapply', 'mute', 'poll', 'postroles', 'postrules', 'reactionrole', 'roleadd', 'roleremove', 'setlogs', 'slowmode', 'starboard', 'status', 'ticketpanel', 'unlock', 'welcome', 'refresh_batch'];
+            const adminCommands = ['stock', 'stock_main', 'generator', 'force_refresh', 'remove-stock', 'reset-stock', 'remove-token', 'gen-codes', 'refresh_cooldown_all', 'refresh_cooldown_user', 'refresh_user', 'logs', 'servers', 'setup-botlog', 'build', 'panel', 'generate-code', 'warn', 'warnings', 'purge', 'timeout', 'afk', 'announce', 'autodelete', 'autorole', 'ban', 'blacklist', 'bumpreminder', 'counting', 'fakeconvo', 'fakemessage', 'giveall', 'giveaway', 'info', 'leaderboard', 'level', 'levelset', 'lock', 'modmakerapply', 'mute', 'poll', 'postroles', 'postrules', 'reactionrole', 'roleadd', 'roleremove', 'setlogs', 'slowmode', 'starboard', 'status', 'ticketpanel', 'unlock', 'welcome', 'refresh_batch', 'embed'];
             
             if (adminCommands.includes(commandName)) {
                 if (!hasAdminAccess(interaction)) {
@@ -1964,12 +2443,44 @@ Made by TMC.LOL
                                 { name: "🛡️ `/panel automod`", value: "Deploys defense grid console.", inline: false },
                                 { name: "🎨 `/panel roles`", value: "Deploys notification toggles.", inline: false },
                                 { name: "⚡ `/panel generator`", value: "Deploys Tokens by TMC.LOL panel.", inline: false },
+                                { name: "💰 `/panel economy`", value: "Deploys the Economy Panel with buttons for daily, work, shop, balance, leaderboard.", inline: false },
                                 { name: "🔑 `/generate-code`", value: "Generates supporter code.", inline: false }
                             )
                             .setFooter({ text: "TMC.LOL Enterprise Security Suite • Credits to @elliott" });
 
                         return interaction.reply({ embeds: [embed] });
                     }
+
+                    // ==================== NEW: ECONOMY PANEL ====================
+                    if (subArg === 'economy') {
+                        const embed = new EmbedBuilder()
+                            .setTitle('💰 TMC.LOL ECONOMY PANEL')
+                            .setDescription('Manage your coins and shop here.\nUse the buttons below or the slash commands.')
+                            .setColor(0xF1C40F)
+                            .addFields(
+                                { name: 'Balance', value: `Check your current coins with \`/balance\``, inline: true },
+                                { name: 'Daily', value: 'Claim free coins every 24h.', inline: true },
+                                { name: 'Work', value: 'Earn coins every hour.', inline: true },
+                                { name: 'Shop', value: 'Spend coins on roles and items.', inline: true },
+                                { name: 'Leaderboard', value: 'See who has the most coins.', inline: true }
+                            )
+                            .setFooter({ text: 'TMC.LOL Economy • Powered by @elliott' });
+
+                        const row1 = new ActionRowBuilder().addComponents(
+                            new ButtonBuilder().setCustomId('eco_daily').setLabel('Daily').setStyle(ButtonStyle.Success).setEmoji('🎁'),
+                            new ButtonBuilder().setCustomId('eco_work').setLabel('Work').setStyle(ButtonStyle.Primary).setEmoji('💼')
+                        );
+                        const row2 = new ActionRowBuilder().addComponents(
+                            new ButtonBuilder().setCustomId('eco_balance').setLabel('Balance').setStyle(ButtonStyle.Secondary).setEmoji('💰'),
+                            new ButtonBuilder().setCustomId('eco_shop').setLabel('Shop').setStyle(ButtonStyle.Primary).setEmoji('🛒')
+                        );
+                        const row3 = new ActionRowBuilder().addComponents(
+                            new ButtonBuilder().setCustomId('eco_leaderboard').setLabel('Leaderboard').setStyle(ButtonStyle.Secondary).setEmoji('🏆')
+                        );
+
+                        return interaction.reply({ embeds: [embed], components: [row1, row2, row3] });
+                    }
+                    // =========================================================
                 }
 
                 if (commandName === 'generate-code') {
@@ -2258,6 +2769,71 @@ Made by TMC.LOL
                 await interaction.reply({ content: "🔒 Archiving ticket in 5 seconds..." });
                 setTimeout(() => interaction.channel.delete().catch(() => {}), 5000);
             }
+
+            // ==================== NEW: ECONOMY BUTTONS ====================
+            if (interaction.customId === 'eco_daily') {
+                // Reuse daily logic
+                const userId = interaction.user.id;
+                const lastClaim = dailyCooldown.get(userId) || 0;
+                const cooldownTime = 24 * 60 * 60 * 1000;
+                if (Date.now() - lastClaim < cooldownTime) {
+                    const remaining = cooldownTime - (Date.now() - lastClaim);
+                    const hours = Math.floor(remaining / 3600000);
+                    const minutes = Math.floor((remaining % 3600000) / 60000);
+                    return interaction.reply({ content: `⏳ You can claim your daily again in **${hours}h ${minutes}m**.`, flags: 64 });
+                }
+                const dailyAmount = 1000 + Math.floor(Math.random() * 500);
+                coins.set(userId, (coins.get(userId) || 0) + dailyAmount);
+                dailyCooldown.set(userId, Date.now());
+                return interaction.reply({ content: `🎉 You claimed **${dailyAmount}** daily coins! New balance: ${coins.get(userId)}`, flags: 64 });
+            }
+
+            if (interaction.customId === 'eco_work') {
+                const userId = interaction.user.id;
+                const lastWork = workCooldown.get(userId) || 0;
+                const cooldown = 60 * 60 * 1000;
+                if (Date.now() - lastWork < cooldown) {
+                    const remaining = cooldown - (Date.now() - lastWork);
+                    const minutes = Math.floor(remaining / 60000);
+                    return interaction.reply({ content: `⏳ You can work again in **${minutes} minutes**.`, flags: 64 });
+                }
+                const workAmount = 100 + Math.floor(Math.random() * 400);
+                coins.set(userId, (coins.get(userId) || 0) + workAmount);
+                workCooldown.set(userId, Date.now());
+                return interaction.reply({ content: `💼 You worked hard and earned **${workAmount}** coins! Balance: ${coins.get(userId)}`, flags: 64 });
+            }
+
+            if (interaction.customId === 'eco_balance') {
+                const bal = coins.get(interaction.user.id) || 0;
+                return interaction.reply({ content: `💰 You have **${bal}** coins.`, flags: 64 });
+            }
+
+            if (interaction.customId === 'eco_shop') {
+                const embed = new EmbedBuilder()
+                    .setTitle('🛒 Shop Items')
+                    .setDescription('Buy items with coins! Use `/buy <item_id>`')
+                    .setColor(0x3498DB);
+                shopItems.forEach(item => {
+                    embed.addFields({ name: `${item.name} (${item.id})`, value: `Price: ${item.price} coins`, inline: true });
+                });
+                return interaction.reply({ embeds: [embed], flags: 64 });
+            }
+
+            if (interaction.customId === 'eco_leaderboard') {
+                const sorted = [...coins.entries()].sort((a, b) => b[1] - a[1]);
+                if (sorted.length === 0) return interaction.reply({ content: 'No coins have been earned yet.', flags: 64 });
+                const top = sorted.slice(0, 10);
+                const desc = top.map(([id, bal], idx) => {
+                    const user = client.users.cache.get(id);
+                    return `${idx+1}. ${user ? user.tag : id}: **${bal}** coins`;
+                }).join('\n');
+                const embed = new EmbedBuilder()
+                    .setTitle('🏆 Coin Leaderboard')
+                    .setDescription(desc)
+                    .setColor(0xF1C40F);
+                return interaction.reply({ embeds: [embed], flags: 64 });
+            }
+            // ============================================================
         }
 
         if (interaction.isStringSelectMenu()) {
