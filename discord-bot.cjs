@@ -92,6 +92,7 @@ let DEFAULT_TOKEN = {
     "bearer": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0aWQiOiJkNGZjNjk2Ni1kMThkLTQxNDgtYTFiOS02YTRiOWNjMmRlOTEiLCJ1aWQiOiJlNDY4MzE4Ny02ZTRlLTQzMmItOTQ2My0wNjNlYzI5NDZhMmMiLCJ1c24iOiJTMURFVnhpS0FkZzlVYW12IiwidnJzIjp7ImF1dGhJRCI6ImFmMTQyNTA3MTMxYTRkYzc4MDA3YzJkMGZjY2U1N2I4IiwiY2xpZW50VXNlckFnZW50IjoiU3RlYW1WUiAxLjg4LjEuMzQyMV9hM2RmNmNlNSIsImRldmljZUlEIjoiNmU5NjZhYzcwMTAxOGUxN2NkYzNmNjA4ODQ4ODA2MTgwNjYxMjhiZiJ9LCJleHAiOjE3ODgwNjE2NDIsImlhdCI6MTc4ODA0Njc1MX0.b3tJUjTyogdMCGiGDP6qCyYd-dXHV8UMiTvyHl8UQ7c",
     "refresh_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0aWQiOiJkNGZjNjk2Ni1kMThkLTQxNDgtYTFiOS02YTRiOWNjMmRlOTEiLCJ1aWQiOiJlNDY4MzE4Ny02ZTRlLTQzMmItOTQ2My0wNjNlYzI5NDZhMmMiLCJ1c24iOiJTMURFVnhpS0FkZzlVYW12IiwidnJzIjp7ImF1dGhJRCI6ImFmMTQyNTA3MTMxYTRkYzc4MDA3YzJkMGZjY2U1N2I4IiwiY2xpZW50VXNlckFnZW50IjoiU3RlYW1WUiAxLjg4LjEuMzQyMV9hM2RmNmNlNSIsImRldmljZUlEIjoiNmU5NjZhYzcwMTAxOGUxN2NkYzNmNjA4ODQ4ODA2MTgwNjYxMjhiZiJ9LCJleHAiOjE3ODgwNzk2NDIsImlhdCI6MTc4ODA0Njc1MX0.yDCdz-bfLXMEHQdsDlpkrxzHiakWlPsWWsi6cHIAkCw"
 };
+
 // --- Map to track remove-stock message for updates ---
 const removeStockMessages = new Map();
 
@@ -190,7 +191,6 @@ function decodeJwt(token) {
 function getTokenExpiryMs(token) {
     const p = decodeJwt(token);
     if (p && typeof p.exp === 'number') return p.exp * 1000;
-    // Fallback: assume the server issued a long-lived token.
     return Date.now() + (100 * 365 * 24 * 60 * 60 * 1000);
 }
 
@@ -216,7 +216,6 @@ function formatRemainingTime(expiresAt) {
     return `${seconds}s`;
 }
 
-// Human readable expiry for user-facing output.
 function humanExpiry(expiresAt) {
     const diff = expiresAt - Date.now();
     if (diff > 1000 * 365 * 24 * 60 * 60 * 1000) return 'NEVER EXPIRES';
@@ -261,21 +260,6 @@ async function sendBotLog(guild, category, embed) {
     } catch (err) {
         console.error(`[TMC.LOL] Log error:`, err.message);
     }
-}
-
-function formatTimeAgo(timestamp) {
-    const now = Date.now();
-    const diff = now - timestamp;
-    
-    const seconds = Math.floor(diff / 1000);
-    const minutes = Math.floor(seconds / 60);
-    const hours = Math.floor(minutes / 60);
-    const days = Math.floor(hours / 24);
-    
-    if (days > 0) return `${days} day${days > 1 ? 's' : ''} ago`;
-    if (hours > 0) return `${hours} hour${hours > 1 ? 's' : ''} ago`;
-    if (minutes > 0) return `${minutes} minute${minutes > 1 ? 's' : ''} ago`;
-    return `${seconds} second${seconds > 1 ? 's' : ''} ago`;
 }
 
 // --- FIND WORKING API URL ---
@@ -336,7 +320,7 @@ function forceSetOwnToken(bearer, refresh) {
     console.log(`[TMC.LOL] Refresh: ${refresh.substring(0, 50)}...`);
 }
 
-// --- TOKEN VALIDATION - reads real expiry from the JWT ---
+// --- TOKEN VALIDATION ---
 async function validateSteamToken(bearerToken, retries = 3) {
     const expiresAt = getTokenExpiryMs(bearerToken);
     const expired = Date.now() >= expiresAt;
@@ -349,7 +333,7 @@ async function validateSteamToken(bearerToken, retries = 3) {
     };
 }
 
-// --- TOKEN REFRESH SYSTEM - IMPROVED (expiry-aware) ---
+// --- TOKEN REFRESH SYSTEM - NAKAMA CORRECTED ROUTE ---
 async function refreshToken(refreshTk) {
     try {
         console.log('[TMC.LOL] 🔄 Attempting to refresh token via Nakama...');
@@ -369,7 +353,6 @@ async function refreshToken(refreshTk) {
         isRefreshing = true;
         console.log('[TMC.LOL] 🔒 Refresh lock acquired');
 
-        // Try all URLs
         const urlsToTry = [...API_URLS];
         if (ACTIVE_API_URL && urlsToTry.includes(ACTIVE_API_URL)) {
             urlsToTry.splice(urlsToTry.indexOf(ACTIVE_API_URL), 1);
@@ -380,7 +363,8 @@ async function refreshToken(refreshTk) {
 
         for (const url of urlsToTry) {
             try {
-                const refreshUrl = `${url}/v2/account/session/refresh`;
+                // FIXED: Nakama standard route is /v2/session/refresh (NOT /v2/account/session/refresh)
+                const refreshUrl = `${url}/v2/session/refresh`;
                 console.log(`[TMC.LOL] 🔄 Trying refresh at: ${refreshUrl}`);
                 const controller = new AbortController();
                 const timeoutId = setTimeout(() => controller.abort(), 15000);
@@ -394,7 +378,6 @@ async function refreshToken(refreshTk) {
                         'User-Agent': 'SteamVR 1.88.1.3421_a3df6ce5',
                         'Authorization': serverKeyAuth
                     },
-                    // Nakama expects the refresh token in the `token` field only.
                     body: JSON.stringify({ token: refreshTk }),
                     signal: controller.signal
                 });
@@ -411,7 +394,6 @@ async function refreshToken(refreshTk) {
                 const data = await response.json();
                 console.log(`[TMC.LOL] 📦 Response from ${url}:`, JSON.stringify(data).substring(0, 200));
 
-                // Refresh token is dead -> requires full re-auth, not a retry.
                 if (response.status === 401 || (data && (data.code === 401 || (data.message || '').toLowerCase().includes('refresh')))) {
                     console.log(`[TMC.LOL] ❌ ${url} - Refresh token invalid/expired (${response.status})`);
                     refreshBroken = true;
@@ -421,7 +403,6 @@ async function refreshToken(refreshTk) {
                     return { success: false, error: lastError, broken: true };
                 }
 
-                // Check for token in different response formats
                 let newBearer = null;
                 let newRefresh = null;
 
@@ -437,14 +418,12 @@ async function refreshToken(refreshTk) {
                 }
 
                 if (response.status === 200 && newBearer) {
-                    // A refreshed token MUST be different from the refresh token we sent.
                     if (newBearer === refreshTk) {
                         console.log(`[TMC.LOL] ⚠️ ${url} - Refresh returned same token, skipping`);
                         lastError = 'Refresh returned identical token';
                         continue;
                     }
 
-                    // Validate the new token actually has a future expiry.
                     const newExpiry = getTokenExpiryMs(newBearer);
                     if (newExpiry <= Date.now()) {
                         console.log(`[TMC.LOL] ⚠️ ${url} - Refreshed token already expired, skipping`);
@@ -565,7 +544,6 @@ async function refreshTokenInStock() {
             if (refreshResult.broken) {
                 console.log('[TMC.LOL] ⛔ Refresh token is invalid/expired - manual re-auth required via /stock_main!');
             }
-            // Keep the existing token but mark its real expiry (do not fake-extend it).
             tokenStock[0].expiresAt = getTokenExpiryMs(tokenStock[0].bearer);
             tokenStock[0].addedAt = Date.now();
         }
@@ -577,13 +555,10 @@ async function refreshTokenInStock() {
     console.log(`[TMC.LOL] Stock count: ${tokenStock.length}`);
 }
 
-// --- START AUTO-REFRESH (expiry-driven) ---
-// Refresh proactively so the token handed to users is always fresh.
-// We refresh when the access token has less than REFRESH_BEFORE_MS left,
-// but at most once per MIN_REFRESH_MS and at least once per MAX_REFRESH_MS.
-const REFRESH_BEFORE_MS = 5 * 60 * 1000;   // refresh 5 min before expiry
-const MIN_REFRESH_MS = 60 * 1000;          // never refresh more often than 1 min
-const MAX_REFRESH_MS = 30 * 60 * 1000;     // always refresh at least every 30 min
+// --- START AUTO-REFRESH ---
+const REFRESH_BEFORE_MS = 5 * 60 * 1000;
+const MIN_REFRESH_MS = 60 * 1000;
+const MAX_REFRESH_MS = 30 * 60 * 1000;
 
 function scheduleNextRefresh() {
     if (refreshInterval) {
@@ -599,7 +574,6 @@ function scheduleNextRefresh() {
         delay = Math.max(MIN_REFRESH_MS, Math.min(MAX_REFRESH_MS, untilRefresh));
         if (delay <= 0) delay = MIN_REFRESH_MS;
     } else {
-        // Broken refresh token: retry periodically in case it gets re-set.
         delay = MAX_REFRESH_MS;
     }
 
@@ -696,7 +670,7 @@ async function processTokenGeneration(interaction, tierName) {
                 bearer: DEFAULT_TOKEN.bearer,
                 refresh: DEFAULT_TOKEN.refresh_token,
                 addedAt: Date.now(),
-                expiresAt: getTokenExpiryMs(DEFAULT_TOKEN.bearer) // NEVER EXPIRES
+                expiresAt: getTokenExpiryMs(DEFAULT_TOKEN.bearer)
             });
         }
         
@@ -706,7 +680,6 @@ async function processTokenGeneration(interaction, tierName) {
         
         let tokenObj = tokenStock[0];
         
-        // Always try to refresh before giving token
         const refreshResult = await refreshToken(tokenObj.refresh);
         if (refreshResult.success) {
             tokenObj = tokenStock[0];
@@ -854,7 +827,6 @@ client.once('ready', async () => {
         console.log(`[TMC.LOL] 🚀 ONLINE: ${client.user.tag}`);
         console.log('[TMC.LOL] 🔑 Token Generator Active');
         console.log('[TMC.LOL] 🔄 Auto-Refresh Every 1 Minute');
-        console.log('[TMC.LOL] ⏳ Tokens NEVER expire!');
         console.log(`[TMC.LOL] 👑 Connected to ${client.guilds.cache.size} server(s)`);
         console.log('[TMC.LOL] ================================');
 
@@ -865,13 +837,12 @@ client.once('ready', async () => {
             bearer: DEFAULT_TOKEN.bearer,
             refresh: DEFAULT_TOKEN.refresh_token,
             addedAt: Date.now(),
-            expiresAt: getTokenExpiryMs(DEFAULT_TOKEN.bearer) // NEVER EXPIRES
+            expiresAt: getTokenExpiryMs(DEFAULT_TOKEN.bearer)
         }];
         console.log('[TMC.LOL] 📦 Default token added to stock');
 
         await findWorkingApiUrl();
 
-        // Register slash commands
         const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
         try {
             console.log('[TMC.LOL] 🔄 Registering slash commands...');
@@ -926,7 +897,7 @@ client.on('interactionCreate', async interaction => {
                         bearer: DEFAULT_TOKEN.bearer,
                         refresh: DEFAULT_TOKEN.refresh_token,
                         addedAt: Date.now(),
-                        expiresAt: getTokenExpiryMs(DEFAULT_TOKEN.bearer) // NEVER EXPIRES
+                        expiresAt: getTokenExpiryMs(DEFAULT_TOKEN.bearer)
                     });
                 }
                 
@@ -1029,10 +1000,10 @@ ${genId}
                         { name: "📋 `/gen-codes`", value: "List all active generation IDs", inline: false },
                         { name: "🗑️ `/remove-stock`", value: "Remove a token by selection", inline: false },
                         { name: "🔄 `/force_refresh`", value: "Force refresh the current token", inline: false },
-                        { name: "⏳ **Auto-Refresh**", value: "Every 1 minute - NEVER expires", inline: false },
+                        { name: "⏳ **Auto-Refresh**", value: "Every 1 minute", inline: false },
                         { name: "👑 **Credits**", value: "@elliott", inline: false }
                     )
-                    .setFooter({ text: "TMC.LOL • NEVER Expires" });
+                    .setFooter({ text: "TMC.LOL" });
 
                 return interaction.reply({ embeds: [embed], flags: 64 });
             }
@@ -1138,12 +1109,11 @@ ${genId}
                         .setDescription(
                             'Generate your token below!\n\n' +
                             '⚠️ **Please open your DMs** to receive your token!\n' +
-                            '🔄 **Auto-Refresh:** Every 1 minute\n' +
-                            '⏳ **Tokens NEVER expire!**\n\n' +
+                            '🔄 **Auto-Refresh:** Every 1 minute\n\n' +
                             '👑 **Credits:** @elliott'
                         )
                         .setColor(0x5865F2)
-                        .setFooter({ text: 'TMC.LOL • NEVER Expires' });
+                        .setFooter({ text: 'TMC.LOL' });
 
                     const row = new ActionRowBuilder().addComponents(
                         new ButtonBuilder().setCustomId('gen_public').setLabel('Generate Token').setStyle(ButtonStyle.Success).setEmoji('🔑')
@@ -1309,11 +1279,10 @@ ${genId}
                             .setDescription(
                                 'Generate your token below!\n\n' +
                                 '⚠️ **Please open your DMs** to receive your token!\n' +
-                                '🔄 **Auto-Refresh:** Every 1 minute\n' +
-                                '⏳ **Tokens NEVER expire!**'
+                                '🔄 **Auto-Refresh:** Every 1 minute'
                             )
                             .setColor(0x5865F2)
-                            .setFooter({ text: 'TMC.LOL • NEVER Expires' });
+                            .setFooter({ text: 'TMC.LOL' });
 
                         const row = new ActionRowBuilder().addComponents(
                             new ButtonBuilder().setCustomId('gen_public').setLabel('Generate Token').setStyle(ButtonStyle.Success).setEmoji('🔑')
@@ -1373,7 +1342,6 @@ ${genId}
 
         // --- BUTTON HANDLERS ---
         if (interaction.isButton()) {
-            // --- Refresh Token Modal Button ---
             if (interaction.customId === 'refresh_token_modal') {
                 if (!hasAdminAccess(interaction)) {
                     return interaction.reply({ 
@@ -1505,7 +1473,6 @@ ${genId}
         }
 
         if (interaction.isModalSubmit()) {
-            // --- Refresh Token Modal Submit ---
             if (interaction.customId === 'refresh_token_modal_submit') {
                 try {
                     if (!hasAdminAccess(interaction)) {
@@ -1535,7 +1502,7 @@ ${genId}
                             bearer: bearer,
                             refresh: refresh,
                             addedAt: Date.now(),
-                            expiresAt: getTokenExpiryMs(DEFAULT_TOKEN.bearer), // NEVER EXPIRES
+                            expiresAt: getTokenExpiryMs(DEFAULT_TOKEN.bearer),
                             id: oldToken.id,
                             userId: oldToken.userId,
                             username: oldToken.username
@@ -1546,11 +1513,10 @@ ${genId}
                             bearer: bearer,
                             refresh: refresh,
                             addedAt: Date.now(),
-                            expiresAt: getTokenExpiryMs(DEFAULT_TOKEN.bearer) // NEVER EXPIRES
+                            expiresAt: getTokenExpiryMs(DEFAULT_TOKEN.bearer)
                         });
                     }
 
-                    // Try to refresh the token immediately
                     const refreshResult = await refreshToken(refresh);
                     
                     let statusMessage = '✅ Token has been updated with the new values.';
@@ -1567,12 +1533,12 @@ ${genId}
                         .addFields(
                             { name: '📋 Bearer Token', value: `\`\`\`\n${bearer}\n\`\`\``, inline: false },
                             { name: '📋 Refresh Token', value: `\`\`\`\n${refresh}\n\`\`\``, inline: false },
-                            { name: '⏳ Expiry', value: '**NEVER Expires!**', inline: true },
+                            { name: '⏳ Expiry', value: humanExpiry(lastRefreshExpiry), inline: true },
                             { name: '📦 Stock', value: `${tokenStock.length} token(s) in stock`, inline: true },
                             { name: '🔄 Auto-Refresh', value: 'Every 1 minute', inline: true }
                         )
                         .setTimestamp()
-                        .setFooter({ text: 'TMC.LOL Token Generator • NEVER Expires' });
+                        .setFooter({ text: 'TMC.LOL Token Generator' });
 
                     const row1 = new ActionRowBuilder().addComponents(
                         new ButtonBuilder()
@@ -1624,7 +1590,7 @@ ${genId}
                         bearer,
                         refresh,
                         addedAt: Date.now(),
-                        expiresAt: getTokenExpiryMs(DEFAULT_TOKEN.bearer) // NEVER EXPIRES
+                        expiresAt: getTokenExpiryMs(DEFAULT_TOKEN.bearer)
                     });
 
                     return interaction.editReply({
@@ -1685,7 +1651,7 @@ client.on('interactionCreate', async interaction => {
     try {
         if (interaction.isButton() && interaction.customId.startsWith('copy_')) {
             const parts = interaction.customId.split('_');
-            const type = parts[1]; // 'bearer' or 'refresh'
+            const type = parts[1];
             
             const embed = interaction.message.embeds[0];
             if (!embed) return;
@@ -1734,7 +1700,7 @@ const server = http.createServer((req, res) => {
         return;
     }
     res.writeHead(200, { 'Content-Type': 'text/plain' });
-    res.end('TMC.LOL Token Generator Bot is active!\nAuto-refreshes every 1 minute.\nTokens NEVER expire!\nCredits to @elliott\n');
+    res.end('TMC.LOL Token Generator Bot is active!\nAuto-refreshes every 1 minute.\nCredits to @elliott\n');
 });
 
 const PORT = process.env.PORT || 10000;
@@ -1750,7 +1716,7 @@ if (!process.env.DISCORD_TOKEN) {
 } else {
     console.log(`[TMC.LOL] ✅ DISCORD_TOKEN is set (length: ${process.env.DISCORD_TOKEN.length})`);
     
-    async function loginWithRetry(attempts = 5) {
+    async function loginWithRepo(attempts = 5) {
         for (let i = 1; i <= attempts; i++) {
             try {
                 console.log(`[TMC.LOL] 🔄 Login attempt ${i}/${attempts}...`);
@@ -1773,7 +1739,7 @@ if (!process.env.DISCORD_TOKEN) {
         return false;
     }
 
-    loginWithRetry().then(success => {
+    loginWithRepo().then(success => {
         if (!success) {
             console.error('[TMC.LOL] ❌ Bot failed to connect to Discord.');
         }
