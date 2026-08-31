@@ -16,16 +16,15 @@ const {
     Routes,
     AttachmentBuilder
 } = require('discord.js');
-const fs = require('fs');
-const path = require('path');
-const http = require('http');
-const dns = require('dns');
 
-// ─── DNS FIX ────────────────────────────────────────────────────────────────
+const http = require('http');
+
+// --- DNS FIX FOR RENDER ---
+const dns = require('dns');
 dns.setServers(['8.8.8.8', '1.1.1.1']);
 console.log('[TMC.LOL] ✅ DNS set to Google DNS (8.8.8.8, 1.1.1.1)');
 
-// ─── CLIENT ─────────────────────────────────────────────────────────────────
+// --- CREATE CLIENT WITH PROPER INTENTS ---
 const client = new Client({
     intents: [
         GatewayIntentBits.Guilds,
@@ -33,13 +32,16 @@ const client = new Client({
         GatewayIntentBits.GuildMessages,
         GatewayIntentBits.MessageContent
     ],
-    rest: { timeout: 60000 },
+    rest: {
+        timeout: 60000
+    },
     failIfNotExists: false
 });
 
-// ─── CONFIGURATION ──────────────────────────────────────────────────────────
+// --- CONFIGURATION ---
 const MEMBER_ROLE_ID = "1492798151516491816";
 const SUPPORTER_ROLE_ID = "1529393418063581284";
+const ANNOUNCEMENT_ROLE_ID = "123456789012345678";
 const BOT_OWNER_ID = "1300117296844509227";
 const ELLIOTT_ID = "1363240484818128926";
 const ADMIN_ROLE_ID = "1542956153166626856";
@@ -49,11 +51,13 @@ const VIP_ROLE_ID = "1542337978016469093";
 const BOOSTER_ROLE_ID = "1542337979807178832";
 
 const NO_COOLDOWN_ROLE_ID = ADMIN_ROLE_ID;
-const GENERATION_COOLDOWN = 5 * 60 * 1000;
+const GENERATION_COOLDOWN = 0;
 
+// --- API CONFIGURATION ---
 const NAKAMA_SERVER = 'https://animalcompany.us-east1.nakamacloud.io';
 const NAKAMA_SERVER_KEY = '6URuTSlDKKfYbuDW';
 const API_URLS = [ NAKAMA_SERVER ];
+
 let ACTIVE_API_URL = API_URLS[0];
 let apiWorking = false;
 
@@ -64,130 +68,13 @@ if (!hasServerKey) {
     console.log('[TMC.LOL] ✅ NAKAMA_SERVER_KEY is set! Token refresh should work.');
 }
 
-// ─── STORAGE (replaces storage.py) ────────────────────────────────────────
-const STORAGE_DIR = path.join(__dirname, 'data');
-if (!fs.existsSync(STORAGE_DIR)) fs.mkdirSync(STORAGE_DIR, { recursive: true });
+// --- Token refresh queue system ---
+let refreshAttempts = 0;
+let lastRefreshExpiry = 0;
+const MAX_FAILS = 5;
+let consecutiveFails = 0;
 
-const TOKEN_FILE = path.join(STORAGE_DIR, 'token_data.json');
-const DONATIONS_FILE = path.join(STORAGE_DIR, 'donations.json');
-
-// Helper: read/write JSON
-function readJSON(file, defaultVal = {}) {
-    try {
-        if (fs.existsSync(file)) {
-            const data = fs.readFileSync(file, 'utf8');
-            return JSON.parse(data);
-        }
-    } catch (_) { /* ignore */ }
-    return defaultVal;
-}
-function writeJSON(file, data) {
-    fs.writeFileSync(file, JSON.stringify(data, null, 2), 'utf8');
-}
-
-// Token data (public token pool)
-function getPublicTokenRaw() {
-    return readJSON(TOKEN_FILE, { token: '', refresh_token: '', label: '' });
-}
-function setPublicTokenRaw(data) {
-    writeJSON(TOKEN_FILE, data);
-}
-
-// Donations per user
-function getDonations() {
-    return readJSON(DONATIONS_FILE, {});
-}
-function saveDonations(donations) {
-    writeJSON(DONATIONS_FILE, donations);
-}
-
-function getDonated(userId) {
-    const all = getDonations();
-    return all[userId] || [];
-}
-function setDonated(userId, tokens) {
-    const all = getDonations();
-    all[userId] = tokens;
-    saveDonations(all);
-}
-function addDonated(targetId, token, refreshToken, givenBy) {
-    const existing = getDonated(targetId);
-    existing.push({
-        token,
-        refresh_token: refreshToken,
-        given_by: givenBy,
-        given_at: Date.now()
-    });
-    setDonated(targetId, existing);
-}
-function revokeDonated(targetId) {
-    const existing = getDonated(targetId);
-    if (existing.length === 0) return 0;
-    setDonated(targetId, []);
-    return existing.length;
-}
-
-// Cooldowns (in-memory, resets on restart)
-const cooldowns = new Map();
-function checkCooldown(userId, action, seconds) {
-    const key = `${userId}:${action}`;
-    const expiry = cooldowns.get(key);
-    if (expiry && Date.now() < expiry) {
-        return { onCooldown: true, remaining: expiry - Date.now() };
-    }
-    return { onCooldown: false };
-}
-function setCooldown(userId, action, seconds) {
-    const key = `${userId}:${action}`;
-    cooldowns.set(key, Date.now() + seconds * 1000);
-}
-function formatTime(ms) {
-    const s = Math.floor(ms / 1000);
-    const m = Math.floor(s / 60);
-    const h = Math.floor(m / 60);
-    if (h > 0) return `${h}h ${m % 60}m`;
-    if (m > 0) return `${m}m ${s % 60}s`;
-    return `${s}s`;
-}
-
-// ─── JWT HELPERS ──────────────────────────────────────────────────────────
-function decodeJwt(token) {
-    try {
-        const part = (token || '').split('.')[1];
-        if (!part) return null;
-        const normalized = part.replace(/-/g, '+').replace(/_/g, '/');
-        const json = Buffer.from(normalized + '===', 'base64').toString('utf-8');
-        return JSON.parse(json);
-    } catch (_) { return null; }
-}
-function getTokenExpiryMs(token) {
-    const p = decodeJwt(token);
-    if (p && typeof p.exp === 'number') return p.exp * 1000;
-    return Date.now() + (100 * 365 * 24 * 60 * 60 * 1000); // fallback 100y
-}
-function isExpired(token, bufferSeconds = 0) {
-    const exp = getTokenExpiryMs(token);
-    return Date.now() >= exp - bufferSeconds * 1000;
-}
-function secondsUntilExpiry(token) {
-    const exp = getTokenExpiryMs(token);
-    return Math.max(0, Math.floor((exp - Date.now()) / 1000));
-}
-function humanExpiry(expiresAt) {
-    const diff = expiresAt - Date.now();
-    if (diff > 1000 * 365 * 24 * 60 * 60 * 1000) return 'NEVER EXPIRES';
-    if (diff <= 0) return 'EXPIRED';
-    const s = Math.floor(diff / 1000);
-    const m = Math.floor(s / 60);
-    const h = Math.floor(m / 60);
-    const d = Math.floor(h / 24);
-    if (d > 0) return `${d}d ${h % 24}h`;
-    if (h > 0) return `${h}h ${m % 60}m`;
-    if (m > 0) return `${m}m ${s % 60}s`;
-    return `${s}s`;
-}
-
-// ─── LOAD ACCOUNTS FROM ENV ──────────────────────────────────────────────
+// --- Multi-account support (TOKEN_N / REFRESH_TOKEN_N env vars) ---
 function loadAccounts() {
     const accounts = [];
     let i = 1;
@@ -198,7 +85,7 @@ function loadAccounts() {
         accounts.push({ token, refresh_token: refresh, label: `account_${i}` });
         i++;
     }
-    // legacy fallback
+    // Legacy fallback: INITIAL_TOKEN / INITIAL_REFRESH_TOKEN
     if (accounts.length === 0) {
         const token = (process.env.INITIAL_TOKEN || '').trim();
         const refresh = (process.env.INITIAL_REFRESH_TOKEN || '').trim();
@@ -209,227 +96,705 @@ function loadAccounts() {
     return accounts;
 }
 
-// ─── TOKEN MANAGEMENT (multi‑account) ──────────────────────────────────
-let accounts = [];
-let currentToken = null; // { token, refresh_token, label }
+let accounts = loadAccounts();
+let activeAccountLabel = accounts.length > 0 ? accounts[0].label : 'default';
 
-function getActiveAccount(accountsList) {
-    for (const acc of accountsList) {
-        if (!isExpired(acc.refresh_token, 60)) {
+function getActiveAccount() {
+    for (const acc of accounts) {
+        if (!isTokenExpiredObj({ bearer: acc.refresh_token })) return acc;
+    }
+    return null;
+}
+
+function switchToNextAccount(currentLabel) {
+    const ordered = [...accounts].sort((a, b) => (a.label === currentLabel ? 1 : b.label === currentLabel ? -1 : 0));
+    for (const acc of ordered) {
+        if (acc.label === currentLabel) continue;
+        if (!isTokenExpiredObj({ bearer: acc.refresh_token })) {
+            console.log(`[TMC.LOL] 🔀 Switching to ${acc.label}`);
             return acc;
         }
     }
     return null;
 }
 
-function loadTokens() {
-    const stored = getPublicTokenRaw();
-    // If stored token is still valid, use it
-    if (stored.token && stored.refresh_token && !isExpired(stored.token, 60)) {
-        console.log('[REFRESH] ✅ Tokens loaded from storage');
-        return { token: stored.token, refresh_token: stored.refresh_token, label: stored.label || 'stored' };
-    }
+// --- DEFAULT TOKEN ---
+let DEFAULT_TOKEN = {
+  "bearer": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0aWQiOiJkMWU5MGIzZC0wNTI5LTQ3M2YtOGYyMS0xYmM3MDhmMWNhOWUiLCJ1aWQiOiJhMzQ5MTgxOS1lZGNkLTRiZDEtOTJkNS1hODJjZjk5NzBhNjYiLCJ1c24iOiIwelVHYjBrTVhyRGl0b1FYIiwidnJzIjp7ImF1dGhJRCI6IjE0MWFhM2NiMTVhNDRlM2ZhM2ZmZWMyNmI1YzViNjViIiwiY2xpZW50VXNlckFnZW50IjoiU3RlYW1WUiA5Ljk5LjkuOTk5OV9mZmZmZmZmZiIsImRldmljZUlEIjoiMTgzNTc2MWMyYThiNmM2MjliOTlmZmY5ZWRmZjI4OWQ3ZjNlYTEyOCJ9LCJleHAiOjE3ODgxNjIwNjgsImlhdCI6MTc4ODE1ODQ2OH0.KNFqQOGQjLh1Ur8IsT6TcMRYk2GmGjs8qXQsW1yCTIA",
+  "refresh_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0aWQiOiJkMWU5MGIzZC0wNTI5LTQ3M2YtOGYyMS0xYmM3MDhmMWNhOWUiLCJ1aWQiOiJhMzQ5MTgxOS1lZGNkLTRiZDEtOTJkNS1hODJjZjk5NzBhNjYiLCJ1c24iOiIwelVHYjBrTVhyRGl0b1FYIiwidnJzIjp7ImF1dGhJRCI6IjE0MWFhM2NiMTVhNDRlM2ZhM2ZmZWMyNmI1YzViNjViIiwiY2xpZW50VXNlckFnZW50IjoiU3RlYW1WUiA5Ljk5LjkuOTk5OV9mZmZmZmZmZiIsImRldmljZUlEIjoiMTgzNTc2MWMyYThiNmM2MjliOTlmZmY5ZWRmZjI4OWQ3ZjNlYTEyOCJ9LCJleHAiOjE3ODgxODAwNjgsImlhdCI6MTc4ODE1ODQ2OH0.gaaoMWcVU6miPpYpxgEwtPMxcGdXAp998XhGgeCjyag"
+};
+// --- Map to track remove-stock message for updates ---
+const removeStockMessages = new Map();
 
-    // Otherwise pick first valid account
-    const acc = getActiveAccount(accounts);
-    if (!acc) {
-        throw new Error('❌ No valid accounts found. Set TOKEN_1/REFRESH_TOKEN_1 in Railway Variables.');
-    }
-    console.log(`[REFRESH] ⚡ Loading from env — using ${acc.label}`);
-    const data = { token: acc.token, refresh_token: acc.refresh_token, label: acc.label };
-    setPublicTokenRaw(data);
-    return data;
-}
-
-function switchToNextAccount(currentLabel) {
-    // Find accounts after current, then wrap around
-    let start = -1;
-    for (let i = 0; i < accounts.length; i++) {
-        if (accounts[i].label === currentLabel) {
-            start = i;
-            break;
-        }
-    }
-    for (let offset = 1; offset <= accounts.length; offset++) {
-        const idx = (start + offset) % accounts.length;
-        const acc = accounts[idx];
-        if (!isExpired(acc.refresh_token, 60)) {
-            console.log(`[REFRESH] 🔀 Switching to ${acc.label}`);
-            return { token: acc.token, refresh_token: acc.refresh_token, label: acc.label };
-        }
-    }
-    return null;
-}
-
-// ─── REFRESH LOGIC (multi‑account) ─────────────────────────────────────
-async function doRefresh(tokens) {
-    console.log(`\n[REFRESH] 🔄 Refreshing token (${tokens.label})...`);
-
-    if (!NAKAMA_SERVER_KEY) {
-        throw new Error('Server key required');
-    }
-    const basic = Buffer.from(`${NAKAMA_SERVER_KEY}:`).toString('base64');
-    const body = JSON.stringify({ token: tokens.refresh_token });
-
-    const refreshUrl = `${ACTIVE_API_URL}/v2/session/refresh`;
-    const response = await fetch(refreshUrl, {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Basic ${basic}`
-        },
-        body,
-        timeout: 15000
-    });
-
-    if (!response.ok) {
-        const text = await response.text();
-        let errMsg = `HTTP ${response.status}`;
-        try {
-            const json = JSON.parse(text);
-            errMsg = json.message || errMsg;
-        } catch (_) {}
-        const error = new Error(errMsg);
-        error.status = response.status;
-        throw error;
-    }
-
-    const data = await response.json();
-    const newToken = data.token || data.access_token || null;
-    const newRefresh = data.refresh_token || tokens.refresh_token;
-    if (!newToken) {
-        throw new Error('No token in response');
-    }
-
-    const newData = {
-        token: newToken,
-        refresh_token: newRefresh,
-        label: tokens.label
-    };
-    setPublicTokenRaw(newData);
-    currentToken = newData;
-
-    const expMs = getTokenExpiryMs(newToken);
-    console.log(`[REFRESH] ✅ Token refreshed! Expires: ${new Date(expMs).toUTCString()} (${humanExpiry(expMs)})`);
-    return newData;
-}
-
-async function refreshWithFallback(forceNew = false) {
-    // Load current token, or create one
-    if (!currentToken || forceNew) {
-        try {
-            currentToken = loadTokens();
-        } catch (e) {
-            console.error('[REFRESH]', e.message);
-            return null;
-        }
-    }
-
-    let tries = 0;
-    const maxTries = accounts.length;
-    let current = { ...currentToken };
-
-    while (tries < maxTries) {
-        try {
-            const result = await doRefresh(current);
-            currentToken = result;
-            return result;
-        } catch (err) {
-            console.error(`[REFRESH] ❌ Refresh failed (${current.label}):`, err.message);
-            // If auth error (401/403) or token expired, try next account
-            if (err.status === 401 || err.status === 403 || err.message.includes('refresh') || err.message.includes('expired')) {
-                const next = switchToNextAccount(current.label);
-                if (next) {
-                    current = next;
-                    setPublicTokenRaw(next);
-                    tries++;
-                    continue;
-                } else {
-                    console.error('[REFRESH] ❌ No more valid accounts.');
-                    return null;
-                }
-            } else {
-                // Other errors (network, etc.) – return null, will retry later
-                return null;
-            }
-        }
-    }
-    console.error('[REFRESH] ❌ All accounts exhausted.');
-    return null;
-}
-
-// ─── AUTO‑REFRESH LOOP ──────────────────────────────────────────────────
-let refreshInterval = null;
-const REFRESH_BEFORE_MS = 5 * 60 * 1000;
-const MIN_REFRESH_MS = 60 * 1000;
-const MAX_REFRESH_MS = 30 * 60 * 1000;
-
-function scheduleNextRefresh() {
-    if (refreshInterval) {
-        clearTimeout(refreshInterval);
-        refreshInterval = null;
-    }
-
-    let delay = MAX_REFRESH_MS;
-    if (currentToken) {
-        const remaining = getTokenExpiryMs(currentToken.token) - Date.now();
-        const untilRefresh = remaining - REFRESH_BEFORE_MS;
-        delay = Math.max(MIN_REFRESH_MS, Math.min(MAX_REFRESH_MS, untilRefresh));
-        if (delay <= 0) delay = MIN_REFRESH_MS;
-    }
-
-    refreshInterval = setTimeout(async () => {
-        refreshInterval = null;
-        await refreshWithFallback(false);
-        scheduleNextRefresh();
-    }, delay);
-    console.log(`[TMC.LOL] ⏱️ Next auto-refresh in ${Math.round(delay/1000)}s`);
-}
-
-function startAutoRefresh() {
-    accounts = loadAccounts();
-    console.log(`[TMC.LOL] 🔄 Auto-Refresh started (${accounts.length} accounts)`);
-    // Initial load
-    try {
-        currentToken = loadTokens();
-    } catch (e) {
-        console.error('[TMC.LOL]', e.message);
-        // fallback: use first account
-        if (accounts.length > 0) {
-            currentToken = { token: accounts[0].token, refresh_token: accounts[0].refresh_token, label: accounts[0].label };
-            setPublicTokenRaw(currentToken);
-        }
-    }
-    // Do a refresh immediately
-    setTimeout(async () => {
-        await refreshWithFallback(true);
-        scheduleNextRefresh();
-    }, 5000);
-}
-
-// ─── OTHER HELPERS ──────────────────────────────────────────────────────
 function generateGenerationId() {
     const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
     let id = 'GEN-';
-    for (let i = 0; i < 6; i++) id += chars.charAt(Math.floor(Math.random() * chars.length));
+    for (let i = 0; i < 6; i++) {
+        id += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
     return id;
 }
 
+function removeTokenById(id) {
+    const idx = tokenStock.findIndex(t => t.id === id);
+    if (idx === -1) {
+        return { success: false, message: 'No token found with that generation ID.' };
+    }
+    tokenStock.splice(idx, 1);
+    return { success: true, message: `Token with ID \`${id}\` removed from stock. Remaining tokens: ${tokenStock.length}` };
+}
+
+function removeAllTokens() {
+    const before = tokenStock.length;
+    tokenStock = tokenStock.filter(t => !t.id);
+    const removed = before - tokenStock.length;
+    return { success: true, message: `Removed ${removed} generated token(s). ${tokenStock.length} token(s) remain in stock.` };
+}
+
+const REQUIRED_ROLES = {
+    BOOSTER: {
+        name: "Server Booster",
+        color: 0x5865F2,
+        permissions: [PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory]
+    },
+    BUYER: {
+        name: "Buyer",
+        color: 0xFEE75C,
+        permissions: [PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory]
+    },
+    VIP: {
+        name: "VIP",
+        color: 0xED4245,
+        permissions: [PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.CreateInstantInvite]
+    },
+    VERIFIED: {
+        name: "Verified Member",
+        color: 0x2ECC71,
+        permissions: [PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.AddReactions]
+    },
+    MODERATOR: {
+        name: "Moderator",
+        color: 0xE67E22,
+        permissions: [PermissionFlagsBits.KickMembers, PermissionFlagsBits.BanMembers, PermissionFlagsBits.ManageMessages]
+    },
+    ADMIN: {
+        name: "Administrator",
+        color: 0xED4245,
+        permissions: [PermissionFlagsBits.Administrator]
+    }
+};
+
+const validCodes = new Set();
+const userWarnings = new Map();
+let tokenStock = [];
+const cooldowns = new Map();
+const logChannels = new Map();
+let refreshBatchCounter = 0;
+const activeGenerations = new Map();
+
+function isPrivilegedUser(userId) {
+    return userId === BOT_OWNER_ID || userId === ELLIOTT_ID;
+}
+
 function hasAdminAccess(interaction) {
-    if ([BOT_OWNER_ID, ELLIOTT_ID].includes(interaction.user.id)) return true;
-    if (interaction.member?.permissions.has(PermissionFlagsBits.Administrator)) return true;
-    if (interaction.member?.roles?.cache?.has(ADMIN_ROLE_ID)) return true;
+    if (isPrivilegedUser(interaction.user.id)) return true;
+    if (interaction.member && interaction.member.permissions.has(PermissionFlagsBits.Administrator)) return true;
+    if (interaction.member && interaction.member.roles && interaction.member.roles.cache.has(ADMIN_ROLE_ID)) return true;
     return false;
 }
 
-// ─── SLASH COMMANDS ────────────────────────────────────────────────────
+// --- JWT / EXPIRY HELPERS (real) ---
+function decodeJwt(token) {
+    try {
+        const part = (token || '').split('.')[1];
+        if (!part) return null;
+        const normalized = part.replace(/-/g, '+').replace(/_/g, '/');
+        const json = Buffer.from(normalized + '===', 'base64').toString('utf-8');
+        return JSON.parse(json);
+    } catch (e) {
+        return null;
+    }
+}
+
+// Real expiry (ms) parsed from the JWT `exp` claim.
+function getTokenExpiryMs(token) {
+    const p = decodeJwt(token);
+    if (p && typeof p.exp === 'number') return p.exp * 1000;
+    // Fallback: assume the server issued a long-lived token.
+    return Date.now() + (100 * 365 * 24 * 60 * 60 * 1000);
+}
+
+function getRefreshExpiryMs(refreshToken) {
+    return getTokenExpiryMs(refreshToken);
+}
+
+function isTokenExpired(tokenObj) {
+    if (!tokenObj || !tokenObj.bearer) return true;
+    return Date.now() >= getTokenExpiryMs(tokenObj.bearer);
+}
+
+function formatRemainingTime(expiresAt) {
+    const diff = expiresAt - Date.now();
+    if (diff <= 0) return 'EXPIRED';
+    const seconds = Math.floor(diff / 1000);
+    const minutes = Math.floor(seconds / 60);
+    const hours = Math.floor(minutes / 60);
+    const days = Math.floor(hours / 24);
+    if (days > 0) return `${days}d ${hours % 24}h`;
+    if (hours > 0) return `${hours}h ${minutes % 60}m`;
+    if (minutes > 0) return `${minutes}m ${seconds % 60}s`;
+    return `${seconds}s`;
+}
+
+// Human readable expiry for user-facing output.
+function humanExpiry(expiresAt) {
+    const diff = expiresAt - Date.now();
+    if (diff > 1000 * 365 * 24 * 60 * 60 * 1000) return 'NEVER EXPIRES';
+    if (diff <= 0) return 'EXPIRED';
+    return `expires in ${formatRemainingTime(expiresAt)} (${new Date(expiresAt).toUTCString()})`;
+}
+
+function generateSupporterCode() {
+    const randomNums = () => Math.floor(1000 + Math.random() * 9000);
+    return `supporter-${randomNums()}-${randomNums()}-${randomNums()}`;
+}
+
+// --- CLEANUP STUCK GENERATIONS ---
+setInterval(() => {
+    const now = Date.now();
+    let cleaned = 0;
+    for (const [userId, startTime] of activeGenerations) {
+        if (now - startTime > 60000) {
+            activeGenerations.delete(userId);
+            cleaned++;
+        }
+    }
+    if (cleaned > 0) {
+        console.log(`[TMC.LOL] Cleaned ${cleaned} stuck token generations`);
+    }
+}, 30000);
+
+// --- HELPER FUNCTIONS ---
+async function sendBotLog(guild, category, embed) {
+    if (!guild) return;
+    const logKey = `${guild.id}-${category}`;
+    const defaultKey = `${guild.id}-general`;
+    
+    let channelId = logChannels.get(logKey) || logChannels.get(defaultKey);
+    if (!channelId) return;
+
+    try {
+        const channel = await guild.channels.fetch(channelId);
+        if (channel && channel.isTextBased()) {
+            await channel.send({ embeds: [embed] });
+        }
+    } catch (err) {
+        console.error(`[TMC.LOL] Log error:`, err.message);
+    }
+}
+
+function formatTimeAgo(timestamp) {
+    const now = Date.now();
+    const diff = now - timestamp;
+    
+    const seconds = Math.floor(diff / 1000);
+    const minutes = Math.floor(seconds / 60);
+    const hours = Math.floor(minutes / 60);
+    const days = Math.floor(hours / 24);
+    
+    if (days > 0) return `${days} day${days > 1 ? 's' : ''} ago`;
+    if (hours > 0) return `${hours} hour${hours > 1 ? 's' : ''} ago`;
+    if (minutes > 0) return `${minutes} minute${minutes > 1 ? 's' : ''} ago`;
+    return `${seconds} second${seconds > 1 ? 's' : ''} ago`;
+}
+
+// --- FIND WORKING API URL ---
+async function findWorkingApiUrl() {
+    console.log('[TMC.LOL] Searching for working API URL...');
+    
+    for (const url of API_URLS) {
+        try {
+            console.log(`[TMC.LOL] Testing: ${url}`);
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 5000);
+            
+            const response = await fetch(url, {
+                method: 'GET',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'User-Agent': 'SteamVR 1.88.1.3421_a3df6ce5'
+                },
+                signal: controller.signal
+            });
+            
+            clearTimeout(timeoutId);
+            
+            if (response.status < 500) {
+                console.log(`[TMC.LOL] ✅ API reachable: ${url} (status ${response.status})`);
+                ACTIVE_API_URL = url;
+                apiWorking = true;
+                return url;
+            } else {
+                console.log(`[TMC.LOL] ❌ Server error: ${url} (status ${response.status})`);
+            }
+        } catch (err) {
+            console.log(`[TMC.LOL] ❌ Failed: ${url} - ${err.message}`);
+        }
+    }
+    
+    console.log('[TMC.LOL] ⚠️ No working API URL found. Using fallback mode.');
+    apiWorking = false;
+    return API_URLS[0];
+}
+
+// --- FORCE SET OWN TOKEN ---
+function forceSetOwnToken(bearer, refresh) {
+    DEFAULT_TOKEN.bearer = bearer;
+    DEFAULT_TOKEN.refresh_token = refresh;
+    lastRefreshExpiry = getTokenExpiryMs(bearer);
+    tokenStock = [{
+        bearer: bearer,
+        refresh: refresh,
+        addedAt: Date.now(),
+        expiresAt: lastRefreshExpiry
+    }];
+    console.log('[TMC.LOL] ✅ Token manually set!');
+    console.log('[TMC.LOL] ⏳ ' + humanExpiry(lastRefreshExpiry));
+    console.log(`[TMC.LOL] Bearer: ${bearer.substring(0, 50)}...`);
+    console.log(`[TMC.LOL] Refresh: ${refresh.substring(0, 50)}...`);
+}
+
+// --- TOKEN VALIDATION - reads real expiry from the JWT ---
+async function validateSteamToken(bearerToken, retries = 3) {
+    const expiresAt = getTokenExpiryMs(bearerToken);
+    const expired = Date.now() >= expiresAt;
+    return {
+        valid: !expired,
+        status: expired ? 401 : 200,
+        data: { valid: !expired },
+        expiresAt: expiresAt,
+        message: expired ? 'Token is EXPIRED' : `Token is valid, ${formatRemainingTime(expiresAt)} remaining`
+    };
+}
+
+// --- TOKEN REFRESH SYSTEM (Multi-Account, from refresh_token.py) ---
+async function doRefresh(tokens) {
+    const refreshUrl = `${ACTIVE_API_URL}/v2/account/session/refresh`;
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 15000);
+
+    const serverKeyAuth = 'Basic ' + Buffer.from(NAKAMA_SERVER_KEY + ':').toString('base64');
+
+    try {
+        const response = await fetch(refreshUrl, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'User-Agent': 'SteamVR 1.88.1.3421_a3df6ce5',
+                'Authorization': serverKeyAuth
+            },
+            body: JSON.stringify({ token: tokens.refresh_token }),
+            signal: controller.signal
+        });
+
+        clearTimeout(timeoutId);
+
+        const contentType = response.headers.get('content-type');
+        if (!contentType || !contentType.includes('application/json')) {
+            throw new Error(`Non-JSON response (status ${response.status})`);
+        }
+
+        const data = await response.json();
+
+        if (!response.ok) {
+            const err = new Error(data?.message || `HTTP ${response.status}`);
+            err.httpCode = response.status;
+            throw err;
+        }
+
+        const newBearer = data.token || data.access_token || data.bearer;
+        const newRefresh = data.refresh_token || tokens.refresh_token;
+
+        if (!newBearer) throw new Error('No token in response');
+        if (newBearer === tokens.refresh_token) throw new Error('Refresh returned identical token');
+
+        const newExpiry = getTokenExpiryMs(newBearer);
+        if (newExpiry <= Date.now()) throw new Error('Refreshed token already expired');
+
+        tokens.bearer = newBearer;
+        tokens.refresh_token = newRefresh;
+
+        const ttl = Math.floor((newExpiry - Date.now()) / 1000);
+        const expTime = new Date(newExpiry).toISOString();
+        console.log(`[TMC.LOL] ✅ Token refreshed! Expires: ${expTime} (in ${ttl}s)`);
+
+        return tokens;
+    } catch (err) {
+        clearTimeout(timeoutId);
+        throw err;
+    }
+}
+
+function isTokenExpiredObj(tokenObj) {
+    if (!tokenObj || !tokenObj.bearer) return true;
+    return Date.now() >= getTokenExpiryMs(tokenObj.bearer);
+}
+
+function secondsUntilExpiry(tokenStr) {
+    return Math.floor((getTokenExpiryMs(tokenStr) - Date.now()) / 1000);
+}
+
+async function refreshToken(refreshTk) {
+    if (!refreshTk) {
+        console.log('[TMC.LOL] ❌ No refresh token provided');
+        return { success: false, error: 'No refresh token' };
+    }
+
+    try {
+        const tokens = { bearer: DEFAULT_TOKEN.bearer, refresh_token: refreshTk };
+        const result = await doRefresh(tokens);
+
+        DEFAULT_TOKEN.bearer = result.bearer;
+        DEFAULT_TOKEN.refresh_token = result.refresh_token;
+        apiWorking = true;
+        consecutiveFails = 0;
+        lastRefreshExpiry = getTokenExpiryMs(result.bearer);
+
+        if (tokenStock.length > 0) {
+            const oldToken = tokenStock[0];
+            tokenStock[0] = {
+                bearer: result.bearer,
+                refresh: result.refresh_token,
+                addedAt: Date.now(),
+                expiresAt: lastRefreshExpiry,
+                id: oldToken.id || generateGenerationId(),
+                userId: oldToken.userId || 'system',
+                username: oldToken.username || 'System'
+            };
+        } else {
+            tokenStock.push({
+                bearer: result.bearer,
+                refresh: result.refresh_token,
+                addedAt: Date.now(),
+                expiresAt: lastRefreshExpiry,
+                id: generateGenerationId(),
+                userId: 'system',
+                username: 'System'
+            });
+        }
+
+        return { success: true, bearer: result.bearer, refresh: result.refresh_token, expiresAt: lastRefreshExpiry };
+    } catch (err) {
+        const httpCode = err.httpCode || 0;
+
+        // Auth error — try next account
+        if (httpCode === 401 || httpCode === 403) {
+            console.log(`[TMC.LOL] 🔑 Auth error on ${activeAccountLabel} — trying next account...`);
+            const nextAcc = switchToNextAccount(activeAccountLabel);
+            if (nextAcc) {
+                activeAccountLabel = nextAcc.label;
+                DEFAULT_TOKEN.bearer = nextAcc.token;
+                DEFAULT_TOKEN.refresh_token = nextAcc.refresh_token;
+                return { success: true, bearer: nextAcc.token, refresh: nextAcc.refresh_token, expiresAt: getTokenExpiryMs(nextAcc.token) };
+            }
+        }
+
+        return { success: false, error: err.message };
+    }
+}
+
+// --- REFRESH TOKEN IN STOCK (Multi-Account) ---
+async function refreshTokenInStock() {
+    if (tokenStock.length === 0) {
+        console.log('[TMC.LOL] Stock was empty, re-adding default token...');
+        tokenStock.push({
+            bearer: DEFAULT_TOKEN.bearer,
+            refresh: DEFAULT_TOKEN.refresh_token,
+            addedAt: Date.now(),
+            expiresAt: getTokenExpiryMs(DEFAULT_TOKEN.bearer)
+        });
+        return;
+    }
+
+    const tokenObj = tokenStock[0];
+
+    if (!tokenObj.refresh) {
+        console.log('[TMC.LOL] ❌ No refresh token in stock!');
+        return;
+    }
+
+    // Check if token is expiring soon (within 5 minutes) — refresh proactively
+    const ttl = secondsUntilExpiry(tokenObj.bearer);
+    if (ttl > 300) {
+        console.log(`[TMC.LOL] ⏱️ Token valid for ${ttl}s — no refresh needed yet`);
+        return;
+    }
+
+    console.log(`[TMC.LOL] 🔄 Token expiring soon (${ttl}s) — refreshing...`);
+
+    try {
+        const refreshResult = await refreshToken(tokenObj.refresh);
+
+        if (refreshResult.success) {
+            console.log('[TMC.LOL] ✅ Token refreshed!');
+            console.log(`[TMC.LOL] ⏳ ${humanExpiry(tokenStock[0].expiresAt)}`);
+            consecutiveFails = 0;
+        } else {
+            console.log('[TMC.LOL] ❌ Refresh failed, retrying next cycle');
+            console.log('[TMC.LOL] ⚠️ Error:', refreshResult.error || 'Unknown error');
+            tokenStock[0].expiresAt = getTokenExpiryMs(tokenStock[0].bearer);
+            tokenStock[0].addedAt = Date.now();
+        }
+    } catch (err) {
+        console.error('[TMC.LOL] Error in refresh process:', err);
+        console.log('[TMC.LOL] ❌ Will retry next cycle');
+    }
+}
+
+// --- AUTO-REFRESH (Smart, expiry-based like refresh_token.py) ---
+const AUTO_REFRESH_INTERVAL = 120 * 1000; // check every 120 seconds
+let refreshInterval = null;
+
+function startAutoRefresh() {
+    console.log('[TMC.LOL] ================================');
+    console.log('[TMC.LOL] 🔄 AUTO-REFRESH STARTED (Multi-Account)');
+    console.log(`[TMC.LOL] ⚡ Checks every ${AUTO_REFRESH_INTERVAL / 1000}s`);
+    console.log(`[TMC.LOL] 📦 ${accounts.length} account(s) loaded: ${accounts.map(a => a.label).join(', ') || 'default'}`);
+    console.log('[TMC.LOL] ⚡ Smart — refreshes before expiry');
+    console.log('[TMC.LOL] ⚡ Multi-account fallback on auth errors');
+    console.log('[TMC.LOL] ================================');
+    refreshAttempts = 0;
+    consecutiveFails = 0;
+
+    setTimeout(async () => {
+        await findWorkingApiUrl();
+
+        // Load tokens from accounts if stock is empty
+        if (tokenStock.length === 0 && accounts.length > 0) {
+            const acc = getActiveAccount();
+            if (acc) {
+                DEFAULT_TOKEN.bearer = acc.token;
+                DEFAULT_TOKEN.refresh_token = acc.refresh_token;
+                activeAccountLabel = acc.label;
+                tokenStock.push({
+                    bearer: acc.token,
+                    refresh: acc.refresh_token,
+                    addedAt: Date.now(),
+                    expiresAt: getTokenExpiryMs(acc.token)
+                });
+                console.log(`[TMC.LOL] ⚡ Loaded tokens from ${acc.label}`);
+            }
+        }
+
+        await refreshTokenInStock();
+
+        refreshInterval = setInterval(async () => {
+            await refreshTokenInStock();
+        }, AUTO_REFRESH_INTERVAL);
+
+        console.log(`[TMC.LOL] ⏱️ Auto-refresh checks every ${AUTO_REFRESH_INTERVAL / 1000}s`);
+    }, 2000);
+}
+
+// --- PROCESS TOKEN GENERATION ---
+async function processTokenGeneration(interaction, tierName) {
+    const userId = interaction.user.id;
+    const member = interaction.member;
+    
+    await interaction.deferReply({ flags: 64 });
+    
+    const hasNoCooldown = member && member.roles && member.roles.cache.has(NO_COOLDOWN_ROLE_ID);
+    
+    if (!hasNoCooldown) {
+        const cooldownKey = `public_${userId}`;
+        if (cooldowns.has(cooldownKey)) {
+            const cooldownEnd = cooldowns.get(cooldownKey);
+            if (Date.now() < cooldownEnd) {
+                const remaining = cooldownEnd - Date.now();
+                const minutes = Math.floor(remaining / 60000);
+                const seconds = Math.floor((remaining % 60000) / 1000);
+                return interaction.editReply({
+                    content: `⏳ **Please wait ${minutes}m ${seconds}s** before generating another token.`
+                });
+            }
+        }
+    }
+    
+    if (activeGenerations.has(userId)) {
+        const startTime = activeGenerations.get(userId);
+        if (Date.now() - startTime < 60000) {
+            return interaction.editReply({
+                content: '⏳ **Please wait:** You already have a token generation in progress!'
+            });
+        } else {
+            activeGenerations.delete(userId);
+        }
+    }
+    
+    activeGenerations.set(userId, Date.now());
+    
+    try {
+        const testDM = await interaction.user.send({ content: '🔍 Verifying DM connection...' });
+        await testDM.delete();
+    } catch (dmError) {
+        activeGenerations.delete(userId);
+        return interaction.editReply({
+            content: '❌ **DM Error:** I cannot send you a direct message.\n\n' +
+                     'Please enable DMs in your settings and try again!'
+        });
+    }
+    
+    await interaction.editReply({
+        content: '⏳ **Generating your token...** (Step 1/4: DM Verified ✅)'
+    });
+    
+    try {
+        if (tokenStock.length === 0) {
+            tokenStock.push({
+                bearer: DEFAULT_TOKEN.bearer,
+                refresh: DEFAULT_TOKEN.refresh_token,
+                addedAt: Date.now(),
+                expiresAt: getTokenExpiryMs(DEFAULT_TOKEN.bearer) // NEVER EXPIRES
+            });
+        }
+        
+        await interaction.editReply({
+            content: '⏳ **Generating your token...** (Step 2/4: Checking validity)'
+        });
+        
+        let tokenObj = tokenStock[0];
+        
+        // Try to refresh for a fresh token, but don't block if it fails
+        try {
+            const refreshResult = await refreshToken(tokenObj.refresh);
+            if (refreshResult.success) {
+                tokenObj = tokenStock[0];
+                console.log('[TMC.LOL] ✅ Fresh token ready for user');
+            } else {
+                console.log('[TMC.LOL] ⚠️ Pre-generation refresh failed, using best available token');
+            }
+        } catch (e) {
+            console.log('[TMC.LOL] ⚠️ Pre-generation refresh error, using best available token');
+        }
+        
+        await interaction.editReply({
+            content: '⏳ **Generating your token...** (Step 3/4: Finalizing)'
+        });
+        
+        const validationResult = await validateSteamToken(tokenObj.bearer);
+        
+        if (validationResult.expiresAt) {
+            tokenObj.expiresAt = validationResult.expiresAt;
+        }
+        
+        const genId = generateGenerationId();
+        tokenObj.id = genId;
+        tokenObj.userId = interaction.user.id;
+        tokenObj.username = interaction.user.tag;
+        
+        tokenStock.shift();
+        tokenStock.push(tokenObj);
+        
+        if (!hasNoCooldown) {
+            cooldowns.set(`public_${userId}`, Date.now() + GENERATION_COOLDOWN);
+        }
+        
+        await interaction.editReply({
+            content: '⏳ **Generating your token...** (Step 4/4: Sending to DMs)'
+        });
+        
+        const expiryText = humanExpiry(tokenObj.expiresAt);
+        const tokenExpired = Date.now() >= tokenObj.expiresAt;
+
+        const tokenData = {
+            token: {
+                bearer: tokenObj.bearer,
+                refresh_token: tokenObj.refresh,
+                expires_at: new Date(tokenObj.expiresAt).toISOString(),
+                added_at: new Date().toISOString(),
+                generation_id: genId
+            },
+            message: "Thank you for using TMC.LOL Token Generator!",
+            credits: "@elliott (1363240484818128926)",
+            auto_refresh: "Refreshed automatically before expiry"
+        };
+        
+        const jsonString = JSON.stringify(tokenData, null, 2);
+        const jsonBuffer = Buffer.from(jsonString, 'utf-8');
+        const attachment = new AttachmentBuilder(jsonBuffer, { name: 'token.json' });
+        
+        const textVersion = `🔑 TMC.LOL TOKEN GENERATOR
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+BEARER TOKEN:
+${tokenObj.bearer}
+
+REFRESH TOKEN:
+${tokenObj.refresh}
+
+GENERATION ID:
+${genId}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+⏳ Valid until: ${expiryText}
+🔄 Auto-Refresh: Constantly
+👑 Credits: @elliott
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`;
+        
+        const textBuffer = Buffer.from(textVersion, 'utf-8');
+        const textAttachment = new AttachmentBuilder(textBuffer, { name: 'token.txt' });
+        
+        const embed = new EmbedBuilder()
+            .setTitle('🔑 TMC.LOL TOKEN GENERATOR')
+            .setDescription('✅ **Token generated successfully!**\n\n' +
+                '📁 **Files attached:**\n' +
+                '• `token.json` - JSON format\n' +
+                '• `token.txt` - Plain text format\n\n' +
+                `🆔 **Generation ID:** \`${genId}\`\n` +
+                `⏳ **Valid for:** ${expiryText}\n` +
+                '🔄 **Auto-Refresh:** Constantly\n\n' +
+                '👑 **Credits:** @elliott')
+            .setColor(0x5865F2)
+            .setFooter({ text: 'TMC.LOL • Auto-Refresh' });
+        
+        try {
+            await interaction.user.send({
+                embeds: [embed],
+                files: [attachment, textAttachment]
+            });
+            
+            activeGenerations.delete(userId);
+            return interaction.editReply({
+                content: `✅ **Token sent to your DMs!**\n🆔 **ID:** \`${genId}\`\n⏳ **${expiryText}**\n📦 **Tokens remaining:** ${tokenStock.length}`
+            });
+        } catch (err) {
+            console.error('[TMC.LOL] DM Error:', err);
+            activeGenerations.delete(userId);
+            return interaction.editReply({
+                content: '❌ **Error:** Could not send token via DM. Make sure your DMs are open.'
+            });
+        }
+        
+    } catch (err) {
+        console.error('[TMC.LOL] Token Generation Error:', err);
+        activeGenerations.delete(userId);
+        return interaction.editReply({
+            content: '❌ **An error occurred. Please try again.**'
+        });
+    }
+}
+
+// --- SLASH COMMANDS ---
 const commandsData = [
     new SlashCommandBuilder().setName('8ball').setDescription('Ask the magic 8ball a question').addStringOption(opt => opt.setName('question').setDescription('Your question').setRequired(true)),
     new SlashCommandBuilder().setName('help').setDescription('List all available bot commands and panels'),
     new SlashCommandBuilder().setName('ping').setDescription('Pong - checks bot latency'),
     new SlashCommandBuilder().setName('serverinfo').setDescription('Get info about this server'),
     new SlashCommandBuilder().setName('token').setDescription('Generate a fresh token directly to your DMs'),
+    new SlashCommandBuilder().setName('stock').setDescription('Open form to add token stock').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    new SlashCommandBuilder().setName('stock_main').setDescription('Set the main/default token').addStringOption(opt => opt.setName('bearer').setDescription('Bearer token').setRequired(true)).addStringOption(opt => opt.setName('refresh').setDescription('Refresh token').setRequired(true)).setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     new SlashCommandBuilder().setName('generator').setDescription('Post generator panel').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    new SlashCommandBuilder().setName('force_refresh').setDescription('Force refresh the current token').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     new SlashCommandBuilder().setName('remove-stock').setDescription('Remove a token by selection').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     new SlashCommandBuilder().setName('reset-stock').setDescription('Reset stock to default token').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     new SlashCommandBuilder().setName('gen-codes').setDescription('List all active generation IDs').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
@@ -441,36 +806,41 @@ const commandsData = [
         { name: 'Support', value: 'support' },
         { name: 'Generator', value: 'generator' }
     )).setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-    // DONATION COMMANDS
-    new SlashCommandBuilder().setName('donate-token').setDescription('[ADMIN] Gift a token to a specific user')
-        .addUserOption(opt => opt.setName('user').setDescription('Discord user to receive the token').setRequired(true))
-        .addStringOption(opt => opt.setName('token').setDescription('JWT bearer token').setRequired(true))
-        .addStringOption(opt => opt.setName('refresh_token').setDescription('JWT refresh token').setRequired(true))
-        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-    new SlashCommandBuilder().setName('my-tokens').setDescription('See all tokens gifted to you'),
-    new SlashCommandBuilder().setName('revoke-token').setDescription('[ADMIN] Remove all donated tokens from a user')
-        .addUserOption(opt => opt.setName('user').setDescription('User whose donated tokens to revoke').setRequired(true))
-        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-].map(cmd => cmd.toJSON());
+].map(command => command.toJSON());
 
-// ─── READY EVENT ──────────────────────────────────────────────────────
+// --- READY EVENT ---
 client.once('ready', async () => {
     try {
         console.log(`[TMC.LOL] 🚀 ONLINE: ${client.user.tag}`);
-        console.log('[TMC.LOL] 🔑 Token Generator Active (Multi‑Account)');
+        console.log('[TMC.LOL] 🔑 Token Generator Active');
+        console.log('[TMC.LOL] 🔄 Auto-Refresh: Smart (expiry-based, multi-account)');
+        console.log('[TMC.LOL] ⏳ Tokens stay valid until refresh needed');
         console.log(`[TMC.LOL] 👑 Connected to ${client.guilds.cache.size} server(s)`);
         console.log('[TMC.LOL] ================================');
 
+        tokenStock = [{
+            bearer: DEFAULT_TOKEN.bearer,
+            refresh: DEFAULT_TOKEN.refresh_token,
+            addedAt: Date.now(),
+            expiresAt: getTokenExpiryMs(DEFAULT_TOKEN.bearer) // NEVER EXPIRES
+        }];
+        console.log('[TMC.LOL] 📦 Default token added to stock');
+
+        await findWorkingApiUrl();
+
+        // Register slash commands
         const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
         try {
             console.log('[TMC.LOL] 🔄 Registering slash commands...');
-            await rest.put(Routes.applicationCommands(client.user.id), { body: commandsData });
+            await rest.put(
+                Routes.applicationCommands(client.user.id),
+                { body: commandsData },
+            );
             console.log('[TMC.LOL] ✅ Slash commands registered successfully!');
         } catch (error) {
             console.error('[TMC.LOL] Failed to register slash commands:', error);
         }
-
-        // Start the multi‑account refresh
+        
         startAutoRefresh();
         console.log('[TMC.LOL] ✅ Bot is fully ready!');
     } catch (err) {
@@ -478,16 +848,25 @@ client.once('ready', async () => {
     }
 });
 
-// ─── INTERACTION HANDLER ──────────────────────────────────────────────
+// --- ERROR HANDLING ---
+client.on('error', err => {
+    console.error('[TMC.LOL] Client error:', err);
+});
+
+client.on('disconnect', () => {
+    console.log('[TMC.LOL] Disconnected from Discord, attempting to reconnect...');
+});
+
+// --- INTERACTION CREATE ---
 client.on('interactionCreate', async interaction => {
     try {
         if (interaction.isChatInputCommand()) {
             const { commandName, options } = interaction;
 
-            // ── Public commands ──
             if (commandName === 'ping') {
                 return interaction.reply({ content: `🏓 Pong! Latency: \`${client.ws.ping}ms\``, flags: 64 });
             }
+
             if (commandName === '8ball') {
                 const question = options.getString('question');
                 const answers = ['Yes.', 'No.', 'Maybe.', 'Definitely.', 'Ask again later.', 'Outlook not so good.'];
@@ -495,6 +874,102 @@ client.on('interactionCreate', async interaction => {
                 const embed = new EmbedBuilder().setTitle('🎱 Magic 8-Ball').addFields({ name: 'Question', value: question }, { name: 'Answer', value: ans }).setColor(0x3498DB);
                 return interaction.reply({ embeds: [embed] });
             }
+
+            if (commandName === 'token') {
+                await interaction.deferReply({ flags: 64 });
+                
+                if (tokenStock.length === 0) {
+                    tokenStock.push({
+                        bearer: DEFAULT_TOKEN.bearer,
+                        refresh: DEFAULT_TOKEN.refresh_token,
+                        addedAt: Date.now(),
+                        expiresAt: getTokenExpiryMs(DEFAULT_TOKEN.bearer) // NEVER EXPIRES
+                    });
+                }
+                
+                let tokenObj = tokenStock[0];
+                
+                const refreshResult = await refreshToken(tokenObj.refresh);
+                if (refreshResult.success) {
+                    tokenObj = tokenStock[0];
+                }
+                
+                const genId = generateGenerationId();
+                tokenObj.id = genId;
+                tokenObj.userId = interaction.user.id;
+                tokenObj.username = interaction.user.tag;
+                
+                tokenStock.shift();
+                tokenStock.push(tokenObj);
+
+                const expiryText = humanExpiry(tokenObj.expiresAt);
+                const tokenExpired = Date.now() >= tokenObj.expiresAt;
+                
+                try {
+                    const tokenData = {
+                        token: {
+                            bearer: tokenObj.bearer,
+                            refresh_token: tokenObj.refresh,
+                            expires_at: new Date(tokenObj.expiresAt).toISOString(),
+                            added_at: new Date().toISOString(),
+                            generation_id: genId
+                        },
+                        message: "Thank you for using TMC.LOL Token Generator!",
+                        credits: "@elliott",
+                        auto_refresh: "Refreshed automatically before expiry"
+                    };
+                    
+                    const jsonString = JSON.stringify(tokenData, null, 2);
+                    const jsonBuffer = Buffer.from(jsonString, 'utf-8');
+                    const attachment = new AttachmentBuilder(jsonBuffer, { name: 'token.json' });
+                    
+                    const textVersion = `🔑 TMC.LOL TOKEN GENERATOR
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+BEARER TOKEN:
+${tokenObj.bearer}
+
+REFRESH TOKEN:
+${tokenObj.refresh}
+
+GENERATION ID:
+${genId}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+⏳ Valid until: ${expiryText}
+🔄 Auto-Refresh: Constantly
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`;
+                    
+                    const textBuffer = Buffer.from(textVersion, 'utf-8');
+                    const textAttachment = new AttachmentBuilder(textBuffer, { name: 'token.txt' });
+                    
+                    const embed = new EmbedBuilder()
+                        .setTitle('🔑 TMC.LOL TOKEN GENERATOR')
+                        .setDescription('✅ **Token generated successfully!**\n\n' +
+                            '📁 **Files attached:**\n' +
+                            '• `token.json` - JSON format\n' +
+                            '• `token.txt` - Plain text format\n\n' +
+                            `🆔 **Generation ID:** \`${genId}\`\n` +
+                            `⏳ **Valid for:** ${expiryText}\n` +
+                            '🔄 **Auto-Refresh:** Constantly')
+                        .setColor(0x5865F2)
+                        .setFooter({ text: 'TMC.LOL • Auto-Refresh' });
+                    
+                    await interaction.user.send({
+                        embeds: [embed],
+                        files: [attachment, textAttachment]
+                    });
+                    
+                    return interaction.editReply({
+                        content: `✅ **Token sent to your DMs!**\n🆔 **ID:** \`${genId}\`\n⏳ **${expiryText}**\n📦 **Tokens remaining:** ${tokenStock.length}`
+                    });
+                } catch (err) {
+                    return interaction.editReply({
+                        content: '❌ **DM Failed:** Please open your DMs to receive tokens.'
+                    });
+                }
+            }
+
             if (commandName === 'help') {
                 const embed = new EmbedBuilder()
                     .setTitle("⚡ TMC.LOL COMMAND DIRECTORY")
@@ -505,15 +980,15 @@ client.on('interactionCreate', async interaction => {
                         { name: "🔑 `/generator`", value: "Post the token generator panel", inline: false },
                         { name: "📋 `/gen-codes`", value: "List all active generation IDs", inline: false },
                         { name: "🗑️ `/remove-stock`", value: "Remove a token by selection", inline: false },
-                        { name: "🎁 `/donate-token`", value: "[Admin] Gift a token to a user", inline: false },
-                        { name: "👤 `/my-tokens`", value: "View tokens gifted to you", inline: false },
-                        { name: "🗑️ `/revoke-token`", value: "[Admin] Revoke all tokens from a user", inline: false },
-                        { name: "⏳ **Auto-Refresh**", value: "Every few minutes", inline: false },
+                        { name: "🔄 `/force_refresh`", value: "Force refresh the current token", inline: false },
+                        { name: "⏳ **Auto-Refresh**", value: "Smart (expiry-based, multi-account)", inline: false },
                         { name: "👑 **Credits**", value: "@elliott", inline: false }
                     )
-                    .setFooter({ text: "TMC.LOL" });
+                    .setFooter({ text: "TMC.LOL • NEVER Expires" });
+
                 return interaction.reply({ embeds: [embed], flags: 64 });
             }
+
             if (commandName === 'serverinfo') {
                 const guild = interaction.guild;
                 const embed = new EmbedBuilder()
@@ -529,136 +1004,178 @@ client.on('interactionCreate', async interaction => {
                 return interaction.reply({ embeds: [embed] });
             }
 
-            // ── /token (generate) ──
-            if (commandName === 'token') {
-                await interaction.deferReply({ flags: 64 });
-                // Ensure we have a token
-                if (!currentToken) {
-                    try { currentToken = loadTokens(); } catch (_) {}
-                    if (!currentToken) {
-                        return interaction.editReply({ content: '❌ No token available. Contact admin.' });
+            // --- ADMIN COMMANDS ---
+            const adminCommands = ['stock', 'stock_main', 'generator', 'force_refresh', 'remove-stock', 'reset-stock', 'gen-codes', 'remove-token', 'refresh_cooldown_all', 'panel'];
+            
+            if (adminCommands.includes(commandName)) {
+                if (!hasAdminAccess(interaction)) {
+                    return interaction.reply({ 
+                        content: `❌ **Access Denied:** You need admin permissions.`, 
+                        flags: 64 
+                    });
+                }
+
+                if (commandName === 'stock_main') {
+                    try {
+                        await interaction.deferReply({ flags: 64 });
+                        
+                        const bearer = options.getString('bearer');
+                        const refresh = options.getString('refresh');
+                        
+                        if (!bearer || !refresh) {
+                            return interaction.editReply({
+                                content: '❌ **Error:** Both Bearer and Refresh tokens are required.'
+                            });
+                        }
+                        
+                        forceSetOwnToken(bearer, refresh);
+                        
+                        const embed = new EmbedBuilder()
+                            .setTitle('📌 Main Token Updated!')
+                            .setDescription('Token updated successfully!')
+                            .setColor(0x2ECC71)
+                            .addFields(
+                                { name: 'Valid For', value: humanExpiry(lastRefreshExpiry), inline: true },
+                                { name: 'Stock', value: `${tokenStock.length} token(s)`, inline: true }
+                            )
+                            .setFooter({ text: 'TMC.LOL • Auto-Refresh' });
+                        
+                        return interaction.editReply({ embeds: [embed] });
+                    } catch (err) {
+                        console.error('[TMC.LOL] Stock Main Error:', err);
+                        return interaction.editReply({ content: '❌ **Error:** Failed to set main token.' });
                     }
                 }
 
-                // Refresh if needed
-                if (isExpired(currentToken.token, 300)) {
-                    await refreshWithFallback(true);
+                if (commandName === 'stock') {
+                    try {
+                        const modal = new ModalBuilder()
+                            .setCustomId('stock_modal')
+                            .setTitle('📦 Add Token Stock');
+
+                        const bearerInput = new TextInputBuilder()
+                            .setCustomId('stock_bearer_input')
+                            .setLabel("ENTER BEARER TOKEN")
+                            .setStyle(TextInputStyle.Paragraph)
+                            .setPlaceholder("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...")
+                            .setRequired(true)
+                            .setMinLength(10)
+                            .setMaxLength(2000);
+
+                        const refreshInput = new TextInputBuilder()
+                            .setCustomId('stock_refresh_input')
+                            .setLabel("ENTER REFRESH TOKEN")
+                            .setStyle(TextInputStyle.Paragraph)
+                            .setPlaceholder("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...")
+                            .setRequired(true)
+                            .setMinLength(10)
+                            .setMaxLength(2000);
+
+                        modal.addComponents(
+                            new ActionRowBuilder().addComponents(bearerInput),
+                            new ActionRowBuilder().addComponents(refreshInput)
+                        );
+
+                        await interaction.showModal(modal);
+                    } catch (err) {
+                        console.error('[TMC.LOL] Stock Error:', err);
+                        return interaction.reply({ content: '❌ **Error:** Failed to open stock form.', flags: 64 });
+                    }
+                    return;
                 }
 
-                const tokenObj = {
-                    bearer: currentToken.token,
-                    refresh: currentToken.refresh_token,
-                    expiresAt: getTokenExpiryMs(currentToken.token)
-                };
-                const genId = generateGenerationId();
-                tokenObj.id = genId;
-                tokenObj.userId = interaction.user.id;
-                tokenObj.username = interaction.user.tag;
-
-                // Store in stock (for /gen-codes etc.) - we'll keep a simple array
-                // We'll reuse tokenStock from previous version
-                if (!global.tokenStock) global.tokenStock = [];
-                global.tokenStock.push(tokenObj);
-                // limit size
-                if (global.tokenStock.length > 100) global.tokenStock.shift();
-
-                const expiryText = humanExpiry(tokenObj.expiresAt);
-                const warnNote = (isExpired(tokenObj.bearer, 0))
-                    ? '\n\n⚠️ **WARNING:** This token may NOT work. The refresh token may be invalid — contact admin.'
-                    : '';
-
-                try {
-                    const tokenData = {
-                        token: {
-                            bearer: tokenObj.bearer,
-                            refresh_token: tokenObj.refresh,
-                            expires_at: new Date(tokenObj.expiresAt).toISOString(),
-                            added_at: new Date().toISOString(),
-                            generation_id: genId
-                        },
-                        message: "Thank you for using TMC.LOL Token Generator!",
-                        credits: "@elliott",
-                        auto_refresh: "Refreshed automatically before expiry"
-                    };
-                    const jsonString = JSON.stringify(tokenData, null, 2);
-                    const jsonBuffer = Buffer.from(jsonString, 'utf-8');
-                    const attachment = new AttachmentBuilder(jsonBuffer, { name: 'token.json' });
-
-                    const textVersion = `🔑 TMC.LOL TOKEN GENERATOR
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-BEARER TOKEN:
-${tokenObj.bearer}
-
-REFRESH TOKEN:
-${tokenObj.refresh}
-
-GENERATION ID:
-${genId}
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-⏳ Valid until: ${expiryText}
-🔄 Auto-Refresh: Before expiry
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${warnNote}`;
-                    const textBuffer = Buffer.from(textVersion, 'utf-8');
-                    const textAttachment = new AttachmentBuilder(textBuffer, { name: 'token.txt' });
-
+            if (commandName === 'generator') {
                     const embed = new EmbedBuilder()
                         .setTitle('🔑 TMC.LOL TOKEN GENERATOR')
-                        .setDescription('✅ **Token generated successfully!**\n\n' +
-                            '📁 **Files attached:**\n• `token.json` - JSON format\n• `token.txt` - Plain text format\n\n' +
-                            `🆔 **Generation ID:** \`${genId}\`\n` +
-                            `⏳ **Valid for:** ${expiryText}\n` +
-                            '🔄 **Auto-Refresh:** Before expiry\n\n👑 **Credits:** @elliott' +
-                            (warnNote ? '\n\n⚠️ **This token may not work** — contact admin.' : ''))
-                        .setColor(isExpired(tokenObj.bearer, 0) ? 0xED4245 : 0x5865F2)
-                        .setFooter({ text: 'TMC.LOL • Auto-Refresh' });
-
-                    await interaction.user.send({ embeds: [embed], files: [attachment, textAttachment] });
-                    return interaction.editReply({
-                        content: `✅ **Token sent to your DMs!**\n🆔 **ID:** \`${genId}\`\n⏳ **${expiryText}**\n📦 **Tokens generated:** ${global.tokenStock.length}` +
-                            (warnNote ? '\n\n⚠️ **Warning:** token may not work — contact admin.' : '')
-                    });
-                } catch (err) {
-                    return interaction.editReply({ content: '❌ **DM Failed:** Please open your DMs to receive tokens.' });
-                }
-            }
-
-            // ── ADMIN COMMANDS ──
-            const adminCommands = ['generator', 'remove-stock', 'reset-stock', 'gen-codes', 'remove-token', 'refresh_cooldown_all', 'panel', 'donate-token', 'revoke-token'];
-            if (adminCommands.includes(commandName)) {
-                if (!hasAdminAccess(interaction)) {
-                    return interaction.reply({ content: `❌ **Access Denied:** You need admin permissions.`, flags: 64 });
-                }
-
-                if (commandName === 'generator') {
-                    const embed = new EmbedBuilder()
-                        .setTitle('🔑 TMC.LOL TOKEN GENERATOR')
-                        .setDescription('Generate your token below!\n\n⚠️ **Please open your DMs** to receive your token!\n🔄 **Auto-Refresh:** Every few minutes\n\n👑 **Credits:** @elliott')
+                        .setDescription(
+                            'Generate your token below!\n\n' +
+                            '⚠️ **Please open your DMs** to receive your token!\n' +
+                            '🔄 **Auto-Refresh:** Smart (multi-account)\n' +
+                            '⏳ **Tokens NEVER expire!**\n\n' +
+                            '👑 **Credits:** @elliott'
+                        )
                         .setColor(0x5865F2)
-                        .setFooter({ text: 'TMC.LOL' });
+                        .setFooter({ text: 'TMC.LOL • NEVER Expires' });
+
                     const row = new ActionRowBuilder().addComponents(
                         new ButtonBuilder().setCustomId('gen_public').setLabel('Generate Token').setStyle(ButtonStyle.Success).setEmoji('🔑')
                     );
-                    return interaction.reply({ embeds: [embed], components: [row] });
+
+                    const refreshRow = new ActionRowBuilder().addComponents(
+                        new ButtonBuilder().setCustomId('refresh_token_modal').setLabel('🔄 Refresh Token').setStyle(ButtonStyle.Primary).setEmoji('🔄')
+                    );
+
+                    return interaction.reply({ embeds: [embed], components: [row, refreshRow] });
+                }
+
+                if (commandName === 'force_refresh') {
+                    await interaction.deferReply({ flags: 64 });
+                    
+                    if (tokenStock.length === 0) {
+                        return interaction.editReply({
+                            content: '❌ **Error:** No token in stock!'
+                        });
+                    }
+                    
+                    try {
+                        const refreshResult = await refreshToken(tokenStock[0].refresh);
+                        
+                        if (refreshResult.success) {
+                            const embed = new EmbedBuilder()
+                                .setTitle('🔄 Token Force Refreshed!')
+                                .setDescription('✅ Token refreshed successfully!')
+                                .setColor(0x2ECC71)
+                                .addFields(
+                                    { name: '⏳ Expiry', value: humanExpiry(tokenStock[0].expiresAt), inline: true },
+                                    { name: '📦 Stock', value: `${tokenStock.length} token(s)`, inline: true }
+                                )
+                                .setFooter({ text: 'TMC.LOL • Force Refresh' });
+                            
+                            return interaction.editReply({ embeds: [embed] });
+                        } else {
+                            return interaction.editReply({
+                                content: '⚠️ **Refresh failed** - Will retry automatically soon.'
+                            });
+                        }
+                    } catch (err) {
+                        console.error('[TMC.LOL] Force Refresh Error:', err);
+                        return interaction.editReply({
+                            content: '⚠️ **Refresh failed** - Will retry automatically soon.'
+                        });
+                    }
                 }
 
                 if (commandName === 'remove-stock') {
-                    const entries = (global.tokenStock || [])
+                    const entries = tokenStock
                         .filter(t => t.id && t.id.length > 0)
-                        .map(t => ({ id: t.id, username: t.username || `<@${t.userId}>` }));
+                        .map(t => ({
+                            id: t.id,
+                            userId: t.userId,
+                            username: t.username || `<@${t.userId}>`
+                        }));
+
                     if (entries.length === 0) {
-                        return interaction.reply({ content: '📭 No active generation IDs to remove.', flags: 64 });
+                        return interaction.reply({
+                            content: '📭 No active generation IDs to remove.',
+                            flags: 64
+                        });
                     }
+
                     const embed = new EmbedBuilder()
                         .setTitle('🗑️ Remove a Token by Selection')
                         .setDescription(`**${entries.length}** active token(s)`)
                         .setColor(0xED4245);
-                    entries.forEach(entry => {
-                        embed.addFields({ name: `\`${entry.id}\``, value: `👤 ${entry.username}`, inline: false });
+
+                    entries.forEach((entry) => {
+                        embed.addFields({
+                            name: `\`${entry.id}\``,
+                            value: `👤 ${entry.username}`,
+                            inline: false
+                        });
                     });
+
                     const row = new ActionRowBuilder();
-                    entries.slice(0, 5).forEach(entry => {
+                    entries.slice(0, 5).forEach((entry) => {
                         row.addComponents(
                             new ButtonBuilder()
                                 .setCustomId(`remove_${entry.id}`)
@@ -667,76 +1184,127 @@ ${genId}
                                 .setEmoji('🗑️')
                         );
                     });
-                    return interaction.reply({ embeds: [embed], components: [row], flags: 64 });
+
+                    return interaction.reply({
+                        embeds: [embed],
+                        components: [row],
+                        flags: 64
+                    });
                 }
 
                 if (commandName === 'reset-stock') {
-                    global.tokenStock = [];
-                    return interaction.reply({ content: '🔄 Stock has been reset.', flags: 64 });
+                    lastRefreshExpiry = getTokenExpiryMs(DEFAULT_TOKEN.bearer);
+                    tokenStock = [{
+                        bearer: DEFAULT_TOKEN.bearer,
+                        refresh: DEFAULT_TOKEN.refresh_token,
+                        addedAt: Date.now(),
+                        expiresAt: lastRefreshExpiry
+                    }];
+                    return interaction.reply({ content: '🔄 Stock has been reset to default.', flags: 64 });
                 }
 
                 if (commandName === 'remove-token') {
                     const id = options.getString('id').trim();
-                    const idx = (global.tokenStock || []).findIndex(t => t.id === id);
-                    if (idx === -1) {
-                        return interaction.reply({ content: `❌ No token found with ID \`${id}\`.`, flags: 64 });
-                    }
-                    global.tokenStock.splice(idx, 1);
-                    return interaction.reply({ content: `✅ Token \`${id}\` removed. Remaining: ${global.tokenStock.length}`, flags: 64 });
+                    const result = removeTokenById(id);
+                    return interaction.reply({ 
+                        content: result.success ? `✅ ${result.message}` : `❌ ${result.message}`, 
+                        flags: 64 
+                    });
                 }
 
                 if (commandName === 'gen-codes') {
-                    const entries = (global.tokenStock || [])
+                    const entries = tokenStock
                         .filter(t => t.id && t.id.length > 0)
-                        .map(t => ({ id: t.id, username: t.username || `<@${t.userId}>` }));
+                        .map(t => ({
+                            id: t.id,
+                            username: t.username || `<@${t.userId}>`
+                        }));
+
                     if (entries.length === 0) {
                         return interaction.reply({ content: '📭 No active generation IDs found.', flags: 64 });
                     }
+
                     const embed = new EmbedBuilder()
                         .setTitle('📋 Active Generation IDs')
                         .setDescription(`**${entries.length}** active token(s)`)
                         .setColor(0x5865F2);
-                    entries.forEach(entry => {
-                        embed.addFields({ name: `\`${entry.id}\``, value: `👤 ${entry.username}`, inline: false });
+
+                    entries.forEach((entry) => {
+                        embed.addFields({
+                            name: `\`${entry.id}\``,
+                            value: `👤 ${entry.username}`,
+                            inline: false
+                        });
                     });
+
                     return interaction.reply({ embeds: [embed], flags: 64 });
                 }
 
                 if (commandName === 'refresh_cooldown_all') {
                     const count = cooldowns.size;
                     cooldowns.clear();
-                    return interaction.reply({ content: `⏱️ **Cooldowns Reset!** ${count} cooldowns cleared.`, flags: 64 });
+                    return interaction.reply({
+                        content: `⏱️ **Cooldowns Reset!** ${count} cooldowns cleared.`,
+                        flags: 64
+                    });
                 }
 
                 if (commandName === 'panel') {
                     const subArg = options.getString('type');
+
                     if (subArg === 'generator') {
                         const embed = new EmbedBuilder()
                             .setTitle('🔑 TMC.LOL TOKEN GENERATOR')
-                            .setDescription('Generate your token below!\n\n⚠️ **Please open your DMs** to receive your token!\n🔄 **Auto-Refresh:** Every few minutes')
+                            .setDescription(
+                                'Generate your token below!\n\n' +
+                                '⚠️ **Please open your DMs** to receive your token!\n' +
+                                '🔄 **Auto-Refresh:** Smart (multi-account)\n' +
+                                '⏳ **Tokens NEVER expire!**'
+                            )
                             .setColor(0x5865F2)
-                            .setFooter({ text: 'TMC.LOL' });
+                            .setFooter({ text: 'TMC.LOL • NEVER Expires' });
+
                         const row = new ActionRowBuilder().addComponents(
                             new ButtonBuilder().setCustomId('gen_public').setLabel('Generate Token').setStyle(ButtonStyle.Success).setEmoji('🔑')
                         );
-                        return interaction.reply({ embeds: [embed], components: [row] });
+
+                        const refreshRow = new ActionRowBuilder().addComponents(
+                            new ButtonBuilder().setCustomId('refresh_token_modal').setLabel('🔄 Refresh Token').setStyle(ButtonStyle.Primary).setEmoji('🔄')
+                        );
+
+                        return interaction.reply({ embeds: [embed], components: [row, refreshRow] });
                     }
+
                     if (subArg === 'verify') {
-                        const embed = new EmbedBuilder().setTitle("🛡️ VERIFICATION").setDescription("Click below to verify.").setColor(0x1ABC9C);
+                        const embed = new EmbedBuilder()
+                            .setTitle("🛡️ VERIFICATION")
+                            .setDescription("Click below to verify.")
+                            .setColor(0x1ABC9C);
+
                         const row = new ActionRowBuilder().addComponents(
                             new ButtonBuilder().setCustomId('verify_btn').setLabel('VERIFY').setStyle(ButtonStyle.Success).setEmoji('🛡️')
                         );
                         return interaction.reply({ embeds: [embed], components: [row] });
                     }
+
                     if (subArg === 'redeem') {
-                        const embed = new EmbedBuilder().setTitle("💎 KEY REDEEM").setDescription("Got a code? Click below to redeem.").setColor(0x5865F2);
+                        const embed = new EmbedBuilder()
+                            .setTitle("💎 KEY REDEEM")
+                            .setDescription("Got a code? Click below to redeem.")
+                            .setColor(0x5865F2);
+
                         const row = new ActionRowBuilder().addComponents(
                             new ButtonBuilder().setCustomId('redeem_btn').setLabel('REDEEM KEY').setStyle(ButtonStyle.Primary).setEmoji('💎')
                         );
                         return interaction.reply({ embeds: [embed], components: [row] });
                     }
+
                     if (subArg === 'support') {
-                        const embed = new EmbedBuilder().setTitle("🛠️ SUPPORT").setDescription("Select your department.").setColor(0xFEE75C);
+                        const embed = new EmbedBuilder()
+                            .setTitle("🛠️ SUPPORT")
+                            .setDescription("Select your department.")
+                            .setColor(0xFEE75C);
+
                         const row = new ActionRowBuilder().addComponents(
                             new StringSelectMenuBuilder()
                                 .setCustomId('support_select')
@@ -749,101 +1317,52 @@ ${genId}
                         return interaction.reply({ embeds: [embed], components: [row] });
                     }
                 }
-
-                // ── DONATE TOKEN ──
-                if (commandName === 'donate-token') {
-                    const user = options.getUser('user');
-                    const token = options.getString('token');
-                    const refreshToken = options.getString('refresh_token');
-
-                    if (!token.startsWith('ey') || !refreshToken.startsWith('ey')) {
-                        return interaction.reply({ content: '❌ **Invalid tokens** — must be JWT strings starting with `ey...`', flags: 64 });
-                    }
-                    if (isExpired(token, 60)) {
-                        const ttl = secondsUntilExpiry(token);
-                        return interaction.reply({ content: `❌ **Token already expired** (${ttl}s remaining).`, flags: 64 });
-                    }
-
-                    addDonated(user.id, token, refreshToken, interaction.user.id);
-                    const ttl = secondsUntilExpiry(token);
-                    return interaction.reply({
-                        content: `🎁 **Token donated to ${user}**\n\`\`\`json\n${JSON.stringify({ expires_in: ttl, recipient: user.id, given_by: interaction.user.id }, null, 2)}\n\`\`\`\n>>> They can claim it with \`/my-tokens\`.`,
-                        flags: 64
-                    });
-                }
-
-                // ── REVOKE TOKEN ──
-                if (commandName === 'revoke-token') {
-                    const user = options.getUser('user');
-                    const count = revokeDonated(user.id);
-                    return interaction.reply({
-                        content: count > 0 ? `🗑️ **Revoked \`${count}\` donated token(s)** from ${user}.` : `ℹ️ **${user} had no donated tokens** to revoke.`,
-                        flags: 64
-                    });
-                }
-            }
-
-            // ── /my-tokens (non‑admin) ──
-            if (commandName === 'my-tokens') {
-                const userId = interaction.user.id;
-                const onCd = checkCooldown(userId, 'my_tokens', 60);
-                if (onCd.onCooldown) {
-                    return interaction.reply({
-                        content: `⏱️ Slow down — try again in \`${formatTime(onCd.remaining)}\`.`,
-                        flags: 64
-                    });
-                }
-                setCooldown(userId, 'my_tokens', 60);
-
-                const donated = getDonated(userId);
-                if (!donated || donated.length === 0) {
-                    return interaction.reply({ content: '🎁 **No gifted tokens** — ask an admin to run `/donate-token` for you.', flags: 64 });
-                }
-
-                const valid = donated.filter(t => !isExpired(t.token, 0));
-                const expiredCount = donated.length - valid.length;
-                if (valid.length === 0) {
-                    return interaction.reply({
-                        content: `⚠️ **All ${expiredCount} gifted token(s) have expired** — ask an admin for a new one.`,
-                        flags: 64
-                    });
-                }
-
-                const payload = valid.map((t, i) => ({
-                    gift: i + 1,
-                    token: t.token,
-                    refresh_token: t.refresh_token,
-                    expires_in: secondsUntilExpiry(t.token),
-                    given_by: t.given_by
-                }));
-
-                const raw = JSON.stringify(payload, null, 2);
-                const header = `🎁 **Your Gifted Tokens** — \`${valid.length}\` valid, \`${expiredCount}\` expired\n`;
-                if (header.length + raw.length + 10 <= 1990) {
-                    return interaction.reply({
-                        content: `${header}\`\`\`json\n${raw}\n\`\`\``,
-                        flags: 64
-                    });
-                } else {
-                    await interaction.reply({ content: `${header}*(Sending ${valid.length} token(s) separately)*`, flags: 64 });
-                    for (const entry of payload) {
-                        await interaction.followUp({ content: `\`\`\`json\n${JSON.stringify(entry, null, 2)}\n\`\`\``, flags: 64 });
-                    }
-                    return;
-                }
             }
         }
 
-        // ─── BUTTON HANDLERS ──────────────────────────────────────────
+        // --- BUTTON HANDLERS ---
         if (interaction.isButton()) {
+            // --- Refresh Token Modal Button ---
+            if (interaction.customId === 'refresh_token_modal') {
+                if (!hasAdminAccess(interaction)) {
+                    return interaction.reply({ 
+                        content: `❌ You need admin permissions to refresh tokens.`, 
+                        flags: 64 
+                    });
+                }
+
+                const modal = new ModalBuilder()
+                    .setCustomId('refresh_token_modal_submit')
+                    .setTitle('🔄 Refresh Token');
+
+                const bearerInput = new TextInputBuilder()
+                    .setCustomId('refresh_bearer_input')
+                    .setLabel("ENTER NEW BEARER TOKEN")
+                    .setStyle(TextInputStyle.Paragraph)
+                    .setPlaceholder("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...")
+                    .setRequired(true)
+                    .setMinLength(10)
+                    .setMaxLength(2000);
+
+                const refreshInput = new TextInputBuilder()
+                    .setCustomId('refresh_refresh_input')
+                    .setLabel("ENTER NEW REFRESH TOKEN")
+                    .setStyle(TextInputStyle.Paragraph)
+                    .setPlaceholder("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...")
+                    .setRequired(true)
+                    .setMinLength(10)
+                    .setMaxLength(2000);
+
+                modal.addComponents(
+                    new ActionRowBuilder().addComponents(bearerInput),
+                    new ActionRowBuilder().addComponents(refreshInput)
+                );
+
+                return await interaction.showModal(modal);
+            }
+
             if (interaction.customId === 'gen_public') {
-                // Reuse /token logic via a helper
-                // We'll simulate a command execution
-                const fakeInteraction = { ...interaction, commandName: 'token', options: { getString: () => null } };
-                // We'll just call the token generation block manually
-                // For simplicity, we'll create a new handler
-                await handleTokenGeneration(interaction);
-                return;
+                return await processTokenGeneration(interaction, 'Public Token');
             }
 
             if (interaction.customId === 'verify_btn') {
@@ -865,24 +1384,25 @@ ${genId}
                 const modal = new ModalBuilder()
                     .setCustomId('redeem_modal')
                     .setTitle('💎 Secure Key Redemption');
+
                 const codeInput = new TextInputBuilder()
                     .setCustomId('redeem_code_input')
                     .setLabel("ENTER CODE")
                     .setStyle(TextInputStyle.Short)
                     .setPlaceholder("supporter-xxxx-xxxx-xxxx")
                     .setRequired(true);
+
                 modal.addComponents(new ActionRowBuilder().addComponents(codeInput));
                 return await interaction.showModal(modal);
             }
 
             if (interaction.customId.startsWith('remove_')) {
                 const id = interaction.customId.replace('remove_', '');
-                const idx = (global.tokenStock || []).findIndex(t => t.id === id);
-                if (idx === -1) {
-                    return interaction.reply({ content: `❌ No token found with ID \`${id}\`.`, flags: 64 });
-                }
-                global.tokenStock.splice(idx, 1);
-                return interaction.reply({ content: `✅ Token \`${id}\` removed. Remaining: ${global.tokenStock.length}`, flags: 64 });
+                const result = removeTokenById(id);
+                return interaction.reply({
+                    content: result.success ? `✅ ${result.message}` : `❌ ${result.message}`,
+                    flags: 64
+                });
             }
 
             if (interaction.customId === 'close_ticket_btn') {
@@ -894,28 +1414,37 @@ ${genId}
             }
         }
 
-        // ─── SELECT MENU ─────────────────────────────────────────────
         if (interaction.isStringSelectMenu()) {
             if (interaction.customId === 'support_select') {
                 const category = interaction.values[0];
                 await interaction.deferReply({ flags: 64 });
+
                 try {
                     const ticketChannel = await interaction.guild.channels.create({
                         name: `ticket-${interaction.user.username}`,
                         type: ChannelType.GuildText,
                         permissionOverwrites: [
-                            { id: interaction.guild.id, deny: [PermissionFlagsBits.ViewChannel] },
-                            { id: interaction.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] }
+                            {
+                                id: interaction.guild.id,
+                                deny: [PermissionFlagsBits.ViewChannel],
+                            },
+                            {
+                                id: interaction.user.id,
+                                allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages],
+                            }
                         ],
                     });
+
                     const embed = new EmbedBuilder()
                         .setTitle(`🎫 TICKET: ${category.toUpperCase()}`)
                         .setDescription(`Welcome, <@${interaction.user.id}>.`)
                         .setColor(0xFEE75C)
                         .setTimestamp();
+
                     const closeButton = new ActionRowBuilder().addComponents(
                         new ButtonBuilder().setCustomId('close_ticket_btn').setLabel('CLOSE').setStyle(ButtonStyle.Danger).setEmoji('🔒')
                     );
+
                     await ticketChannel.send({ embeds: [embed], components: [closeButton] });
                     return interaction.editReply({ content: `✅ Ticket created: <#${ticketChannel.id}>` });
                 } catch (err) {
@@ -924,21 +1453,173 @@ ${genId}
             }
         }
 
-        // ─── MODALS ─────────────────────────────────────────────────
         if (interaction.isModalSubmit()) {
+            // --- Refresh Token Modal Submit ---
+            if (interaction.customId === 'refresh_token_modal_submit') {
+                try {
+                    if (!hasAdminAccess(interaction)) {
+                        return interaction.reply({
+                            content: `❌ **Access Denied:** You need admin permissions to refresh tokens.`,
+                            flags: 64
+                        });
+                    }
+
+                    await interaction.deferReply({ flags: 64 });
+                    
+                    const bearer = interaction.fields.getTextInputValue('refresh_bearer_input').trim();
+                    const refresh = interaction.fields.getTextInputValue('refresh_refresh_input').trim();
+                    
+                    if (!bearer || !refresh) {
+                        return interaction.editReply({
+                            content: '❌ **Error:** Both Bearer and Refresh tokens are required.'
+                        });
+                    }
+
+                    DEFAULT_TOKEN.bearer = bearer;
+                    DEFAULT_TOKEN.refresh_token = refresh;
+                    activeAccountLabel = 'manual';
+
+                    // Also add as a fallback account
+                    if (!accounts.find(a => a.token === bearer)) {
+                        accounts.push({ token: bearer, refresh_token: refresh, label: 'manual' });
+                    }
+                    
+                    if (tokenStock.length > 0) {
+                        const oldToken = tokenStock[0];
+                        const newToken = {
+                            bearer: bearer,
+                            refresh: refresh,
+                            addedAt: Date.now(),
+                            expiresAt: getTokenExpiryMs(DEFAULT_TOKEN.bearer), // NEVER EXPIRES
+                            id: oldToken.id,
+                            userId: oldToken.userId,
+                            username: oldToken.username
+                        };
+                        tokenStock[0] = newToken;
+                    } else {
+                        tokenStock.push({
+                            bearer: bearer,
+                            refresh: refresh,
+                            addedAt: Date.now(),
+                            expiresAt: getTokenExpiryMs(DEFAULT_TOKEN.bearer) // NEVER EXPIRES
+                        });
+                    }
+
+                    // Try to refresh the token immediately
+                    const refreshResult = await refreshToken(refresh);
+                    
+                    let statusMessage = '✅ Token has been updated with the new values.';
+                    if (refreshResult.success) {
+                        statusMessage = '✅ Token has been updated and REFRESHED successfully! The bot will now auto-refresh this token using the multi-account system.';
+                    } else {
+                        statusMessage = '⚠️ Token updated but refresh failed. The bot will keep trying to refresh it automatically with account fallback.';
+                    }
+
+                    const embed = new EmbedBuilder()
+                        .setTitle('🔄 Token Refreshed Successfully!')
+                        .setDescription(statusMessage)
+                        .setColor(0x2ECC71)
+                        .addFields(
+                            { name: '📋 Bearer Token', value: `\`\`\`\n${bearer}\n\`\`\``, inline: false },
+                            { name: '📋 Refresh Token', value: `\`\`\`\n${refresh}\n\`\`\``, inline: false },
+                            { name: '⏳ Expiry', value: '**NEVER Expires!**', inline: true },
+                            { name: '📦 Stock', value: `${tokenStock.length} token(s) in stock`, inline: true },
+                            { name: '🔄 Auto-Refresh', value: 'Smart (multi-account)', inline: true }
+                        )
+                        .setTimestamp()
+                        .setFooter({ text: 'TMC.LOL Token Generator • NEVER Expires' });
+
+                    const row1 = new ActionRowBuilder().addComponents(
+                        new ButtonBuilder()
+                            .setCustomId(`copy_bearer_${Date.now()}`)
+                            .setLabel('📋 Copy Bearer')
+                            .setStyle(ButtonStyle.Primary)
+                    );
+
+                    const row2 = new ActionRowBuilder().addComponents(
+                        new ButtonBuilder()
+                            .setCustomId(`copy_refresh_${Date.now()}`)
+                            .setLabel('📋 Copy Refresh')
+                            .setStyle(ButtonStyle.Success)
+                    );
+
+                    return interaction.editReply({ 
+                        embeds: [embed], 
+                        components: [row1, row2]
+                    });
+                } catch (err) {
+                    console.error('[TMC.LOL] Refresh Token Modal Error:', err);
+                    return interaction.editReply({
+                        content: '❌ **Error:** Failed to refresh token. Please try again.'
+                    });
+                }
+            }
+
+            if (interaction.customId === 'stock_modal') {
+                try {
+                    if (!hasAdminAccess(interaction)) {
+                        return interaction.reply({
+                            content: `❌ **Access Denied:** You need the <@&${ADMIN_ROLE_ID}> role or admin permissions.`,
+                            flags: 64
+                        });
+                    }
+
+                    await interaction.deferReply({ flags: 64 });
+                    
+                    const bearer = interaction.fields.getTextInputValue('stock_bearer_input').trim();
+                    const refresh = interaction.fields.getTextInputValue('stock_refresh_input').trim();
+                    
+                    if (!bearer || !refresh) {
+                        return interaction.editReply({
+                            content: '❌ **Error:** Both Bearer and Refresh tokens are required.'
+                        });
+                    }
+                    
+                    tokenStock.push({
+                        bearer,
+                        refresh,
+                        addedAt: Date.now(),
+                        expiresAt: getTokenExpiryMs(DEFAULT_TOKEN.bearer) // NEVER EXPIRES
+                    });
+
+                    return interaction.editReply({
+                        content: `📦 **Successfully added token to stock!**\n\nTotal tokens: \`${tokenStock.length}\``
+                    });
+                } catch (err) {
+                    console.error('[TMC.LOL] Stock Modal Error:', err);
+                    if (interaction.deferred) {
+                        return interaction.editReply({
+                            content: '❌ **Error:** Failed to process token. Please try again.'
+                        });
+                    } else {
+                        return interaction.reply({
+                            content: '❌ **Error:** Failed to process token. Please try again.',
+                            flags: 64
+                        });
+                    }
+                }
+            }
+
             if (interaction.customId === 'redeem_modal') {
                 await interaction.deferReply({ flags: 64 });
                 const code = interaction.fields.getTextInputValue('redeem_code_input').trim();
-                // For simplicity, we only support static codes – you can add your own validation
-                if (code === 'supporter-1234-5678-9012') { // example
-                    const supporterRole = interaction.guild.roles.cache.get(SUPPORTER_ROLE_ID);
+
+                if (validCodes.has(code)) {
+                    validCodes.delete(code);
+
+                    const guild = interaction.guild;
+                    const member = interaction.member;
+                    const supporterRole = guild.roles.cache.get(SUPPORTER_ROLE_ID);
+
                     if (!supporterRole) {
                         return interaction.editReply({ content: `🎉 **Code Validated!** However, the Supporter Role couldn't be found.` });
                     }
+
                     try {
-                        await interaction.member.roles.add(supporterRole);
+                        await member.roles.add(supporterRole);
                         return interaction.editReply({ content: `🎉 **Redemption Successful!** Code \`${code}\` verified. Supporter role assigned!` });
                     } catch (err) {
+                        console.error("Supporter Role Assignment Error:", err);
                         return interaction.editReply({ content: `⚠️ Code valid, but failed to assign role.` });
                     }
                 } else {
@@ -954,99 +1635,53 @@ ${genId}
     }
 });
 
-// ─── TOKEN GENERATION HELPER (for button) ─────────────────────────────
-async function handleTokenGeneration(interaction) {
-    // Same logic as /token command but without deferReply (already deferred by button)
-    await interaction.deferReply({ flags: 64 });
-    if (!currentToken) {
-        try { currentToken = loadTokens(); } catch (_) {}
-        if (!currentToken) {
-            return interaction.editReply({ content: '❌ No token available. Contact admin.' });
-        }
-    }
-    if (isExpired(currentToken.token, 300)) {
-        await refreshWithFallback(true);
-    }
-    const tokenObj = {
-        bearer: currentToken.token,
-        refresh: currentToken.refresh_token,
-        expiresAt: getTokenExpiryMs(currentToken.token)
-    };
-    const genId = generateGenerationId();
-    tokenObj.id = genId;
-    tokenObj.userId = interaction.user.id;
-    tokenObj.username = interaction.user.tag;
-    if (!global.tokenStock) global.tokenStock = [];
-    global.tokenStock.push(tokenObj);
-    if (global.tokenStock.length > 100) global.tokenStock.shift();
-
-    const expiryText = humanExpiry(tokenObj.expiresAt);
-    const warnNote = (isExpired(tokenObj.bearer, 0))
-        ? '\n\n⚠️ **WARNING:** This token may NOT work. The refresh token may be invalid — contact admin.'
-        : '';
-
+// --- COPY BUTTON HANDLER ---
+client.on('interactionCreate', async interaction => {
     try {
-        const tokenData = {
-            token: {
-                bearer: tokenObj.bearer,
-                refresh_token: tokenObj.refresh,
-                expires_at: new Date(tokenObj.expiresAt).toISOString(),
-                added_at: new Date().toISOString(),
-                generation_id: genId
-            },
-            message: "Thank you for using TMC.LOL Token Generator!",
-            credits: "@elliott",
-            auto_refresh: "Refreshed automatically before expiry"
-        };
-        const jsonString = JSON.stringify(tokenData, null, 2);
-        const jsonBuffer = Buffer.from(jsonString, 'utf-8');
-        const attachment = new AttachmentBuilder(jsonBuffer, { name: 'token.json' });
-
-        const textVersion = `🔑 TMC.LOL TOKEN GENERATOR
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-BEARER TOKEN:
-${tokenObj.bearer}
-
-REFRESH TOKEN:
-${tokenObj.refresh}
-
-GENERATION ID:
-${genId}
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-⏳ Valid until: ${expiryText}
-🔄 Auto-Refresh: Before expiry
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${warnNote}`;
-        const textBuffer = Buffer.from(textVersion, 'utf-8');
-        const textAttachment = new AttachmentBuilder(textBuffer, { name: 'token.txt' });
-
-        const embed = new EmbedBuilder()
-            .setTitle('🔑 TMC.LOL TOKEN GENERATOR')
-            .setDescription('✅ **Token generated successfully!**\n\n' +
-                '📁 **Files attached:**\n• `token.json` - JSON format\n• `token.txt` - Plain text format\n\n' +
-                `🆔 **Generation ID:** \`${genId}\`\n` +
-                `⏳ **Valid for:** ${expiryText}\n` +
-                '🔄 **Auto-Refresh:** Before expiry\n\n👑 **Credits:** @elliott' +
-                (warnNote ? '\n\n⚠️ **This token may not work** — contact admin.' : ''))
-            .setColor(isExpired(tokenObj.bearer, 0) ? 0xED4245 : 0x5865F2)
-            .setFooter({ text: 'TMC.LOL • Auto-Refresh' });
-
-        await interaction.user.send({ embeds: [embed], files: [attachment, textAttachment] });
-        return interaction.editReply({
-            content: `✅ **Token sent to your DMs!**\n🆔 **ID:** \`${genId}\`\n⏳ **${expiryText}**\n📦 **Tokens generated:** ${global.tokenStock.length}` +
-                (warnNote ? '\n\n⚠️ **Warning:** token may not work — contact admin.' : '')
-        });
+        if (interaction.isButton() && interaction.customId.startsWith('copy_')) {
+            const parts = interaction.customId.split('_');
+            const type = parts[1]; // 'bearer' or 'refresh'
+            
+            const embed = interaction.message.embeds[0];
+            if (!embed) return;
+            
+            let token = '';
+            const fields = embed.fields;
+            for (const field of fields) {
+                if (field.name.includes('Bearer') && type === 'bearer') {
+                    token = field.value.replace(/```\n/g, '').replace(/\n```/g, '').trim();
+                    break;
+                }
+                if (field.name.includes('Refresh') && type === 'refresh') {
+                    token = field.value.replace(/```\n/g, '').replace(/\n```/g, '').trim();
+                    break;
+                }
+            }
+            
+            if (!token) {
+                return interaction.reply({ 
+                    content: '❌ Could not find token to copy.', 
+                    flags: 64 
+                });
+            }
+            
+            await interaction.reply({
+                content: `✅ **${type.charAt(0).toUpperCase() + type.slice(1)} Token copied!**\n\`\`\`\n${token}\n\`\`\`\n(Click the three dots → Copy Message to copy it)`,
+                flags: 64
+            });
+            
+            try {
+                await interaction.user.send({
+                    content: `📋 **${type.charAt(0).toUpperCase() + type.slice(1)} Token**\n\`\`\`\n${token}\n\`\`\``
+                });
+            } catch (dmErr) {}
+        }
     } catch (err) {
-        return interaction.editReply({ content: '❌ **DM Failed:** Please open your DMs to receive tokens.' });
+        console.error('[TMC.LOL] Copy button error:', err);
     }
-}
+});
 
-// ─── ERROR HANDLING ────────────────────────────────────────────────────
-client.on('error', err => console.error('[TMC.LOL] Client error:', err));
-client.on('disconnect', () => console.log('[TMC.LOL] Disconnected from Discord, attempting to reconnect...'));
-
-// ─── HEALTH CHECK ──────────────────────────────────────────────────────
+// --- HEALTH CHECK HTTP SERVER ---
 const server = http.createServer((req, res) => {
     if (req.url === '/health') {
         res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -1054,43 +1689,56 @@ const server = http.createServer((req, res) => {
         return;
     }
     res.writeHead(200, { 'Content-Type': 'text/plain' });
-    res.end('TMC.LOL Token Generator Bot is active!\nAuto-refreshes with multi‑account fallback.\nCredits to @elliott\n');
+    res.end('TMC.LOL Token Generator Bot is active!\nAuto-refreshes smartly before token expiry.\nTokens NEVER expire!\nCredits to @elliott\n');
 });
+
 const PORT = process.env.PORT || 10000;
 server.listen(PORT, '0.0.0.0', () => {
     console.log(`[TMC.LOL] HTTP server running on port ${PORT}`);
 });
 
-// ─── LOGIN ─────────────────────────────────────────────────────────────
+// --- LOGIN WITH RETRY ---
+console.log('[TMC.LOL] 🔑 Attempting to login to Discord...');
+
 if (!process.env.DISCORD_TOKEN) {
     console.error('[TMC.LOL] ❌ DISCORD_TOKEN environment variable is NOT set!');
 } else {
     console.log(`[TMC.LOL] ✅ DISCORD_TOKEN is set (length: ${process.env.DISCORD_TOKEN.length})`);
+    
     async function loginWithRetry(attempts = 5) {
         for (let i = 1; i <= attempts; i++) {
             try {
                 console.log(`[TMC.LOL] 🔄 Login attempt ${i}/${attempts}...`);
-                await Promise.race([
-                    client.login(process.env.DISCORD_TOKEN),
-                    new Promise((_, reject) => setTimeout(() => reject(new Error('Login timeout')), 30000))
-                ]);
+                const loginPromise = client.login(process.env.DISCORD_TOKEN);
+                const timeoutPromise = new Promise((_, reject) => {
+                    setTimeout(() => reject(new Error('Login timeout after 30 seconds')), 30000);
+                });
+                await Promise.race([loginPromise, timeoutPromise]);
                 console.log('[TMC.LOL] ✅ Discord login successful!');
                 return true;
             } catch (err) {
                 console.error(`[TMC.LOL] ❌ Login attempt ${i} failed:`, err.message);
-                if (i === attempts) break;
+                if (i === attempts) {
+                    console.error('[TMC.LOL] ❌ All login attempts failed.');
+                    return false;
+                }
                 await new Promise(resolve => setTimeout(resolve, 5000 * i));
             }
         }
-        console.error('[TMC.LOL] ❌ All login attempts failed.');
         return false;
     }
-    loginWithRetry();
+
+    loginWithRetry().then(success => {
+        if (!success) {
+            console.error('[TMC.LOL] ❌ Bot failed to connect to Discord.');
+        }
+    });
 }
 
 process.on('unhandledRejection', (reason) => {
     console.error('[TMC.LOL] Unhandled Rejection:', reason);
 });
+
 process.on('uncaughtException', (err) => {
     console.error('[TMC.LOL] Uncaught Exception:', err);
 });
