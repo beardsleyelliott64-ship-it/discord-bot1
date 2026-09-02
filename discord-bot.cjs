@@ -695,10 +695,10 @@ const commandsData = [
         { name: 'Support', value: 'support' },
         { name: 'Generator', value: 'generator' }
     )).setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-    // NEW: Announce command
+    // NEW: Announce command (DM-only)
     new SlashCommandBuilder()
         .setName('announce')
-        .setDescription('Send an @here announcement and DM all members with your message.')
+        .setDescription('DM all members with your announcement message.')
         .addStringOption(opt => opt.setName('message').setDescription('The announcement message').setRequired(true))
         .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
 ].map(cmd => cmd.toJSON());
@@ -745,7 +745,7 @@ client.on('interactionCreate', async interaction => {
                         { name: "`/gen-codes`", value: "List active generation IDs", inline: false },
                         { name: "`/remove-stock`", value: "Remove a token by selection", inline: false },
                         { name: "`/force_refresh`", value: "Force refresh the current token", inline: false },
-                        { name: "`/announce`", value: "Send an @here announcement and DM all members", inline: false },
+                        { name: "`/announce`", value: "DM all members with your message", inline: false },
                         { name: "Auto-Refresh", value: "Smart (multi-account)", inline: false },
                         { name: "Credits", value: "@elliott", inline: false }
                     ).setFooter({ text: "EAM.LOL · Never expires" });
@@ -803,7 +803,7 @@ client.on('interactionCreate', async interaction => {
                 }
             }
 
-            // --- ANNOUNCE COMMAND ---
+            // --- ANNOUNCE COMMAND (DM-only) ---
             if (commandName === 'announce') {
                 // Only admins/owners can use it
                 if (!hasAdminAccess(interaction)) {
@@ -814,19 +814,7 @@ client.on('interactionCreate', async interaction => {
                 const guild = interaction.guild;
                 if (!guild) return interaction.editReply({ content: '✘ This command can only be used in a server.' });
 
-                // 1) Send the @here message in the current channel
-                const announceEmbed = new EmbedBuilder()
-                    .setTitle('📢 ANNOUNCEMENT')
-                    .setDescription(messageContent)
-                    .setColor(0xFFAA00)
-                    .setTimestamp()
-                    .setFooter({ text: `Sent by ${interaction.user.tag}` });
-                await interaction.channel.send({
-                    content: '@here',
-                    embeds: [announceEmbed]
-                });
-
-                // 2) DM all members (with a 1-second delay between each to respect rate limits)
+                // DM all members (skip bots) with a 1-second delay between each to respect rate limits
                 const members = await guild.members.fetch();
                 let successCount = 0;
                 let failCount = 0;
@@ -863,9 +851,7 @@ client.on('interactionCreate', async interaction => {
                 }
 
                 return interaction.editReply({
-                    content: `✅ Announcement sent!\n` +
-                             `📢 @here message posted in this channel.\n` +
-                             `📨 DMs: ${successCount} succeeded, ${failCount} failed (skipped bots).`
+                    content: `✅ Announcement DMs sent!\n📨 ${successCount} succeeded, ${failCount} failed (skipped bots).`
                 });
             }
 
