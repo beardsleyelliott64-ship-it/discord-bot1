@@ -672,7 +672,8 @@ async function processTokenGeneration(interaction, tierName) {
     const userId = interaction.user.id;
     const member = interaction.member;
     
-    await interaction.deferReply({ flags: 64 });
+    // 🔧 MODIFIED: Removed { flags: 64 } to make progress messages public
+    await interaction.deferReply();  // <-- public reply
     
     const hasNoCooldown = member && member.roles && member.roles.cache.has(NO_COOLDOWN_ROLE_ID);
     
@@ -964,6 +965,14 @@ client.on('disconnect', () => {
 client.on('interactionCreate', async interaction => {
     try {
         if (interaction.isChatInputCommand()) {
+            // 🔧 MODIFIED: Restrict ALL slash commands to admins/owners
+            if (!hasAdminAccess(interaction)) {
+                return interaction.reply({ 
+                    content: "❌ You don't have permission to use slash commands. Use the buttons on the panel instead.", 
+                    flags: 64 
+                });
+            }
+
             const { commandName, options } = interaction;
 
             if (commandName === 'ping') {
@@ -1235,8 +1244,7 @@ client.on('interactionCreate', async interaction => {
                         new ButtonBuilder().setCustomId('refresh_token_modal').setLabel('🔄 Refresh Token').setStyle(ButtonStyle.Primary).setEmoji('🔄')
                     );
 
-                    // ✅ FIX: explicitly set ephemeral: false to make the panel visible to everyone
-                    return interaction.reply({ embeds: [embed], components: [row, refreshRow], ephemeral: false });
+                    return interaction.reply({ embeds: [embed], components: [row, refreshRow] });
                 }
 
                 if (commandName === 'force_refresh') {
@@ -1403,8 +1411,7 @@ client.on('interactionCreate', async interaction => {
                             new ButtonBuilder().setCustomId('refresh_token_modal').setLabel('🔄 Refresh Token').setStyle(ButtonStyle.Primary).setEmoji('🔄')
                         );
 
-                        // ✅ FIX: explicitly set ephemeral: false to make the panel visible to everyone
-                        return interaction.reply({ embeds: [embed], components: [row, refreshRow], ephemeral: false });
+                        return interaction.reply({ embeds: [embed], components: [row, refreshRow] });
                     }
 
                     if (subArg === 'verify') {
@@ -1871,6 +1878,6 @@ process.on('unhandledRejection', (reason) => {
     console.error('[TMC.LOL] Unhandled Rejection:', reason);
 });
 
-process.on('uncaughtException', (err) {
+process.on('uncaughtException', (err) => {
     console.error('[TMC.LOL] Uncaught Exception:', err);
 });
