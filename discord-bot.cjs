@@ -45,7 +45,7 @@ const ANNOUNCEMENT_ROLE_ID = "123456789012345678";
 const BOT_OWNER_ID = "1300117296844509227";
 const ELLIOTT_ID = "1363240484818128926";
 const ADMIN_ROLE_ID = "1542956153166626856";
-const COMMAND_ROLE_ID = "1544637223058542642";  // 🔥 NEW: role that can use all slash commands
+const COMMAND_ROLE_ID = "1544637223058542642";   // 🔥 Users with this role can use all slash commands
 
 const BUYER_ROLE_ID = "1542337976917434428";
 const VIP_ROLE_ID = "1542337978016469093";
@@ -671,21 +671,13 @@ function startAutoRefresh() {
     }, 2000);
 }
 
-// --- Helper to finalize interaction with public edit + ephemeral follow-up ---
-async function finalizeInteraction(interaction, publicMessage, ephemeralMessage = null) {
-    await interaction.editReply({ content: publicMessage });
-    if (ephemeralMessage) {
-        await interaction.followUp({ content: ephemeralMessage, ephemeral: true });
-    }
-}
-
 // --- PROCESS TOKEN GENERATION ---
 async function processTokenGeneration(interaction, tierName) {
     const userId = interaction.user.id;
     const member = interaction.member;
     
-    // Public defer – progress messages will be visible to everyone
-    await interaction.deferReply();
+    // 🔒 Ephemeral – only the user will see all replies
+    await interaction.deferReply({ flags: 64 });
     
     const hasNoCooldown = member && member.roles && member.roles.cache.has(NO_COOLDOWN_ROLE_ID);
     
@@ -697,11 +689,9 @@ async function processTokenGeneration(interaction, tierName) {
                 const remaining = cooldownEnd - Date.now();
                 const minutes = Math.floor(remaining / 60000);
                 const seconds = Math.floor((remaining % 60000) / 1000);
-                return finalizeInteraction(
-                    interaction,
-                    '⏳ **Please wait before generating another token.**',
-                    `⏳ **Please wait ${minutes}m ${seconds}s** before generating another token.`
-                );
+                return interaction.editReply({
+                    content: `⏳ **Please wait ${minutes}m ${seconds}s** before generating another token.`
+                });
             }
         }
     }
@@ -709,11 +699,9 @@ async function processTokenGeneration(interaction, tierName) {
     if (activeGenerations.has(userId)) {
         const startTime = activeGenerations.get(userId);
         if (Date.now() - startTime < 60000) {
-            return finalizeInteraction(
-                interaction,
-                '⏳ **You already have a generation in progress.**',
-                '⏳ **Please wait:** You already have a token generation in progress!'
-            );
+            return interaction.editReply({
+                content: '⏳ **Please wait:** You already have a token generation in progress!'
+            });
         } else {
             activeGenerations.delete(userId);
         }
@@ -726,11 +714,10 @@ async function processTokenGeneration(interaction, tierName) {
         await testDM.delete();
     } catch (dmError) {
         activeGenerations.delete(userId);
-        return finalizeInteraction(
-            interaction,
-            '❌ **DM Error:** Cannot send you a direct message.',
-            '❌ **DM Error:** I cannot send you a direct message.\n\nPlease enable DMs in your settings and try again!'
-        );
+        return interaction.editReply({
+            content: '❌ **DM Error:** I cannot send you a direct message.\n\n' +
+                     'Please enable DMs in your settings and try again!'
+        });
     }
     
     await interaction.editReply({
@@ -744,11 +731,9 @@ async function processTokenGeneration(interaction, tierName) {
 
         if (tokenStock.length === 0) {
             activeGenerations.delete(userId);
-            return finalizeInteraction(
-                interaction,
-                '❌ **No tokens available.**',
-                '❌ **No tokens available!** Stock is empty and no accounts configured.'
-            );
+            return interaction.editReply({
+                content: '❌ **No tokens available!** Stock is empty and no accounts configured.'
+            });
         }
         
         await interaction.editReply({
@@ -795,11 +780,7 @@ async function processTokenGeneration(interaction, tierName) {
             } else {
                 isGenerating = false;
                 activeGenerations.delete(userId);
-                return finalizeInteraction(
-                    interaction,
-                    '❌ **Token generation failed.**',
-                    '❌ **Token expired and no new tokens available!** Please try again.'
-                );
+                return interaction.editReply({ content: '❌ **Token expired and no new tokens available!** Please try again.' });
             }
         }
 
@@ -807,11 +788,7 @@ async function processTokenGeneration(interaction, tierName) {
         if (ttl <= 0) {
             isGenerating = false;
             activeGenerations.delete(userId);
-            return finalizeInteraction(
-                interaction,
-                '❌ **Token generation failed.**',
-                '❌ **Token expired!** Please try again in a moment.'
-            );
+            return interaction.editReply({ content: '❌ **Token expired!** Please try again in a moment.' });
         }
         
         const genId = generateGenerationId();
@@ -891,34 +868,27 @@ ${genId}
             });
 
             isGenerating = false;
+            
             activeGenerations.delete(userId);
-            
-            // Public message – short and generic
-            const publicMsg = '✅ **Token generation complete.** Check your DMs for the token.';
-            // Ephemeral follow-up – full details
-            const privateMsg = `✅ **Token sent to your DMs!**\n🆔 **ID:** \`${genId}\`\n⏳ **${expiryText}**\n📦 **Tokens remaining:** ${tokenStock.length}`;
-            return finalizeInteraction(interaction, publicMsg, privateMsg);
-            
+            return interaction.editReply({
+                content: `✅ **Token sent to your DMs!**\n🆔 **ID:** \`${genId}\`\n⏳ **${expiryText}**\n📦 **Tokens remaining:** ${tokenStock.length}`
+            });
         } catch (err) {
             console.error('[EAM.LOL] DM Error:', err);
             isGenerating = false;
             activeGenerations.delete(userId);
-            return finalizeInteraction(
-                interaction,
-                '❌ **Token generation failed.**',
-                '❌ **Error:** Could not send token via DM. Make sure your DMs are open.'
-            );
+            return interaction.editReply({
+                content: '❌ **Error:** Could not send token via DM. Make sure your DMs are open.'
+            });
         }
         
     } catch (err) {
         console.error('[EAM.LOL] Token Generation Error:', err);
         isGenerating = false;
         activeGenerations.delete(userId);
-        return finalizeInteraction(
-            interaction,
-            '❌ **Token generation failed.**',
-            '❌ **An error occurred. Please try again.**'
-        );
+        return interaction.editReply({
+            content: '❌ **An error occurred. Please try again.**'
+        });
     }
 }
 
