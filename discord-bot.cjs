@@ -1235,7 +1235,8 @@ client.on('interactionCreate', async interaction => {
                         new ButtonBuilder().setCustomId('refresh_token_modal').setLabel('🔄 Refresh Token').setStyle(ButtonStyle.Primary).setEmoji('🔄')
                     );
 
-                    return interaction.reply({ embeds: [embed], components: [row, refreshRow] });
+                    // ✅ FIX: explicitly set ephemeral: false to make the panel visible to everyone
+                    return interaction.reply({ embeds: [embed], components: [row, refreshRow], ephemeral: false });
                 }
 
                 if (commandName === 'force_refresh') {
@@ -1402,7 +1403,8 @@ client.on('interactionCreate', async interaction => {
                             new ButtonBuilder().setCustomId('refresh_token_modal').setLabel('🔄 Refresh Token').setStyle(ButtonStyle.Primary).setEmoji('🔄')
                         );
 
-                        return interaction.reply({ embeds: [embed], components: [row, refreshRow] });
+                        // ✅ FIX: explicitly set ephemeral: false to make the panel visible to everyone
+                        return interaction.reply({ embeds: [embed], components: [row, refreshRow], ephemeral: false });
                     }
 
                     if (subArg === 'verify') {
@@ -1869,6 +1871,6 @@ process.on('unhandledRejection', (reason) => {
     console.error('[TMC.LOL] Unhandled Rejection:', reason);
 });
 
-process.on('uncaughtException', (err) => {
+process.on('uncaughtException', (err) {
     console.error('[TMC.LOL] Uncaught Exception:', err);
 });
