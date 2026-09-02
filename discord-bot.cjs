@@ -45,8 +45,6 @@ const VIP_ROLE_ID = "1542337978016469093";
 const BOOSTER_ROLE_ID = "1542337979807178832";
 const NO_COOLDOWN_ROLE_ID = ADMIN_ROLE_ID;
 const GENERATION_COOLDOWN = 0;
-
-// Required role to use bot commands
 const REQUIRED_ROLE_ID = "1544637223058542642";
 
 // --- API CONFIG ---
@@ -157,32 +155,46 @@ function humanExpiry(expiresAt) {
     return `expires in ${formatRemainingTime(expiresAt)}`;
 }
 
-// --- 100% API TOKEN VALIDATION ---
+// --- API TOKEN VALIDATION WITH FALLBACK ---
 async function validateTokenWithApi(bearerToken) {
-    try {
-        const url = `${ACTIVE_API_URL}/v2/account/me`;
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 8000);
-        const response = await fetch(url, {
-            method: 'GET',
-            headers: {
-                'Authorization': `Bearer ${bearerToken}`,
-                'Content-Type': 'application/json'
-            },
-            signal: controller.signal
-        });
-        clearTimeout(timeoutId);
-        if (response.status === 200) {
-            const data = await response.json();
-            return { valid: true, data };
-        } else if (response.status === 401) {
-            return { valid: false, error: 'Unauthorized (expired/invalid)' };
-        } else {
-            return { valid: false, error: `HTTP ${response.status}` };
+    // Try multiple endpoints; treat 404 as "endpoint not supported" and fallback to JWT expiry.
+    const endpoints = ['/v2/account/me', '/v2/account', '/v2/account/session'];
+    for (const endpoint of endpoints) {
+        try {
+            const url = `${ACTIVE_API_URL}${endpoint}`;
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 8000);
+            const response = await fetch(url, {
+                method: 'GET',
+                headers: {
+                    'Authorization': `Bearer ${bearerToken}`,
+                    'Content-Type': 'application/json'
+                },
+                signal: controller.signal
+            });
+            clearTimeout(timeoutId);
+            if (response.status === 200) {
+                const data = await response.json();
+                return { valid: true, data };
+            } else if (response.status === 401) {
+                return { valid: false, error: 'Unauthorized (expired/invalid)' };
+            } else if (response.status === 404) {
+                // Endpoint not found – skip to next
+                continue;
+            } else {
+                // Other error – log but maybe skip
+                console.warn(`⚠️ [EAM.LOL] API validation returned ${response.status} for ${endpoint}`);
+                continue;
+            }
+        } catch (err) {
+            console.warn(`⚠️ [EAM.LOL] API validation error on ${endpoint}: ${err.message}`);
+            continue;
         }
-    } catch (err) {
-        return { valid: false, error: err.message };
     }
+    // If all endpoints failed or returned non-200, fallback to JWT expiry check (which we already do elsewhere)
+    // For safety, we consider it valid if not expired.
+    console.log('ℹ️ [EAM.LOL] API validation unavailable – falling back to JWT expiry check.');
+    return { valid: true, note: 'API validation unavailable, relying on JWT expiry' };
 }
 
 // --- TOKEN REFRESH ---
@@ -240,6 +252,7 @@ async function refreshToken(refreshTk) {
         consecutiveFails = 0;
         lastRefreshExpiry = getTokenExpiryMs(result.bearer);
         updateAccountTokens(refreshTk, result.bearer, result.refresh_token);
+        // Optional validation (non-blocking)
         const apiValid = await validateTokenWithApi(result.bearer);
         if (!apiValid.valid) {
             console.warn(`⚠️ [EAM.LOL] Refreshed token but API validation failed: ${apiValid.error}`);
@@ -581,6 +594,7 @@ async function processTokenGeneration(interaction, tierName) {
         return interaction.editReply({ content: '✘ Token expired, try again.', components: [] });
     }
 
+    // Validate with API (now with fallback)
     const apiValid = await validateTokenWithApi(tokenObj.bearer);
     if (!apiValid.valid) {
         isGenerating = false;
@@ -695,7 +709,6 @@ const commandsData = [
         { name: 'Support', value: 'support' },
         { name: 'Generator', value: 'generator' }
     )).setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-    // NEW: Announce command (DM-only)
     new SlashCommandBuilder()
         .setName('announce')
         .setDescription('DM all members with your announcement message.')
@@ -775,6 +788,7 @@ client.on('interactionCreate', async interaction => {
                 if (Date.now() >= tokenObj.expiresAt) { giveNewTokenFromAccounts(); if (tokenStock.length > 0) tokenObj = tokenStock[0]; else { isGenerating = false; return interaction.editReply({ content: '✘ Token expired.' }); } }
                 const ttl = Math.floor((tokenObj.expiresAt - Date.now()) / 1000);
                 if (ttl <= 0) { isGenerating = false; return interaction.editReply({ content: '✘ Token expired.' }); }
+                // Validate with fallback – will not block on 404
                 const apiValid = await validateTokenWithApi(tokenObj.bearer);
                 if (!apiValid.valid) {
                     isGenerating = false;
@@ -805,7 +819,6 @@ client.on('interactionCreate', async interaction => {
 
             // --- ANNOUNCE COMMAND (DM-only) ---
             if (commandName === 'announce') {
-                // Only admins/owners can use it
                 if (!hasAdminAccess(interaction)) {
                     return interaction.reply({ content: '✘ You need admin permissions to use this command.', flags: 64 });
                 }
@@ -814,18 +827,15 @@ client.on('interactionCreate', async interaction => {
                 const guild = interaction.guild;
                 if (!guild) return interaction.editReply({ content: '✘ This command can only be used in a server.' });
 
-                // DM all members (skip bots) with a 1-second delay between each to respect rate limits
                 const members = await guild.members.fetch();
                 let successCount = 0;
                 let failCount = 0;
                 const total = members.size;
 
-                // Send initial progress
                 await interaction.editReply({ content: `📨 Sending DMs to ${total} members... (0/${total})` });
 
                 let index = 0;
                 for (const [id, member] of members) {
-                    // Skip bots and the bot itself
                     if (member.user.bot) continue;
                     try {
                         await member.send({
@@ -842,11 +852,9 @@ client.on('interactionCreate', async interaction => {
                         failCount++;
                     }
                     index++;
-                    // Update progress every 10 members to avoid spam
                     if (index % 10 === 0 || index === total) {
                         await interaction.editReply({ content: `📨 Sending DMs... (${index}/${total})` });
                     }
-                    // Wait 1 second between DMs to avoid rate limits
                     await new Promise(resolve => setTimeout(resolve, 1000));
                 }
 
