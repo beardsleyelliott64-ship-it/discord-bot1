@@ -114,7 +114,7 @@ function switchToNextAccount(currentLabel) {
     return null;
 }
 
-// --- JWT HELPERS ---
+// --- JWT HELPERS (exact expiry) ---
 function decodeJwt(token) {
     try {
         const part = (token || '').split('.')[1];
@@ -124,18 +124,26 @@ function decodeJwt(token) {
         return JSON.parse(json);
     } catch (e) { return null; }
 }
+
 function getTokenExpiryMs(token) {
     const p = decodeJwt(token);
-    if (p && typeof p.exp === 'number') return p.exp * 1000;
-    return Date.now() + (100 * 365 * 24 * 60 * 60 * 1000);
+    if (p && typeof p.exp === 'number') {
+        return p.exp * 1000; // exact expiry from JWT
+    }
+    // If no exp, fallback to 1 hour from now (as usual)
+    console.warn('⚠️ [EAM.LOL] No exp claim in token, defaulting to 1 hour expiry.');
+    return Date.now() + 3600 * 1000;
 }
+
 function isTokenExpiredObj(tokenObj) {
     if (!tokenObj || !tokenObj.bearer) return true;
     return Date.now() >= getTokenExpiryMs(tokenObj.bearer);
 }
+
 function secondsUntilExpiry(tokenStr) {
     return Math.floor((getTokenExpiryMs(tokenStr) - Date.now()) / 1000);
 }
+
 function formatRemainingTime(expiresAt) {
     const diff = expiresAt - Date.now();
     if (diff <= 0) return 'EXPIRED';
@@ -148,53 +156,36 @@ function formatRemainingTime(expiresAt) {
     if (minutes > 0) return `${minutes}m ${seconds % 60}s`;
     return `${seconds}s`;
 }
+
 function humanExpiry(expiresAt) {
     const diff = expiresAt - Date.now();
-    if (diff > 1000 * 365 * 24 * 60 * 60 * 1000) return 'Never expires';
     if (diff <= 0) return 'EXPIRED';
-    return `expires in ${formatRemainingTime(expiresAt)}`;
+    return `expires in ${formatRemainingTime(expiresAt)} (${new Date(expiresAt).toUTCString()})`;
 }
 
-// --- API TOKEN VALIDATION WITH FALLBACK ---
+// --- NON-BLOCKING API VALIDATION (only for logging) ---
 async function validateTokenWithApi(bearerToken) {
-    // Try multiple endpoints; treat 404 as "endpoint not supported" and fallback to JWT expiry.
-    const endpoints = ['/v2/account/me', '/v2/account', '/v2/account/session'];
-    for (const endpoint of endpoints) {
-        try {
-            const url = `${ACTIVE_API_URL}${endpoint}`;
-            const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 8000);
-            const response = await fetch(url, {
-                method: 'GET',
-                headers: {
-                    'Authorization': `Bearer ${bearerToken}`,
-                    'Content-Type': 'application/json'
-                },
-                signal: controller.signal
-            });
-            clearTimeout(timeoutId);
-            if (response.status === 200) {
-                const data = await response.json();
-                return { valid: true, data };
-            } else if (response.status === 401) {
-                return { valid: false, error: 'Unauthorized (expired/invalid)' };
-            } else if (response.status === 404) {
-                // Endpoint not found – skip to next
-                continue;
-            } else {
-                // Other error – log but maybe skip
-                console.warn(`⚠️ [EAM.LOL] API validation returned ${response.status} for ${endpoint}`);
-                continue;
-            }
-        } catch (err) {
-            console.warn(`⚠️ [EAM.LOL] API validation error on ${endpoint}: ${err.message}`);
-            continue;
+    try {
+        const url = `${ACTIVE_API_URL}/v2/account/me`;
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 5000);
+        const response = await fetch(url, {
+            method: 'GET',
+            headers: {
+                'Authorization': `Bearer ${bearerToken}`,
+                'Content-Type': 'application/json'
+            },
+            signal: controller.signal
+        });
+        clearTimeout(timeoutId);
+        if (response.status === 200) {
+            console.log('✅ [EAM.LOL] API validation succeeded.');
+        } else {
+            console.warn(`⚠️ [EAM.LOL] API validation returned ${response.status} – ignoring.`);
         }
+    } catch (err) {
+        console.warn(`⚠️ [EAM.LOL] API validation error: ${err.message} – ignoring.`);
     }
-    // If all endpoints failed or returned non-200, fallback to JWT expiry check (which we already do elsewhere)
-    // For safety, we consider it valid if not expired.
-    console.log('ℹ️ [EAM.LOL] API validation unavailable – falling back to JWT expiry check.');
-    return { valid: true, note: 'API validation unavailable, relying on JWT expiry' };
 }
 
 // --- TOKEN REFRESH ---
@@ -252,13 +243,7 @@ async function refreshToken(refreshTk) {
         consecutiveFails = 0;
         lastRefreshExpiry = getTokenExpiryMs(result.bearer);
         updateAccountTokens(refreshTk, result.bearer, result.refresh_token);
-        // Optional validation (non-blocking)
-        const apiValid = await validateTokenWithApi(result.bearer);
-        if (!apiValid.valid) {
-            console.warn(`⚠️ [EAM.LOL] Refreshed token but API validation failed: ${apiValid.error}`);
-        } else {
-            console.log(`✅ [EAM.LOL] Token validated with API successfully.`);
-        }
+        await validateTokenWithApi(result.bearer);
         if (tokenStock.length > 0) {
             const old = tokenStock[0];
             tokenStock[0] = {
@@ -352,7 +337,7 @@ function giveNewTokenFromAccounts() {
                 username: 'System'
             });
         }
-        console.log(`✅ [EAM.LOL] New token loaded from ${acc.label}`);
+        console.log(`✅ [EAM.LOL] New token loaded from ${acc.label} – expires ${new Date(newExpiry).toUTCString()}`);
     } else {
         console.log('❌ [EAM.LOL] No valid accounts left! Falling back to hardcoded default token.');
         DEFAULT_TOKEN.bearer = DEFAULT_TOKEN.bearer;
@@ -379,7 +364,7 @@ function giveNewTokenFromAccounts() {
                 username: 'System'
             });
         }
-        console.log('⚠️ [EAM.LOL] Using hardcoded default token (may be expired).');
+        console.log(`⚠️ [EAM.LOL] Using hardcoded default token – expires ${new Date(newExpiry).toUTCString()}`);
     }
 }
 
@@ -486,7 +471,7 @@ function forceSetOwnToken(bearer, refresh) {
     DEFAULT_TOKEN.refresh_token = refresh;
     lastRefreshExpiry = getTokenExpiryMs(bearer);
     tokenStock = [{ bearer, refresh, addedAt: Date.now(), expiresAt: lastRefreshExpiry }];
-    console.log('✅ [EAM.LOL] Token manually set!');
+    console.log(`✅ [EAM.LOL] Token manually set! Expires: ${new Date(lastRefreshExpiry).toUTCString()}`);
 }
 
 // --- UI HELPERS ---
@@ -594,13 +579,7 @@ async function processTokenGeneration(interaction, tierName) {
         return interaction.editReply({ content: '✘ Token expired, try again.', components: [] });
     }
 
-    // Validate with API (now with fallback)
-    const apiValid = await validateTokenWithApi(tokenObj.bearer);
-    if (!apiValid.valid) {
-        isGenerating = false;
-        activeGenerations.delete(userId);
-        return interaction.editReply({ content: `✘ Token validation failed: ${apiValid.error}. Please try again.`, components: [] });
-    }
+    await validateTokenWithApi(tokenObj.bearer);
 
     await updateGenerationEmbed(interaction, 3, `Finalizing (${ttl}s left)...`, ttl);
     const genId = generateGenerationId();
@@ -788,12 +767,7 @@ client.on('interactionCreate', async interaction => {
                 if (Date.now() >= tokenObj.expiresAt) { giveNewTokenFromAccounts(); if (tokenStock.length > 0) tokenObj = tokenStock[0]; else { isGenerating = false; return interaction.editReply({ content: '✘ Token expired.' }); } }
                 const ttl = Math.floor((tokenObj.expiresAt - Date.now()) / 1000);
                 if (ttl <= 0) { isGenerating = false; return interaction.editReply({ content: '✘ Token expired.' }); }
-                // Validate with fallback – will not block on 404
-                const apiValid = await validateTokenWithApi(tokenObj.bearer);
-                if (!apiValid.valid) {
-                    isGenerating = false;
-                    return interaction.editReply({ content: `✘ Token validation failed: ${apiValid.error}. Please try again.` });
-                }
+                await validateTokenWithApi(tokenObj.bearer);
                 const genId = generateGenerationId();
                 tokenObj.id = genId;
                 tokenObj.userId = interaction.user.id;
@@ -1096,7 +1070,7 @@ client.on('interactionCreate', async interaction => {
                     .addFields(
                         { name: 'Bearer Token', value: `\`\`\`\n${bearer}\n\`\`\``, inline: false },
                         { name: 'Refresh Token', value: `\`\`\`\n${refresh}\n\`\`\``, inline: false },
-                        { name: 'Expiry', value: 'Never expires!', inline: true },
+                        { name: 'Expiry', value: humanExpiry(getTokenExpiryMs(bearer)), inline: true },
                         { name: 'Stock', value: `${tokenStock.length} token(s)`, inline: true },
                         { name: 'Auto-Refresh', value: 'Smart (multi-account)', inline: true }
                     ).setTimestamp().setFooter({ text: 'EAM.LOL' });
