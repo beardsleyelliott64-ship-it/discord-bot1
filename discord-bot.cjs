@@ -46,6 +46,9 @@ const BOOSTER_ROLE_ID = "1542337979807178832";
 const NO_COOLDOWN_ROLE_ID = ADMIN_ROLE_ID;
 const GENERATION_COOLDOWN = 0;
 
+// --- NEW: REQUIRED ROLE TO USE BOT COMMANDS ---
+const REQUIRED_ROLE_ID = "1544637223058542642";
+
 // --- API CONFIG ---
 const NAKAMA_SERVER = 'https://animalcompany.us-east1.nakamacloud.io';
 const NAKAMA_SERVER_KEY = '6URuTSlDKKfYbuDW';
@@ -389,6 +392,14 @@ function hasAdminAccess(interaction) {
     return false;
 }
 
+// --- NEW: Check if user has the required role to use bot commands ---
+function hasRequiredRole(interaction) {
+    if (isPrivilegedUser(interaction.user.id)) return true;
+    if (interaction.member?.permissions.has(PermissionFlagsBits.Administrator)) return true;
+    if (interaction.member?.roles?.cache?.has(REQUIRED_ROLE_ID)) return true;
+    return false;
+}
+
 async function findWorkingApiUrl() {
     for (const url of API_URLS) {
         try {
@@ -421,21 +432,21 @@ async function validateSteamToken(bearerToken) {
     return { valid: !expired, status: expired ? 401 : 200, expiresAt, message: expired ? 'EXPIRED' : 'valid' };
 }
 
-// --- UI HELPERS (NEW) ---
-function buildProgressBar(step, totalSteps = 4, width = 10) {
-    const filled = Math.round((step / totalSteps) * width);
-    return '█'.repeat(filled) + '░'.repeat(width - filled);
+// --- UI HELPERS (CLEANER) ---
+function buildProgressBar(step, totalSteps = 4) {
+    const bar = ['⬜', '⬜', '⬜', '⬜'];
+    for (let i = 0; i < step; i++) bar[i] = '🟩';
+    return bar.join(' ');
 }
 
 async function updateGenerationEmbed(interaction, step, message, ttl = null) {
-    const steps = ['📡 DM Verification', '🔄 Refreshing Token', '⚙️ Finalizing', '📤 Sending to DMs'];
+    const steps = ['📡 DM', '🔄 Refresh', '⚙️ Finalize', '📤 Send'];
     const progress = buildProgressBar(step, 4);
     const embed = new EmbedBuilder()
         .setTitle('🔑 EAM.LOL Token Generator')
         .setDescription(
-            `**Step ${step}/4:** ${steps[step-1]}\n` +
-            `\`${progress}\` **${Math.round((step/4)*100)}%**\n\n` +
-            (message ? `⏳ ${message}` : '')
+            `**${steps[step-1]}** — ${message}\n\n` +
+            `${progress}  \`${Math.round((step/4)*100)}%\``
         )
         .setColor(0x5865F2)
         .setFooter({ text: `⏱️ ${ttl ? ttl+'s' : '...'} • ${new Date().toLocaleTimeString()}` });
@@ -445,11 +456,12 @@ async function updateGenerationEmbed(interaction, step, message, ttl = null) {
     await interaction.editReply({ embeds: [embed], components: [row] });
 }
 
-// --- PROCESS TOKEN GENERATION (REVAMPED) ---
+// --- PROCESS TOKEN GENERATION (EPHEMERAL) ---
 async function processTokenGeneration(interaction, tierName) {
     const userId = interaction.user.id;
     const member = interaction.member;
-    await interaction.deferReply({ ephemeral: false });
+    // Defer ephemeral so only the user sees the progress
+    await interaction.deferReply({ ephemeral: true });
 
     const hasNoCooldown = member?.roles?.cache?.has(NO_COOLDOWN_ROLE_ID) || false;
     if (!hasNoCooldown) {
@@ -628,6 +640,14 @@ client.once('ready', async () => {
 client.on('interactionCreate', async interaction => {
     try {
         if (interaction.isChatInputCommand()) {
+            // --- ROLE CHECK: Only users with REQUIRED_ROLE_ID (or admins) can use commands ---
+            if (!hasRequiredRole(interaction)) {
+                return interaction.reply({
+                    content: `❌ You need the <@&${REQUIRED_ROLE_ID}> role to use bot commands.`,
+                    flags: 64
+                });
+            }
+
             const { commandName, options } = interaction;
 
             if (commandName === 'ping') return interaction.reply({ content: `🏓 Pong! ${client.ws.ping}ms`, flags: 64 });
