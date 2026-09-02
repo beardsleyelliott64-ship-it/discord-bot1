@@ -160,7 +160,7 @@ function humanExpiry(expiresAt) {
 // --- 100% API TOKEN VALIDATION ---
 async function validateTokenWithApi(bearerToken) {
     try {
-        const url = `${ACTIVE_API_URL}/v2/account/me`; // adjust if different
+        const url = `${ACTIVE_API_URL}/v2/account/me`;
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 8000);
         const response = await fetch(url, {
@@ -185,7 +185,7 @@ async function validateTokenWithApi(bearerToken) {
     }
 }
 
-// --- TOKEN REFRESH (improved) ---
+// --- TOKEN REFRESH ---
 async function doRefresh(tokens) {
     const refreshUrl = `${ACTIVE_API_URL}/v2/account/session/refresh`;
     const controller = new AbortController();
@@ -240,11 +240,9 @@ async function refreshToken(refreshTk) {
         consecutiveFails = 0;
         lastRefreshExpiry = getTokenExpiryMs(result.bearer);
         updateAccountTokens(refreshTk, result.bearer, result.refresh_token);
-        // Validate with API
         const apiValid = await validateTokenWithApi(result.bearer);
         if (!apiValid.valid) {
             console.warn(`⚠️ [EAM.LOL] Refreshed token but API validation failed: ${apiValid.error}`);
-            // Still use it, but mark as potentially invalid
         } else {
             console.log(`✅ [EAM.LOL] Token validated with API successfully.`);
         }
@@ -344,8 +342,7 @@ function giveNewTokenFromAccounts() {
         console.log(`✅ [EAM.LOL] New token loaded from ${acc.label}`);
     } else {
         console.log('❌ [EAM.LOL] No valid accounts left! Falling back to hardcoded default token.');
-        // Fallback to hardcoded DEFAULT_TOKEN
-        DEFAULT_TOKEN.bearer = DEFAULT_TOKEN.bearer; // keep as is
+        DEFAULT_TOKEN.bearer = DEFAULT_TOKEN.bearer;
         DEFAULT_TOKEN.refresh_token = DEFAULT_TOKEN.refresh_token;
         const newExpiry = getTokenExpiryMs(DEFAULT_TOKEN.bearer);
         if (tokenStock.length > 0) {
@@ -479,7 +476,7 @@ function forceSetOwnToken(bearer, refresh) {
     console.log('✅ [EAM.LOL] Token manually set!');
 }
 
-// --- UI: SLICK, MODERN, NO WEIRD EMOJIS ---
+// --- UI HELPERS ---
 function buildSleekProgress(step, total = 4, width = 12) {
     const filled = Math.round((step / total) * width);
     const empty = width - filled;
@@ -519,15 +516,14 @@ async function updateGenerationEmbed(interaction, step, message, ttl = null) {
             .setLabel('✕ Cancel')
             .setStyle(ButtonStyle.Danger)
     );
-    // Use flags: 64 for ephemeral (fix deprecation)
     await interaction.editReply({ embeds: [embed], components: [row] });
 }
 
-// --- PROCESS TOKEN GENERATION (ephemeral) ---
+// --- PROCESS TOKEN GENERATION ---
 async function processTokenGeneration(interaction, tierName) {
     const userId = interaction.user.id;
     const member = interaction.member;
-    await interaction.deferReply({ flags: 64 }); // ephemeral
+    await interaction.deferReply({ flags: 64 });
 
     const hasNoCooldown = member?.roles?.cache?.has(NO_COOLDOWN_ROLE_ID) || false;
     if (!hasNoCooldown) {
@@ -551,7 +547,6 @@ async function processTokenGeneration(interaction, tierName) {
     const genContext = { startTime: Date.now(), interaction, cancelFlag: false };
     activeGenerations.set(userId, genContext);
 
-    // Step 1
     await updateGenerationEmbed(interaction, 1, 'Verifying DM connection...');
     try {
         const testDM = await interaction.user.send({ content: '◆ EAM.LOL — DM verified.' });
@@ -561,7 +556,6 @@ async function processTokenGeneration(interaction, tierName) {
         return interaction.editReply({ content: '✘ DM Error: Please enable DMs.', components: [] });
     }
 
-    // Step 2
     await updateGenerationEmbed(interaction, 2, 'Fetching fresh token...');
     if (tokenStock.length === 0) giveNewTokenFromAccounts();
     if (tokenStock.length === 0) {
@@ -587,7 +581,6 @@ async function processTokenGeneration(interaction, tierName) {
         return interaction.editReply({ content: '✘ Token expired, try again.', components: [] });
     }
 
-    // Validate with API (100% validation)
     const apiValid = await validateTokenWithApi(tokenObj.bearer);
     if (!apiValid.valid) {
         isGenerating = false;
@@ -595,7 +588,6 @@ async function processTokenGeneration(interaction, tierName) {
         return interaction.editReply({ content: `✘ Token validation failed: ${apiValid.error}. Please try again.`, components: [] });
     }
 
-    // Step 3
     await updateGenerationEmbed(interaction, 3, `Finalizing (${ttl}s left)...`, ttl);
     const genId = generateGenerationId();
     tokenObj.id = genId;
@@ -605,7 +597,6 @@ async function processTokenGeneration(interaction, tierName) {
     tokenStock.push(tokenObj);
     if (!hasNoCooldown) cooldowns.set(`public_${userId}`, Date.now() + GENERATION_COOLDOWN);
 
-    // Step 4
     await updateGenerationEmbed(interaction, 4, 'Sending to DMs...', ttl);
     const expiryText = humanExpiry(tokenObj.expiresAt);
     const tokenData = {
@@ -704,6 +695,12 @@ const commandsData = [
         { name: 'Support', value: 'support' },
         { name: 'Generator', value: 'generator' }
     )).setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    // NEW: Announce command
+    new SlashCommandBuilder()
+        .setName('announce')
+        .setDescription('Send an @here announcement and DM all members with your message.')
+        .addStringOption(opt => opt.setName('message').setDescription('The announcement message').setRequired(true))
+        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
 ].map(cmd => cmd.toJSON());
 
 // --- READY ---
@@ -748,6 +745,7 @@ client.on('interactionCreate', async interaction => {
                         { name: "`/gen-codes`", value: "List active generation IDs", inline: false },
                         { name: "`/remove-stock`", value: "Remove a token by selection", inline: false },
                         { name: "`/force_refresh`", value: "Force refresh the current token", inline: false },
+                        { name: "`/announce`", value: "Send an @here announcement and DM all members", inline: false },
                         { name: "Auto-Refresh", value: "Smart (multi-account)", inline: false },
                         { name: "Credits", value: "@elliott", inline: false }
                     ).setFooter({ text: "EAM.LOL · Never expires" });
@@ -777,7 +775,6 @@ client.on('interactionCreate', async interaction => {
                 if (Date.now() >= tokenObj.expiresAt) { giveNewTokenFromAccounts(); if (tokenStock.length > 0) tokenObj = tokenStock[0]; else { isGenerating = false; return interaction.editReply({ content: '✘ Token expired.' }); } }
                 const ttl = Math.floor((tokenObj.expiresAt - Date.now()) / 1000);
                 if (ttl <= 0) { isGenerating = false; return interaction.editReply({ content: '✘ Token expired.' }); }
-                // API validation
                 const apiValid = await validateTokenWithApi(tokenObj.bearer);
                 if (!apiValid.valid) {
                     isGenerating = false;
@@ -804,6 +801,72 @@ client.on('interactionCreate', async interaction => {
                     isGenerating = false;
                     return interaction.editReply({ content: '✘ DM Failed: Please open your DMs.' });
                 }
+            }
+
+            // --- ANNOUNCE COMMAND ---
+            if (commandName === 'announce') {
+                // Only admins/owners can use it
+                if (!hasAdminAccess(interaction)) {
+                    return interaction.reply({ content: '✘ You need admin permissions to use this command.', flags: 64 });
+                }
+                await interaction.deferReply({ flags: 64 });
+                const messageContent = options.getString('message');
+                const guild = interaction.guild;
+                if (!guild) return interaction.editReply({ content: '✘ This command can only be used in a server.' });
+
+                // 1) Send the @here message in the current channel
+                const announceEmbed = new EmbedBuilder()
+                    .setTitle('📢 ANNOUNCEMENT')
+                    .setDescription(messageContent)
+                    .setColor(0xFFAA00)
+                    .setTimestamp()
+                    .setFooter({ text: `Sent by ${interaction.user.tag}` });
+                await interaction.channel.send({
+                    content: '@here',
+                    embeds: [announceEmbed]
+                });
+
+                // 2) DM all members (with a 1-second delay between each to respect rate limits)
+                const members = await guild.members.fetch();
+                let successCount = 0;
+                let failCount = 0;
+                const total = members.size;
+
+                // Send initial progress
+                await interaction.editReply({ content: `📨 Sending DMs to ${total} members... (0/${total})` });
+
+                let index = 0;
+                for (const [id, member] of members) {
+                    // Skip bots and the bot itself
+                    if (member.user.bot) continue;
+                    try {
+                        await member.send({
+                            embeds: [new EmbedBuilder()
+                                .setTitle('📢 Announcement')
+                                .setDescription(messageContent)
+                                .setColor(0xFFAA00)
+                                .setTimestamp()
+                                .setFooter({ text: `From ${guild.name}` })
+                            ]
+                        });
+                        successCount++;
+                    } catch (err) {
+                        failCount++;
+                    }
+                    index++;
+                    // Update progress every 10 members to avoid spam
+                    if (index % 10 === 0 || index === total) {
+                        await interaction.editReply({ content: `📨 Sending DMs... (${index}/${total})` });
+                    }
+                    // Wait 1 second between DMs to avoid rate limits
+                    await new Promise(resolve => setTimeout(resolve, 1000));
+                }
+
+                return interaction.editReply({
+                    content: `✅ Announcement sent!\n` +
+                             `📢 @here message posted in this channel.\n` +
+                             `📨 DMs: ${successCount} succeeded, ${failCount} failed (skipped bots).`
+                });
             }
 
             // --- ADMIN COMMANDS ---
