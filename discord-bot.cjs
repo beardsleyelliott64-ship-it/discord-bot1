@@ -20,7 +20,7 @@ const {
 const http = require('http');
 const dns = require('dns');
 dns.setServers(['8.8.8.8', '1.1.1.1']);
-console.log('[EAM.LOL] DNS set to Google DNS (8.8.8.8, 1.1.1.1)');
+console.log('✅ [EAM.LOL] DNS set to Google DNS (8.8.8.8, 1.1.1.1)');
 
 const client = new Client({
     intents: [
@@ -109,7 +109,7 @@ function switchToNextAccount(currentLabel) {
     for (const acc of ordered) {
         if (acc.label === currentLabel) continue;
         if (!isTokenExpiredObj({ bearer: acc.refresh_token })) {
-            console.log(`[EAM.LOL] Switching to ${acc.label}`);
+            console.log(`🔄 [EAM.LOL] Switching to ${acc.label}`);
             return acc;
         }
     }
@@ -157,7 +157,35 @@ function humanExpiry(expiresAt) {
     return `expires in ${formatRemainingTime(expiresAt)}`;
 }
 
-// --- TOKEN REFRESH (unchanged logic) ---
+// --- 100% API TOKEN VALIDATION ---
+async function validateTokenWithApi(bearerToken) {
+    try {
+        const url = `${ACTIVE_API_URL}/v2/account/me`; // adjust if different
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 8000);
+        const response = await fetch(url, {
+            method: 'GET',
+            headers: {
+                'Authorization': `Bearer ${bearerToken}`,
+                'Content-Type': 'application/json'
+            },
+            signal: controller.signal
+        });
+        clearTimeout(timeoutId);
+        if (response.status === 200) {
+            const data = await response.json();
+            return { valid: true, data };
+        } else if (response.status === 401) {
+            return { valid: false, error: 'Unauthorized (expired/invalid)' };
+        } else {
+            return { valid: false, error: `HTTP ${response.status}` };
+        }
+    } catch (err) {
+        return { valid: false, error: err.message };
+    }
+}
+
+// --- TOKEN REFRESH (improved) ---
 async function doRefresh(tokens) {
     const refreshUrl = `${ACTIVE_API_URL}/v2/account/session/refresh`;
     const controller = new AbortController();
@@ -193,7 +221,7 @@ async function doRefresh(tokens) {
         if (newExpiry <= Date.now()) throw new Error('Refreshed token already expired');
         tokens.bearer = newBearer;
         tokens.refresh_token = newRefresh;
-        console.log(`[EAM.LOL] Token refreshed! Expires: ${new Date(newExpiry).toISOString()}`);
+        console.log(`✅ [EAM.LOL] Token refreshed! Expires: ${new Date(newExpiry).toISOString()}`);
         return tokens;
     } catch (err) {
         clearTimeout(timeoutId);
@@ -212,6 +240,14 @@ async function refreshToken(refreshTk) {
         consecutiveFails = 0;
         lastRefreshExpiry = getTokenExpiryMs(result.bearer);
         updateAccountTokens(refreshTk, result.bearer, result.refresh_token);
+        // Validate with API
+        const apiValid = await validateTokenWithApi(result.bearer);
+        if (!apiValid.valid) {
+            console.warn(`⚠️ [EAM.LOL] Refreshed token but API validation failed: ${apiValid.error}`);
+            // Still use it, but mark as potentially invalid
+        } else {
+            console.log(`✅ [EAM.LOL] Token validated with API successfully.`);
+        }
         if (tokenStock.length > 0) {
             const old = tokenStock[0];
             tokenStock[0] = {
@@ -238,7 +274,7 @@ async function refreshToken(refreshTk) {
     } catch (err) {
         const httpCode = err.httpCode || 0;
         if (httpCode === 401 || httpCode === 403) {
-            console.log(`[EAM.LOL] Auth error on ${activeAccountLabel} — trying next account...`);
+            console.log(`🔑 [EAM.LOL] Auth error on ${activeAccountLabel} — trying next account...`);
             const nextAcc = switchToNextAccount(activeAccountLabel);
             if (nextAcc) {
                 activeAccountLabel = nextAcc.label;
@@ -256,10 +292,10 @@ async function refreshToken(refreshTk) {
                         username: tokenStock[0].username || 'System'
                     };
                 }
-                console.log(`[EAM.LOL] Switched to ${nextAcc.label} — new token ready`);
+                console.log(`✅ [EAM.LOL] Switched to ${nextAcc.label} — new token ready`);
                 return { success: true, bearer: nextAcc.token, refresh: nextAcc.refresh_token, expiresAt: newExpiry };
             }
-            console.log('[EAM.LOL] All accounts exhausted');
+            console.log('❌ [EAM.LOL] All accounts exhausted');
         }
         return { success: false, error: err.message };
     }
@@ -270,7 +306,7 @@ function updateAccountTokens(oldRefresh, newBearer, newRefresh) {
         if (accounts[i].refresh_token === oldRefresh) {
             accounts[i].token = newBearer;
             accounts[i].refresh_token = newRefresh;
-            console.log(`[EAM.LOL] Updated ${accounts[i].label}`);
+            console.log(`💾 [EAM.LOL] Updated ${accounts[i].label}`);
             return;
         }
     }
@@ -305,15 +341,41 @@ function giveNewTokenFromAccounts() {
                 username: 'System'
             });
         }
-        console.log(`[EAM.LOL] New token loaded from ${acc.label}`);
+        console.log(`✅ [EAM.LOL] New token loaded from ${acc.label}`);
     } else {
-        console.log('[EAM.LOL] No valid accounts left!');
+        console.log('❌ [EAM.LOL] No valid accounts left! Falling back to hardcoded default token.');
+        // Fallback to hardcoded DEFAULT_TOKEN
+        DEFAULT_TOKEN.bearer = DEFAULT_TOKEN.bearer; // keep as is
+        DEFAULT_TOKEN.refresh_token = DEFAULT_TOKEN.refresh_token;
+        const newExpiry = getTokenExpiryMs(DEFAULT_TOKEN.bearer);
+        if (tokenStock.length > 0) {
+            tokenStock[0] = {
+                bearer: DEFAULT_TOKEN.bearer,
+                refresh: DEFAULT_TOKEN.refresh_token,
+                addedAt: Date.now(),
+                expiresAt: newExpiry,
+                id: tokenStock[0].id || generateGenerationId(),
+                userId: tokenStock[0].userId || 'system',
+                username: tokenStock[0].username || 'System'
+            };
+        } else {
+            tokenStock.push({
+                bearer: DEFAULT_TOKEN.bearer,
+                refresh: DEFAULT_TOKEN.refresh_token,
+                addedAt: Date.now(),
+                expiresAt: newExpiry,
+                id: generateGenerationId(),
+                userId: 'system',
+                username: 'System'
+            });
+        }
+        console.log('⚠️ [EAM.LOL] Using hardcoded default token (may be expired).');
     }
 }
 
 async function refreshTokenInStock() {
     if (isGenerating) {
-        console.log('[EAM.LOL] Skipping auto-refresh — generation in progress');
+        console.log('⏸️ [EAM.LOL] Skipping auto-refresh — generation in progress');
         return;
     }
     if (tokenStock.length === 0) {
@@ -327,21 +389,21 @@ async function refreshTokenInStock() {
     }
     const ttl = secondsUntilExpiry(tokenObj.bearer);
     if (ttl > 300) {
-        console.log(`[EAM.LOL] Token valid for ${ttl}s — no refresh`);
+        console.log(`⏱️ [EAM.LOL] Token valid for ${ttl}s — no refresh`);
         return;
     }
-    console.log(`[EAM.LOL] Token expiring soon (${ttl}s) — refreshing...`);
+    console.log(`🔄 [EAM.LOL] Token expiring soon (${ttl}s) — refreshing...`);
     try {
         const result = await refreshToken(tokenObj.refresh);
         if (result.success) {
-            console.log('[EAM.LOL] Token refreshed!');
+            console.log('✅ [EAM.LOL] Token refreshed!');
             consecutiveFails = 0;
         } else {
-            console.log('[EAM.LOL] Refresh failed — getting new token');
+            console.log('❌ [EAM.LOL] Refresh failed — getting new token');
             giveNewTokenFromAccounts();
         }
     } catch (err) {
-        console.error('[EAM.LOL] Error in refresh:', err);
+        console.error('❌ [EAM.LOL] Error in refresh:', err);
         giveNewTokenFromAccounts();
     }
 }
@@ -349,7 +411,7 @@ async function refreshTokenInStock() {
 const AUTO_REFRESH_INTERVAL = 30 * 1000;
 let refreshInterval = null;
 function startAutoRefresh() {
-    console.log('[EAM.LOL] AUTO-REFRESH STARTED');
+    console.log('🔄 [EAM.LOL] AUTO-REFRESH STARTED');
     setTimeout(async () => {
         await findWorkingApiUrl();
         if (tokenStock.length === 0 && accounts.length > 0) giveNewTokenFromAccounts();
@@ -414,27 +476,23 @@ function forceSetOwnToken(bearer, refresh) {
     DEFAULT_TOKEN.refresh_token = refresh;
     lastRefreshExpiry = getTokenExpiryMs(bearer);
     tokenStock = [{ bearer, refresh, addedAt: Date.now(), expiresAt: lastRefreshExpiry }];
-    console.log('[EAM.LOL] Token manually set!');
+    console.log('✅ [EAM.LOL] Token manually set!');
 }
 
 // --- UI: SLICK, MODERN, NO WEIRD EMOJIS ---
-
-// Progress bar using full blocks and empty blocks
 function buildSleekProgress(step, total = 4, width = 12) {
     const filled = Math.round((step / total) * width);
     const empty = width - filled;
     return '█'.repeat(filled) + '░'.repeat(empty);
 }
 
-// Update generation embed with dashboard-style layout
 async function updateGenerationEmbed(interaction, step, message, ttl = null) {
     const stepLabels = ['DM Verification', 'Token Refresh', 'Finalizing', 'Delivery'];
     const statusIcons = stepLabels.map((label, idx) => {
-        if (idx < step) return '●';       // completed
-        if (idx === step) return '○';     // active
-        return '○';                       // pending
+        if (idx < step) return '●';
+        if (idx === step) return '○';
+        return '○';
     });
-    // Build status lines
     const statusLines = stepLabels.map((label, idx) => {
         const icon = statusIcons[idx];
         let suffix = '';
@@ -452,7 +510,7 @@ async function updateGenerationEmbed(interaction, step, message, ttl = null) {
             `\`${progress}  ${percent}%\`\n\n` +
             `${statusLines}`
         )
-        .setColor(0x44AAFF) // bright modern blue
+        .setColor(0x44AAFF)
         .setFooter({ text: `⏱ ${ttl ? ttl+'s' : '...'}  ·  ${new Date().toLocaleTimeString()}` });
 
     const row = new ActionRowBuilder().addComponents(
@@ -461,6 +519,7 @@ async function updateGenerationEmbed(interaction, step, message, ttl = null) {
             .setLabel('✕ Cancel')
             .setStyle(ButtonStyle.Danger)
     );
+    // Use flags: 64 for ephemeral (fix deprecation)
     await interaction.editReply({ embeds: [embed], components: [row] });
 }
 
@@ -468,7 +527,7 @@ async function updateGenerationEmbed(interaction, step, message, ttl = null) {
 async function processTokenGeneration(interaction, tierName) {
     const userId = interaction.user.id;
     const member = interaction.member;
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ flags: 64 }); // ephemeral
 
     const hasNoCooldown = member?.roles?.cache?.has(NO_COOLDOWN_ROLE_ID) || false;
     if (!hasNoCooldown) {
@@ -528,6 +587,14 @@ async function processTokenGeneration(interaction, tierName) {
         return interaction.editReply({ content: '✘ Token expired, try again.', components: [] });
     }
 
+    // Validate with API (100% validation)
+    const apiValid = await validateTokenWithApi(tokenObj.bearer);
+    if (!apiValid.valid) {
+        isGenerating = false;
+        activeGenerations.delete(userId);
+        return interaction.editReply({ content: `✘ Token validation failed: ${apiValid.error}. Please try again.`, components: [] });
+    }
+
     // Step 3
     await updateGenerationEmbed(interaction, 3, `Finalizing (${ttl}s left)...`, ttl);
     const genId = generateGenerationId();
@@ -561,7 +628,6 @@ async function processTokenGeneration(interaction, tierName) {
     const textBuffer = Buffer.from(textVersion, 'utf-8');
     const textAttachment = new AttachmentBuilder(textBuffer, { name: 'token.txt' });
 
-    // Success embed – sleek and clean
     const successEmbed = new EmbedBuilder()
         .setTitle('◇ TOKEN GENERATED')
         .setDescription(
@@ -585,14 +651,14 @@ async function processTokenGeneration(interaction, tierName) {
             components: []
         });
     } catch (err) {
-        console.error('[EAM.LOL] DM Error:', err);
+        console.error('❌ [EAM.LOL] DM Error:', err);
         isGenerating = false;
         activeGenerations.delete(userId);
         return interaction.editReply({ content: '✘ Could not send DM. Please open your DMs.', components: [] });
     }
 }
 
-// --- STOCK PAGINATION (unchanged) ---
+// --- STOCK PAGINATION ---
 let stockPage = 0;
 const STOCK_PER_PAGE = 5;
 async function showRemoveStock(interaction, page = 0) {
@@ -642,14 +708,14 @@ const commandsData = [
 
 // --- READY ---
 client.once('ready', async () => {
-    console.log(`[EAM.LOL] ONLINE: ${client.user.tag}`);
+    console.log(`🚀 [EAM.LOL] ONLINE: ${client.user.tag}`);
     tokenStock = [{ bearer: DEFAULT_TOKEN.bearer, refresh: DEFAULT_TOKEN.refresh_token, addedAt: Date.now(), expiresAt: getTokenExpiryMs(DEFAULT_TOKEN.bearer) }];
     await findWorkingApiUrl();
     const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
     try {
         await rest.put(Routes.applicationCommands(client.user.id), { body: commandsData });
-        console.log('[EAM.LOL] Slash commands registered');
-    } catch (error) { console.error('[EAM.LOL] Failed to register commands:', error); }
+        console.log('✅ [EAM.LOL] Slash commands registered');
+    } catch (error) { console.error('❌ [EAM.LOL] Failed to register commands:', error); }
     startAutoRefresh();
 });
 
@@ -711,6 +777,12 @@ client.on('interactionCreate', async interaction => {
                 if (Date.now() >= tokenObj.expiresAt) { giveNewTokenFromAccounts(); if (tokenStock.length > 0) tokenObj = tokenStock[0]; else { isGenerating = false; return interaction.editReply({ content: '✘ Token expired.' }); } }
                 const ttl = Math.floor((tokenObj.expiresAt - Date.now()) / 1000);
                 if (ttl <= 0) { isGenerating = false; return interaction.editReply({ content: '✘ Token expired.' }); }
+                // API validation
+                const apiValid = await validateTokenWithApi(tokenObj.bearer);
+                if (!apiValid.valid) {
+                    isGenerating = false;
+                    return interaction.editReply({ content: `✘ Token validation failed: ${apiValid.error}. Please try again.` });
+                }
                 const genId = generateGenerationId();
                 tokenObj.id = genId;
                 tokenObj.userId = interaction.user.id;
@@ -998,7 +1070,7 @@ client.on('interactionCreate', async interaction => {
             }
         }
     } catch (err) {
-        console.error(`[EAM.LOL] Interaction Error:`, err);
+        console.error(`❌ [EAM.LOL] Interaction Error:`, err);
         if (!interaction.replied && !interaction.deferred) interaction.reply({ content: "An error occurred.", flags: 64 }).catch(() => {});
     }
 });
@@ -1028,24 +1100,24 @@ const server = http.createServer((req, res) => {
     res.end('EAM.LOL Token Generator Bot is active.\nAuto-refreshes smartly.\nCredits to @elliott\n');
 });
 const PORT = process.env.PORT || 10000;
-server.listen(PORT, '0.0.0.0', () => console.log(`[EAM.LOL] HTTP server on port ${PORT}`));
+server.listen(PORT, '0.0.0.0', () => console.log(`🌐 [EAM.LOL] HTTP server on port ${PORT}`));
 
 // --- LOGIN ---
-if (!process.env.DISCORD_TOKEN) console.error('[EAM.LOL] DISCORD_TOKEN missing.');
+if (!process.env.DISCORD_TOKEN) console.error('❌ [EAM.LOL] DISCORD_TOKEN missing.');
 else {
     async function loginWithRetry(attempts = 5) {
         for (let i = 1; i <= attempts; i++) {
             try {
-                console.log(`[EAM.LOL] Login attempt ${i}/${attempts}...`);
+                console.log(`🔄 [EAM.LOL] Login attempt ${i}/${attempts}...`);
                 await Promise.race([client.login(process.env.DISCORD_TOKEN), new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), 30000))]);
-                console.log('[EAM.LOL] Login successful!');
+                console.log('✅ [EAM.LOL] Login successful!');
                 return true;
-            } catch (err) { console.error(`[EAM.LOL] Attempt ${i} failed:`, err.message); if (i === attempts) return false; await new Promise(r => setTimeout(r, 5000 * i)); }
+            } catch (err) { console.error(`❌ [EAM.LOL] Attempt ${i} failed:`, err.message); if (i === attempts) return false; await new Promise(r => setTimeout(r, 5000 * i)); }
         }
         return false;
     }
-    loginWithRetry().then(success => { if (!success) console.error('[EAM.LOL] Failed to connect.'); });
+    loginWithRetry().then(success => { if (!success) console.error('❌ [EAM.LOL] Failed to connect.'); });
 }
 
-process.on('unhandledRejection', (reason) => console.error('[EAM.LOL] Unhandled Rejection:', reason));
-process.on('uncaughtException', (err) => console.error('[EAM.LOL] Uncaught Exception:', err));
+process.on('unhandledRejection', (reason) => console.error('❌ [EAM.LOL] Unhandled Rejection:', reason));
+process.on('uncaughtException', (err) => console.error('❌ [EAM.LOL] Uncaught Exception:', err));
