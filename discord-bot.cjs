@@ -45,7 +45,7 @@ const VIP_ROLE_ID = "1542337978016469093";
 const BOOSTER_ROLE_ID = "1542337979807178832";
 const NO_COOLDOWN_ROLE_ID = ADMIN_ROLE_ID;
 const GENERATION_COOLDOWN = 0;
-const REQUIRED_ROLE_ID = "1544637223058542642"; // Set to a role everyone has!
+const REQUIRED_ROLE_ID = "1544637223058542642";
 
 // --- DONATION LINKS ---
 const DONATION_LINKS = {
@@ -607,7 +607,7 @@ function getExpiryFileName(expiresAt, extension) {
     return `token-exp-${iso}.${extension}`;
 }
 
-// --- PROCESS TOKEN GENERATION (ULTRA INFO DM UI) ---
+// --- PROCESS TOKEN GENERATION ---
 async function processTokenGeneration(interaction, tierName) {
     const userId = interaction.user.id;
     const member = interaction.member;
@@ -712,15 +712,10 @@ async function processTokenGeneration(interaction, tierName) {
             ' STATUS      :  ✔ VALID\n' +
             ' EXPIRATION  :  ' + expiryText + '\n' +
             ' GENERATION  :  ' + genId + '\n' +
-            ' REMAINING   :  ' + ttl + 's\n' +
+            ' REMINING    :  ' + ttl + 's\n' +
             '------------------------------------------------\n' +
             ' Files attached below.\n' +
             '```'
-        )
-        .addFields(
-            { name: 'BEARER TOKEN', value: `\`${tokenObj.bearer.slice(0, 10)}...\``, inline: true },
-            { name: 'REFRESH TOKEN', value: `\`${tokenObj.refresh.slice(0, 10)}...\``, inline: true },
-            { name: 'AUTO-REFRESH', value: '2m 30s', inline: true }
         )
         .setColor(0x00FFAA)
         .setFooter({ text: 'EAM.LOL | Secure Token Service' });
@@ -1045,22 +1040,38 @@ client.on('interactionCreate', async interaction => {
                     return await interaction.showModal(modal);
                 }
 
+                // --- LIVE UPDATING GENERATOR PANEL ---
                 if (commandName === 'generator') {
-                    const embed = new EmbedBuilder()
-                        .setTitle('◆ EAM.LOL TOKEN GENERATOR ◆')
-                        .setDescription('> Secure, one-click generation with live status.\n> Tokens are auto-refreshed for maximum lifespan.')
-                        .addFields(
-                            { name: 'SYSTEM STATUS', value: '● OPERATIONAL', inline: true },
-                            { name: 'TOKENS IN STOCK', value: `${tokenStock.length}`, inline: true },
-                            { name: 'COOLDOWN', value: '0s', inline: true },
-                            { name: 'AUTO-REFRESH', value: '2m 30s', inline: true },
-                            { name: 'DELIVERY', value: 'Direct Message', inline: true },
-                            { name: 'LATENCY', value: `${client.ws.ping}ms`, inline: true }
-                        )
-                        .setColor(0x5865F2)
-                        .setFooter({ text: getLiveUIStats(interaction) });
+                    const createGenEmbed = () => {
+                        return new EmbedBuilder()
+                            .setTitle('◆ EAM.LOL TOKEN GENERATOR ◆')
+                            .setDescription('> Secure, one-click generation with live status.\n> Tokens are auto-refreshed for maximum lifespan.')
+                            .addFields(
+                                { name: 'SYSTEM STATUS', value: '● OPERATIONAL', inline: true },
+                                { name: 'TOKENS IN STOCK', value: `${tokenStock.length}`, inline: true },
+                                { name: 'COOLDOWN', value: '0s', inline: true },
+                                { name: 'AUTO-REFRESH', value: '2m 30s', inline: true },
+                                { name: 'DELIVERY', value: 'Direct Message', inline: true },
+                                { name: 'LATENCY', value: `${client.ws.ping}ms`, inline: true }
+                            )
+                            .setColor(0x5865F2)
+                            .setFooter({ text: getLiveUIStats(interaction) });
+                    };
+
                     const row = new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('gen_public').setLabel('GENERATE TOKEN').setStyle(ButtonStyle.Success));
-                    return interaction.reply({ embeds: [embed], components: [row], ephemeral: false });
+                    
+                    const message = await interaction.reply({ embeds: [createGenEmbed()], components: [row], ephemeral: false, fetchReply: true });
+
+                    const updateInterval = setInterval(async () => {
+                        try {
+                            const fetchedMsg = await interaction.channel.messages.fetch(message.id);
+                            await fetchedMsg.edit({ embeds: [createGenEmbed()], components: [row] });
+                        } catch (err) {
+                            clearInterval(updateInterval);
+                        }
+                    }, 10000); // Updates every 10 seconds
+
+                    return;
                 }
 
                 if (commandName === 'force_refresh') {
