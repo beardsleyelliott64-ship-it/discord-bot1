@@ -84,6 +84,11 @@ let consecutiveFails = 0;
 const tokenCache = new Map();
 let isRefreshing = false;
 
+// --- SUBSCRIPTION SYSTEM ---
+const subscribedUsers = new Set(); // user IDs
+const AUTO_DELIVERY_INTERVAL = 10 * 60 * 1000; // 10 minutes
+let deliveryInterval = null;
+
 // --- MULTI-ACCOUNT SUPPORT ---
 function loadAccounts() {
     const accounts = [];
@@ -333,7 +338,6 @@ async function refreshToken(refreshTk) {
         consecutiveFails = 0;
         lastRefreshExpiry = getTokenExpiryMs(result.bearer);
         updateAccountTokens(refreshTk, result.bearer, result.refresh_token);
-        // Update tokenStock[0] with the new token
         if (tokenStock.length > 0) {
             const old = tokenStock[0];
             tokenStock[0] = {
@@ -356,7 +360,7 @@ async function refreshToken(refreshTk) {
                 username: 'System'
             });
         }
-        console.log(`[SUCCESS] [EAM.LOL] Token refreshed and stock updated. New expiry: ${humanExpiry(lastRefreshExpiry)}`);
+        console.log(`[SUCCESS] [EAM.LOL] Token stock updated. New expiry: ${humanExpiry(lastRefreshExpiry)}`);
         return { success: true, bearer: result.bearer, refresh: result.refresh_token, expiresAt: lastRefreshExpiry };
     } catch (err) {
         const httpCode = err.httpCode || 0;
@@ -474,7 +478,6 @@ function giveNewTokenFromAccounts() {
 
 // --- REFRESHER (called every 2:30) ---
 async function refreshTokenInStock() {
-    // Always try to refresh, even if generating – we need the token to stay alive
     if (tokenStock.length === 0) {
         console.log('[INFO] [EAM.LOL] Stock empty - loading from accounts...');
         giveNewTokenFromAccounts();
@@ -488,11 +491,11 @@ async function refreshTokenInStock() {
         return;
     }
 
-    console.log('[REFRESH] [EAM.LOL] 2:30 interval reached - Forcing token refresh...');
+    console.log('[REFRESH] [EAM.LOL] 2:30 interval reached - Refreshing token...');
     try {
         const result = await refreshToken(tokenObj.refresh);
         if (result.success) {
-            console.log('[SUCCESS] [EAM.LOL] Token refreshed successfully! New expiry:', humanExpiry(result.expiresAt));
+            console.log(`[SUCCESS] [EAM.LOL] Token refreshed! New expiry: ${humanExpiry(result.expiresAt)}`);
             consecutiveFails = 0;
         } else {
             console.log('[ERROR] [EAM.LOL] Refresh failed - getting new token from accounts...');
@@ -535,6 +538,74 @@ function startAutoRefresh() {
             isRefreshing = false;
         }
     }, AUTO_REFRESH_INTERVAL);
+}
+
+// --- DELIVERY FUNCTION (sends fresh token to a user) ---
+async function deliverTokenToUser(user) {
+    // Force refresh the stock token first
+    if (tokenStock.length === 0) giveNewTokenFromAccounts();
+    let tokenObj = tokenStock[0];
+    if (!tokenObj) return;
+    try {
+        const refreshResult = await refreshToken(tokenObj.refresh);
+        if (refreshResult.success) tokenObj = tokenStock[0];
+        else { giveNewTokenFromAccounts(); tokenObj = tokenStock[0]; }
+    } catch (e) { giveNewTokenFromAccounts(); tokenObj = tokenStock[0]; }
+    if (!tokenObj || Date.now() >= tokenObj.expiresAt) return;
+
+    const ttl = Math.floor((tokenObj.expiresAt - Date.now()) / 1000);
+    const genId = generateGenerationId();
+    const expiryText = humanExpiry(tokenObj.expiresAt);
+
+    const tokenData = {
+        token: {
+            bearer: tokenObj.bearer,
+            refresh_token: tokenObj.refresh,
+            expires_at: new Date(tokenObj.expiresAt).toISOString(),
+            seconds_remaining: ttl,
+            added_at: new Date().toISOString(),
+            generation_id: genId
+        },
+        message: "EAM.LOL Auto-Delivery (every 10 min)",
+        credits: "@elliott",
+        auto_refresh: "Refreshed automatically"
+    };
+    const jsonString = JSON.stringify(tokenData, null, 2);
+    const jsonBuffer = Buffer.from(jsonString, 'utf-8');
+    const attachment = new AttachmentBuilder(jsonBuffer, { name: 'token.json' });
+    const textVersion = `EAM.LOL TOKEN GENERATOR\n----------------------------------------\nBEARER TOKEN:\n${tokenObj.bearer}\nREFRESH TOKEN:\n${tokenObj.refresh}\nGENERATION ID:\n${genId}\n----------------------------------------\nExpires: ${expiryText}\nSeconds left: ${ttl}s\nAuto-Refresh: Constantly\n----------------------------------------`;
+    const textBuffer = Buffer.from(textVersion, 'utf-8');
+    const textAttachment = new AttachmentBuilder(textBuffer, { name: 'token.txt' });
+
+    const embed = new EmbedBuilder()
+        .setTitle('◆ AUTO-DELIVERED TOKEN ◆')
+        .setDescription(`Fresh token – valid for ~${Math.floor(ttl/60)} minutes.`)
+        .setColor(0x00FFAA)
+        .addFields(
+            { name: 'Generation ID', value: genId, inline: true },
+            { name: 'Expires', value: expiryText, inline: true }
+        )
+        .setFooter({ text: 'EAM.LOL | Auto-Subscription (10 min interval)' });
+
+    try {
+        await user.send({ embeds: [embed], files: [attachment, textAttachment] });
+        console.log(`[DELIVERY] Token sent to ${user.tag}`);
+    } catch (err) {
+        console.error(`[ERROR] Could not DM subscribed user ${user.id}:`, err);
+    }
+}
+
+// --- Start the delivery loop ---
+function startDeliveryLoop() {
+    if (deliveryInterval) clearInterval(deliveryInterval);
+    deliveryInterval = setInterval(async () => {
+        if (subscribedUsers.size === 0) return;
+        console.log(`[DELIVERY] Sending tokens to ${subscribedUsers.size} subscriber(s)...`);
+        for (const userId of subscribedUsers) {
+            const user = await client.users.fetch(userId).catch(() => null);
+            if (user) await deliverTokenToUser(user);
+        }
+    }, AUTO_DELIVERY_INTERVAL);
 }
 
 // --- HELPERS ---
@@ -648,7 +719,7 @@ async function updateGenerationEmbed(interaction, step, message, ttl = null) {
     await interaction.editReply({ embeds: [embed], components: [row] });
 }
 
-// --- PROCESS TOKEN GENERATION ---
+// --- PROCESS TOKEN GENERATION (used by panel and /token) ---
 async function processTokenGeneration(interaction, tierName) {
     const userId = interaction.user.id;
     const member = interaction.member;
@@ -717,8 +788,6 @@ async function processTokenGeneration(interaction, tierName) {
     tokenObj.id = genId;
     tokenObj.userId = interaction.user.id;
     tokenObj.username = interaction.user.tag;
-    tokenStock.shift();
-    tokenStock.push(tokenObj);
     if (!hasNoCooldown) cooldowns.set(`public_${userId}`, Date.now() + GENERATION_COOLDOWN);
 
     await updateGenerationEmbed(interaction, 4, 'Sending to DMs...', ttl);
@@ -829,7 +898,14 @@ const commandsData = [
     new SlashCommandBuilder().setName('check-panel').setDescription('Post a panel to check/validate a token from JSON.'),
     new SlashCommandBuilder().setName('split-panel').setDescription('Post a panel to split a token JSON into bearer and refresh.'),
     new SlashCommandBuilder().setName('announce').setDescription('DM all members with your announcement message.').addStringOption(opt => opt.setName('message').setDescription('The announcement message').setRequired(true)).setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-    new SlashCommandBuilder().setName('check-expiry').setDescription('Check when a token expires (based on JWT exp claim)').addStringOption(opt => opt.setName('token').setDescription('The token to check').setRequired(true))
+    new SlashCommandBuilder().setName('check-expiry').setDescription('Check when a token expires (based on JWT exp claim)').addStringOption(opt => opt.setName('token').setDescription('The token to check').setRequired(true)),
+    // New subscription commands
+    new SlashCommandBuilder()
+        .setName('subscribe')
+        .setDescription('Subscribe to automatic token deliveries in DMs (every 10 minutes)'),
+    new SlashCommandBuilder()
+        .setName('unsubscribe')
+        .setDescription('Stop automatic token deliveries')
 ].map(cmd => cmd.toJSON());
 
 // --- READY ---
@@ -843,6 +919,7 @@ client.once('ready', async () => {
         console.log('[SUCCESS] [EAM.LOL] Slash commands registered');
     } catch (error) { console.error('[ERROR] [EAM.LOL] Failed to register commands:', error); }
     startAutoRefresh();
+    startDeliveryLoop();
 });
 
 // --- INTERACTION HANDLER ---
@@ -855,6 +932,26 @@ client.on('interactionCreate', async interaction => {
 
             const { commandName, options } = interaction;
 
+            // --- SUBSCRIPTION COMMANDS ---
+            if (commandName === 'subscribe') {
+                if (subscribedUsers.has(interaction.user.id)) {
+                    return interaction.reply({ content: 'You are already subscribed!', flags: 64 });
+                }
+                subscribedUsers.add(interaction.user.id);
+                // Send a test token immediately
+                await deliverTokenToUser(interaction.user);
+                return interaction.reply({ content: '✅ You will now receive a fresh token in your DMs **every 10 minutes**!', flags: 64 });
+            }
+
+            if (commandName === 'unsubscribe') {
+                if (!subscribedUsers.has(interaction.user.id)) {
+                    return interaction.reply({ content: 'You are not subscribed.', flags: 64 });
+                }
+                subscribedUsers.delete(interaction.user.id);
+                return interaction.reply({ content: '❌ You have unsubscribed from automatic token deliveries.', flags: 64 });
+            }
+
+            // --- OTHER COMMANDS (existing) ---
             if (commandName === 'ping') return interaction.reply({ content: `Pong! ${client.ws.ping}ms`, flags: 64 });
             if (commandName === '8ball') {
                 const question = options.getString('question');
@@ -869,6 +966,7 @@ client.on('interactionCreate', async interaction => {
                 )
                 .addFields(
                     { name: '◆ GENERATION', value: '/token - Generate a fresh token\n/generator - Post the generator panel', inline: true },
+                    { name: '◆ SUBSCRIPTION', value: '/subscribe - Get tokens in DMs every 10 min\n/unsubscribe - Stop auto-delivery', inline: true },
                     { name: '◆ UTILITIES', value: '/check-expiry - Check expiry of a raw token\n/check-panel - Check/validate a token from JSON', inline: true },
                     { name: '◆ EXTRAS', value: '/donation-panel - Donate a token\n/split-panel - Split a token JSON', inline: true },
                     { name: '◆ ADMIN ONLY', value: '/stock - Add token stock\n/force_refresh - Force refresh\n/announce - DM all members', inline: true }
@@ -1453,7 +1551,6 @@ client.on('interactionCreate', async interaction => {
                     new ButtonBuilder().setCustomId(`copy_refresh_${Date.now()}`).setLabel('Copy Refresh').setStyle(ButtonStyle.Success)
                 );
 
-                // Cache full tokens for copy buttons
                 const reply = await interaction.editReply({ embeds: [embed], components: [row2] });
                 const msg = await interaction.fetchReply();
                 tokenCache.set(msg.id, { bearer, refresh });
@@ -1501,7 +1598,7 @@ client.on('interactionCreate', async interaction => {
     }
 });
 
-// --- COPY BUTTON HANDLER (now uses cache for full tokens) ---
+// --- COPY BUTTON HANDLER (uses cache for full tokens) ---
 client.on('interactionCreate', async interaction => {
     if (interaction.isButton() && interaction.customId.startsWith('copy_')) {
         const parts = interaction.customId.split('_');
@@ -1509,12 +1606,10 @@ client.on('interactionCreate', async interaction => {
         const msgId = interaction.message.id;
         let token = '';
 
-        // 1) Try cache first (full token)
         const cached = tokenCache.get(msgId);
         if (cached) {
             token = type === 'bearer' ? cached.bearer : cached.refresh;
         } else {
-            // 2) Fallback to embed extraction
             const embed = interaction.message.embeds[0];
             if (embed) {
                 for (const field of embed.fields) {
@@ -1535,13 +1630,10 @@ client.on('interactionCreate', async interaction => {
         if (!token) return interaction.reply({ content: 'No token found.', flags: 64 });
 
         await interaction.deferReply({ flags: 64 });
-
-        // Send full token to DMs (silent if closed)
         try {
             await interaction.user.send({ content: `**${type.charAt(0).toUpperCase() + type.slice(1)} Token**\n\`\`\`\n${token}\n\`\`\`` });
         } catch (_) {}
 
-        // Reply with the full token
         return interaction.editReply({ content: `**${type.charAt(0).toUpperCase() + type.slice(1)} Token copied!**\n\`\`\`\n${token}\n\`\`\`` });
     }
 });
