@@ -45,7 +45,7 @@ const VIP_ROLE_ID = "1542337978016469093";
 const BOOSTER_ROLE_ID = "1542337979807178832";
 const NO_COOLDOWN_ROLE_ID = ADMIN_ROLE_ID;
 const GENERATION_COOLDOWN = 0;
-const REQUIRED_ROLE_ID = "1544637223058542642"; // Make sure to set this to a role everyone has!
+const REQUIRED_ROLE_ID = "1544637223058542642"; // Set to a role everyone has!
 
 // --- DONATION LINKS ---
 const DONATION_LINKS = {
@@ -546,11 +546,17 @@ function forceSetOwnToken(bearer, refresh) {
     console.log(`[SUCCESS] [EAM.LOL] Token manually set! Expires: ${new Date(lastRefreshExpiry).toUTCString()}`);
 }
 
-// --- ULTRA SPACIOUS PREMIUM UI HELPERS ---
+// --- ULTRA INFO-DENSE UI HELPERS ---
 function buildSleekProgress(step, total = 4, width = 16) {
     const filled = Math.round((step / total) * width);
     const empty = width - filled;
     return '█'.repeat(filled) + '░'.repeat(empty);
+}
+
+function getLiveUIStats(interaction) {
+    const time = new Date().toLocaleString();
+    const userName = interaction.user.tag;
+    return `System Time: ${time} | Requested by: ${userName}`;
 }
 
 async function updateGenerationEmbed(interaction, step, message, ttl = null) {
@@ -566,7 +572,7 @@ async function updateGenerationEmbed(interaction, step, message, ttl = null) {
         if (idx === step) suffix = '  ⟳';
         else if (idx < step) suffix = '  ✔';
         return `${icon} ${label}${suffix}`;
-    }).join('\n\n');
+    }).join('\n');
 
     const progress = buildSleekProgress(step, 4);
     const percent = Math.round((step / 4) * 100);
@@ -577,8 +583,13 @@ async function updateGenerationEmbed(interaction, step, message, ttl = null) {
             `\`${progress}  ${percent}%\`\n\n` +
             `${statusLines}`
         )
+        .addFields(
+            { name: 'STATUS', value: '● OPERATIONAL', inline: true },
+            { name: 'STOCK', value: `${tokenStock.length} tokens`, inline: true },
+            { name: 'TTL', value: `${ttl ? ttl+'s' : '...'}`, inline: true }
+        )
         .setColor(0x44AAFF)
-        .setFooter({ text: `TTL: ${ttl ? ttl+'s' : '...'}  |  ${new Date().toLocaleTimeString()}` });
+        .setFooter({ text: getLiveUIStats(interaction) });
 
     const row = new ActionRowBuilder().addComponents(
         new ButtonBuilder()
@@ -596,7 +607,7 @@ function getExpiryFileName(expiresAt, extension) {
     return `token-exp-${iso}.${extension}`;
 }
 
-// --- PROCESS TOKEN GENERATION (VERY COOL DM UI) ---
+// --- PROCESS TOKEN GENERATION (ULTRA INFO DM UI) ---
 async function processTokenGeneration(interaction, tierName) {
     const userId = interaction.user.id;
     const member = interaction.member;
@@ -701,10 +712,15 @@ async function processTokenGeneration(interaction, tierName) {
             ' STATUS      :  ✔ VALID\n' +
             ' EXPIRATION  :  ' + expiryText + '\n' +
             ' GENERATION  :  ' + genId + '\n' +
-            ' REMINING    :  ' + ttl + 's\n' +
+            ' REMAINING   :  ' + ttl + 's\n' +
             '------------------------------------------------\n' +
             ' Files attached below.\n' +
             '```'
+        )
+        .addFields(
+            { name: 'BEARER TOKEN', value: `\`${tokenObj.bearer.slice(0, 10)}...\``, inline: true },
+            { name: 'REFRESH TOKEN', value: `\`${tokenObj.refresh.slice(0, 10)}...\``, inline: true },
+            { name: 'AUTO-REFRESH', value: '2m 30s', inline: true }
         )
         .setColor(0x00FFAA)
         .setFooter({ text: 'EAM.LOL | Secure Token Service' });
@@ -812,23 +828,17 @@ client.on('interactionCreate', async interaction => {
             }
             if (commandName === 'help') {
                 const embed = new EmbedBuilder().setTitle("◆ EAM.LOL COMMAND INTERFACE ◆").setDescription(
-                    `> Welcome to the EAM.LOL Command Interface.\n` +
-                    `> All commands are listed below.\n\n` +
-                    `**◆ TOKEN GENERATION**\n` +
-                    `> /token - Generate a fresh token\n` +
-                    `> /generator - Post the generator panel\n\n` +
-                    `**◆ ADMIN TOOLS**\n` +
-                    `> /stock - Add token stock\n` +
-                    `> /remove-stock - Remove a token by selection\n` +
-                    `> /force_refresh - Force refresh the current token\n` +
-                    `> /announce - DM all members\n\n` +
-                    `**◆ UTILITIES**\n` +
-                    `> /check-expiry - Check the expiry of a raw token\n` +
-                    `> /split-panel - Split a token JSON\n` +
-                    `> /donation-panel - Donate a token\n` +
-                    `> /donate-panel - Donate via payment links\n\n` +
-                    `> Credits: @elliott`
-                ).setColor(0x3498DB).setFooter({ text: "EAM.LOL | Never expires" });
+                    `> Welcome to the EAM.LOL Command Interface.\n> All commands are listed below.`
+                )
+                .addFields(
+                    { name: '◆ GENERATION', value: '/token - Generate a fresh token\n/generator - Post the generator panel', inline: true },
+                    { name: '◆ UTILITIES', value: '/check-expiry - Check expiry of a raw token\n/check-panel - Check/validate a token from JSON', inline: true },
+                    { name: '◆ EXTRAS', value: '/donation-panel - Donate a token\n/split-panel - Split a token JSON', inline: true },
+                    { name: '◆ ADMIN ONLY', value: '/stock - Add token stock\n/force_refresh - Force refresh\n/announce - DM all members', inline: true }
+                )
+                .setColor(0x3498DB)
+                .addFields({ name: 'Credits', value: '@elliott', inline: true })
+                .setFooter({ text: getLiveUIStats(interaction) });
                 return interaction.reply({ embeds: [embed], flags: 64 });
             }
             if (commandName === 'serverinfo') {
@@ -854,7 +864,7 @@ client.on('interactionCreate', async interaction => {
                         { name: 'Remaining', value: isExpired ? '0s' : `${remaining}s`, inline: true }
                     )
                     .setColor(isExpired ? 0xED4245 : 0x2ECC71)
-                    .setFooter({ text: 'EAM.LOL | Expiry Check' });
+                    .setFooter({ text: getLiveUIStats(interaction) });
                 return interaction.reply({ embeds: [embed], flags: 64 });
             }
 
@@ -896,10 +906,15 @@ client.on('interactionCreate', async interaction => {
                             ' STATUS      :  ✔ VALID\n' +
                             ' EXPIRATION  :  ' + expiryText + '\n' +
                             ' GENERATION  :  ' + genId + '\n' +
-                            ' REMINING    :  ' + ttl + 's\n' +
+                            ' REMAINING   :  ' + ttl + 's\n' +
                             '------------------------------------------------\n' +
                             ' Files attached below.\n' +
                             '```'
+                        )
+                        .addFields(
+                            { name: 'BEARER TOKEN', value: `\`${tokenObj.bearer.slice(0, 10)}...\``, inline: true },
+                            { name: 'REFRESH TOKEN', value: `\`${tokenObj.refresh.slice(0, 10)}...\``, inline: true },
+                            { name: 'AUTO-REFRESH', value: '2m 30s', inline: true }
                         )
                         .setColor(0x00FFAA)
                         .setFooter({ text: 'EAM.LOL' });
@@ -938,18 +953,18 @@ client.on('interactionCreate', async interaction => {
                 return interaction.editReply({ content: `Announcement DMs sent! ${successCount} succeeded, ${failCount} failed (skipped bots).` });
             }
 
-            // --- DONATE-PANEL --- (Removed Admin Check)
+            // --- DONATE-PANEL ---
             if (commandName === 'donate-panel') {
                 const embed = new EmbedBuilder()
                     .setTitle('◆ SUPPORT THE PROJECT ◆')
-                    .setDescription('> Your contributions keep this bot alive and the tokens flowing.\n> Choose a platform below to send a donation.\n> Every bit helps – thank you!')
+                    .setDescription('> Your contributions keep this bot alive and the tokens flowing.\n> Choose a platform below to send a donation.')
                     .addFields(
                         { name: 'PayPal', value: `[Click to donate](${DONATION_LINKS.paypal})`, inline: true },
                         { name: 'CashApp', value: `[Click to donate](${DONATION_LINKS.cashapp})`, inline: true },
                         { name: 'Crypto', value: `[Click to donate](${DONATION_LINKS.crypto})`, inline: true }
                     )
                     .setColor(0xF1C40F)
-                    .setFooter({ text: 'EAM.LOL | Donations are appreciated' });
+                    .setFooter({ text: getLiveUIStats(interaction) });
                 const row1 = new ActionRowBuilder().addComponents(
                     new ButtonBuilder().setLabel('PayPal').setStyle(ButtonStyle.Link).setURL(DONATION_LINKS.paypal),
                     new ButtonBuilder().setLabel('CashApp').setStyle(ButtonStyle.Link).setURL(DONATION_LINKS.cashapp),
@@ -959,40 +974,55 @@ client.on('interactionCreate', async interaction => {
                 return interaction.reply({ embeds: [embed], components: [row1, row2], ephemeral: false });
             }
 
-            // --- DONATION-PANEL --- (Removed Admin Check)
+            // --- DONATION-PANEL ---
             if (commandName === 'donation-panel') {
                 const embed = new EmbedBuilder()
                     .setTitle('◆ DONATE A TOKEN ◆')
-                    .setDescription('> Paste a valid JSON containing `token` (bearer) and `refresh_token`.\n> The bot will validate and add it to the stock.\n> If expired, it will attempt to refresh it automatically.')
+                    .setDescription('> Paste a valid JSON containing `token` (bearer) and `refresh_token`.\n> The bot will validate and add it to the stock.')
+                    .addFields(
+                        { name: 'STEP 1', value: 'Copy the token JSON from your client', inline: true },
+                        { name: 'STEP 2', value: 'Paste it into the modal', inline: true },
+                        { name: 'STEP 3', value: 'Hit Donate - it gets added to stock!', inline: true }
+                    )
                     .setColor(0x5865F2)
-                    .setFooter({ text: 'EAM.LOL | Token Donation' });
+                    .setFooter({ text: getLiveUIStats(interaction) });
                 const row = new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('donate_token_btn').setLabel('Donate Token').setStyle(ButtonStyle.Success));
                 return interaction.reply({ embeds: [embed], components: [row], ephemeral: false });
             }
 
-            // --- CHECK-PANEL --- (Removed Admin Check)
+            // --- CHECK-PANEL ---
             if (commandName === 'check-panel') {
                 const embed = new EmbedBuilder()
                     .setTitle('◆ CHECK TOKEN ◆')
                     .setDescription('> Paste a JSON containing `token` (or bearer) and `refresh_token`.\n> The bot will extract and validate them.')
+                    .addFields(
+                        { name: 'STEP 1', value: 'Paste JSON', inline: true },
+                        { name: 'STEP 2', value: 'Click Check', inline: true },
+                        { name: 'RESULT', value: 'JWT & API Validation', inline: true }
+                    )
                     .setColor(0x3498DB)
-                    .setFooter({ text: 'EAM.LOL | Token Check' });
+                    .setFooter({ text: getLiveUIStats(interaction) });
                 const row = new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('check_token_btn').setLabel('Check Token').setStyle(ButtonStyle.Primary));
                 return interaction.reply({ embeds: [embed], components: [row], ephemeral: false });
             }
 
-            // --- SPLIT-PANEL --- (Removed Admin Check)
+            // --- SPLIT-PANEL ---
             if (commandName === 'split-panel') {
                 const embed = new EmbedBuilder()
                     .setTitle('◆ SPLIT TOKEN ◆')
-                    .setDescription('> Paste a JSON containing `token` (or bearer) and `refresh_token`.\n> The bot will extract and return them separately with copy buttons.')
+                    .setDescription('> Paste a JSON containing `token` (or bearer) and `refresh_token`.\n> The bot will extract and return them separately.')
+                    .addFields(
+                        { name: 'STEP 1', value: 'Paste JSON', inline: true },
+                        { name: 'STEP 2', value: 'Click Split', inline: true },
+                        { name: 'OUTPUT', value: 'Separate Bearer & Refresh', inline: true }
+                    )
                     .setColor(0x2ECC71)
-                    .setFooter({ text: 'EAM.LOL | Token Split' });
+                    .setFooter({ text: getLiveUIStats(interaction) });
                 const row = new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('split_token_btn').setLabel('Split Token').setStyle(ButtonStyle.Success));
                 return interaction.reply({ embeds: [embed], components: [row], ephemeral: false });
             }
 
-            // --- ADMIN COMMANDS (Keeping admin checks here) ---
+            // --- ADMIN COMMANDS ---
             const adminCommands = ['stock', 'stock_main', 'generator', 'force_refresh', 'remove-stock', 'reset-stock', 'gen-codes', 'remove-token', 'refresh_cooldown_all', 'panel'];
             if (adminCommands.includes(commandName)) {
                 if (!hasAdminAccess(interaction)) return interaction.reply({ content: 'Access Denied.', flags: 64 });
@@ -1003,7 +1033,7 @@ client.on('interactionCreate', async interaction => {
                     const refresh = options.getString('refresh');
                     if (!bearer || !refresh) return interaction.editReply({ content: 'Both tokens required.' });
                     forceSetOwnToken(bearer, refresh);
-                    const embed = new EmbedBuilder().setTitle('◆ MAIN TOKEN UPDATED ◆').setDescription('Token updated successfully.').setColor(0x2ECC71).addFields({ name: 'Valid For', value: humanExpiry(lastRefreshExpiry), inline: true }, { name: 'Stock', value: `${tokenStock.length} token(s)`, inline: true });
+                    const embed = new EmbedBuilder().setTitle('◆ MAIN TOKEN UPDATED ◆').setDescription('Token updated successfully.').setColor(0x2ECC71).addFields({ name: 'Valid For', value: humanExpiry(lastRefreshExpiry), inline: true }, { name: 'Stock', value: `${tokenStock.length} token(s)`, inline: true }, { name: 'Ping', value: `${client.ws.ping}ms`, inline: true });
                     return interaction.editReply({ embeds: [embed] });
                 }
 
@@ -1018,9 +1048,17 @@ client.on('interactionCreate', async interaction => {
                 if (commandName === 'generator') {
                     const embed = new EmbedBuilder()
                         .setTitle('◆ EAM.LOL TOKEN GENERATOR ◆')
-                        .setDescription('> Generate your personal access token instantly.\n\n> One-click generation with live status.\n\n> Delivered securely to your Direct Messages.\n\n> Smart auto-refresh keeps your token active.')
+                        .setDescription('> Secure, one-click generation with live status.\n> Tokens are auto-refreshed for maximum lifespan.')
+                        .addFields(
+                            { name: 'SYSTEM STATUS', value: '● OPERATIONAL', inline: true },
+                            { name: 'TOKENS IN STOCK', value: `${tokenStock.length}`, inline: true },
+                            { name: 'COOLDOWN', value: '0s', inline: true },
+                            { name: 'AUTO-REFRESH', value: '2m 30s', inline: true },
+                            { name: 'DELIVERY', value: 'Direct Message', inline: true },
+                            { name: 'LATENCY', value: `${client.ws.ping}ms`, inline: true }
+                        )
                         .setColor(0x5865F2)
-                        .setFooter({ text: 'Always available | Never expires' });
+                        .setFooter({ text: getLiveUIStats(interaction) });
                     const row = new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('gen_public').setLabel('GENERATE TOKEN').setStyle(ButtonStyle.Success));
                     return interaction.reply({ embeds: [embed], components: [row], ephemeral: false });
                 }
@@ -1032,7 +1070,7 @@ client.on('interactionCreate', async interaction => {
                         const result = await refreshToken(tokenStock[0].refresh);
                         if (result.success) {
                             const embed = new EmbedBuilder().setTitle('◆ TOKEN REFRESHED ◆').setDescription('Token refreshed successfully.').setColor(0x2ECC71)
-                                .addFields({ name: 'Expiry', value: humanExpiry(tokenStock[0].expiresAt), inline: true }, { name: 'Stock', value: `${tokenStock.length} token(s)`, inline: true });
+                                .addFields({ name: 'Expiry', value: humanExpiry(tokenStock[0].expiresAt), inline: true }, { name: 'Stock', value: `${tokenStock.length} token(s)`, inline: true }, { name: 'Ping', value: `${client.ws.ping}ms`, inline: true });
                             return interaction.editReply({ embeds: [embed] });
                         } else return interaction.editReply({ content: 'Refresh failed - will retry.' });
                     } catch (err) { return interaction.editReply({ content: 'Refresh failed - will retry.' }); }
@@ -1252,8 +1290,9 @@ client.on('interactionCreate', async interaction => {
                         { name: 'Refresh Token', value: `\`\`\`\n${refresh}\n\`\`\``, inline: false },
                         { name: 'Expiry', value: humanExpiry(getTokenExpiryMs(bearer)), inline: true },
                         { name: 'Stock', value: `${tokenStock.length} token(s)`, inline: true },
-                        { name: 'Auto-Refresh', value: 'Smart (multi-account)', inline: true }
-                    ).setTimestamp().setFooter({ text: 'EAM.LOL' });
+                        { name: 'Auto-Refresh', value: 'Smart (multi-account)', inline: true },
+                        { name: 'Ping', value: `${client.ws.ping}ms`, inline: true }
+                    ).setTimestamp().setFooter({ text: getLiveUIStats(interaction) });
                 const row1 = new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId(`copy_bearer_${Date.now()}`).setLabel('Copy Bearer').setStyle(ButtonStyle.Primary));
                 const row2 = new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId(`copy_refresh_${Date.now()}`).setLabel('Copy Refresh').setStyle(ButtonStyle.Success));
                 return interaction.editReply({ embeds: [embed], components: [row1, row2] });
@@ -1345,7 +1384,7 @@ client.on('interactionCreate', async interaction => {
                         { name: 'Seconds Remaining', value: validation.secondsRemaining > 0 ? `${validation.secondsRemaining}s` : 'Expired', inline: true },
                         { name: 'API Validation', value: validation.apiValid ? 'Passed' : `Failed: ${validation.apiError || 'Unknown'}`, inline: false }
                     )
-                    .setFooter({ text: 'EAM.LOL | Token Check' });
+                    .setFooter({ text: getLiveUIStats(interaction) });
                 if (!validation.valid) embed.setDescription('> This token is invalid – it may be expired or revoked.');
                 else embed.setDescription('> Token is valid – ready for use.');
                 embed.addFields(
@@ -1382,7 +1421,7 @@ client.on('interactionCreate', async interaction => {
                         { name: 'Bearer Token', value: `\`\`\`\n${bearer}\n\`\`\``, inline: false },
                         { name: 'Refresh Token', value: `\`\`\`\n${refresh}\n\`\`\``, inline: false }
                     )
-                    .setFooter({ text: 'EAM.LOL | Token Split' });
+                    .setFooter({ text: getLiveUIStats(interaction) });
                 const row = new ActionRowBuilder().addComponents(
                     new ButtonBuilder().setCustomId(`copy_bearer_${Date.now()}`).setLabel('Copy Bearer').setStyle(ButtonStyle.Primary),
                     new ButtonBuilder().setCustomId(`copy_refresh_${Date.now()}`).setLabel('Copy Refresh').setStyle(ButtonStyle.Success)
