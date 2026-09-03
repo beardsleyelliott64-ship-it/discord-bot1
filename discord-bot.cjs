@@ -20,7 +20,7 @@ const {
 const http = require('http');
 const dns = require('dns');
 dns.setServers(['8.8.8.8', '1.1.1.1']);
-console.log('[EAM.LOL] DNS set to Google DNS (8.8.8.8, 1.1.1.1)');
+console.log('[INFO] [EAM.LOL] DNS set to Google DNS (8.8.8.8, 1.1.1.1)');
 
 const client = new Client({
     intents: [
@@ -114,7 +114,7 @@ function switchToNextAccount(currentLabel) {
     for (const acc of ordered) {
         if (acc.label === currentLabel) continue;
         if (!isTokenExpiredObj({ bearer: acc.refresh_token })) {
-            console.log(`[EAM.LOL] Switching to ${acc.label}`);
+            console.log(`[INFO] [EAM.LOL] Switching to ${acc.label}`);
             return acc;
         }
     }
@@ -137,7 +137,7 @@ function getTokenExpiryMs(token) {
     if (p && typeof p.exp === 'number') {
         return p.exp * 1000;
     }
-    console.warn('[EAM.LOL] No exp claim in token, defaulting to 1 hour expiry.');
+    console.warn('[WARN] [EAM.LOL] No exp claim in token, defaulting to 1 hour expiry.');
     return Date.now() + 3600 * 1000;
 }
 
@@ -284,7 +284,7 @@ async function doRefresh(tokens) {
         if (newExpiry <= Date.now()) throw new Error('Refreshed token already expired');
         tokens.bearer = newBearer;
         tokens.refresh_token = newRefresh;
-        console.log(`[EAM.LOL] Token refreshed! Expires: ${new Date(newExpiry).toISOString()}`);
+        console.log(`[SUCCESS] [EAM.LOL] Token refreshed! Expires: ${new Date(newExpiry).toISOString()}`);
         return tokens;
     } catch (err) {
         clearTimeout(timeoutId);
@@ -330,7 +330,7 @@ async function refreshToken(refreshTk) {
     } catch (err) {
         const httpCode = err.httpCode || 0;
         if (httpCode === 401 || httpCode === 403) {
-            console.log(`[EAM.LOL] Auth error on ${activeAccountLabel} — trying next account...`);
+            console.log(`[WARN] [EAM.LOL] Auth error on ${activeAccountLabel} - trying next account...`);
             const nextAcc = switchToNextAccount(activeAccountLabel);
             if (nextAcc) {
                 activeAccountLabel = nextAcc.label;
@@ -348,10 +348,10 @@ async function refreshToken(refreshTk) {
                         username: tokenStock[0].username || 'System'
                     };
                 }
-                console.log(`[EAM.LOL] Switched to ${nextAcc.label} — new token ready`);
+                console.log(`[SUCCESS] [EAM.LOL] Switched to ${nextAcc.label} - new token ready`);
                 return { success: true, bearer: nextAcc.token, refresh: nextAcc.refresh_token, expiresAt: newExpiry };
             }
-            console.log('[EAM.LOL] All accounts exhausted');
+            console.log('[ERROR] [EAM.LOL] All accounts exhausted');
         }
         return { success: false, error: err.message };
     }
@@ -362,7 +362,7 @@ function updateAccountTokens(oldRefresh, newBearer, newRefresh) {
         if (accounts[i].refresh_token === oldRefresh) {
             accounts[i].token = newBearer;
             accounts[i].refresh_token = newRefresh;
-            console.log(`[EAM.LOL] Updated ${accounts[i].label}`);
+            console.log(`[INFO] [EAM.LOL] Updated ${accounts[i].label}`);
             return;
         }
     }
@@ -397,9 +397,9 @@ function giveNewTokenFromAccounts() {
                 username: 'System'
             });
         }
-        console.log(`[EAM.LOL] New token loaded from ${acc.label} – expires ${new Date(newExpiry).toUTCString()}`);
+        console.log(`[SUCCESS] [EAM.LOL] New token loaded from ${acc.label} - expires ${new Date(newExpiry).toUTCString()}`);
     } else {
-        console.log('[EAM.LOL] No valid accounts left! Falling back to hardcoded default token.');
+        console.log('[ERROR] [EAM.LOL] No valid accounts left! Falling back to hardcoded default token.');
         DEFAULT_TOKEN.bearer = DEFAULT_TOKEN.bearer;
         DEFAULT_TOKEN.refresh_token = DEFAULT_TOKEN.refresh_token;
         const newExpiry = getTokenExpiryMs(DEFAULT_TOKEN.bearer);
@@ -424,41 +424,41 @@ function giveNewTokenFromAccounts() {
                 username: 'System'
             });
         }
-        console.log(`[EAM.LOL] Using hardcoded default token – expires ${new Date(newExpiry).toUTCString()}`);
+        console.log(`[WARN] [EAM.LOL] Using hardcoded default token - expires ${new Date(newExpiry).toUTCString()}`);
     }
 }
 
 // --- REFRESHER LOGIC (FORCED EVERY 2:30 MINUTES) ---
 async function refreshTokenInStock() {
     if (isGenerating) {
-        console.log('[EAM.LOL] Skipping auto-refresh — generation in progress');
+        console.log('[INFO] [EAM.LOL] Skipping auto-refresh - generation in progress');
         return;
     }
     if (tokenStock.length === 0) {
-        console.log('[EAM.LOL] Stock empty – loading from accounts...');
+        console.log('[INFO] [EAM.LOL] Stock empty - loading from accounts...');
         giveNewTokenFromAccounts();
         return;
     }
     
     const tokenObj = tokenStock[0];
     if (!tokenObj.refresh) {
-        console.log('[EAM.LOL] No refresh token in stock – loading new token...');
+        console.log('[ERROR] [EAM.LOL] No refresh token in stock - loading new token...');
         giveNewTokenFromAccounts();
         return;
     }
 
-    console.log('[EAM.LOL] 2:30 interval reached - Forcing token refresh...');
+    console.log('[REFRESH] [EAM.LOL] 2:30 interval reached - Forcing token refresh...');
     try {
         const result = await refreshToken(tokenObj.refresh);
         if (result.success) {
-            console.log('[EAM.LOL] Token refreshed successfully! Max TTL applied.');
+            console.log('[SUCCESS] [EAM.LOL] Token refreshed successfully! Max TTL applied.');
             consecutiveFails = 0;
         } else {
-            console.log('[EAM.LOL] Refresh failed — getting new token from accounts...');
+            console.log('[ERROR] [EAM.LOL] Refresh failed - getting new token from accounts...');
             giveNewTokenFromAccounts();
         }
     } catch (err) {
-        console.error('[EAM.LOL] Error during refresh:', err);
+        console.error('[ERROR] [EAM.LOL] Error during refresh:', err);
         giveNewTokenFromAccounts();
     }
 }
@@ -468,7 +468,7 @@ function checkAndRemoveExpiredStock() {
     const now = Date.now();
     const expiredTokens = tokenStock.filter(t => now >= t.expiresAt);
     if (expiredTokens.length > 0) {
-        console.log(`[EAM.LOL] Removing ${expiredTokens.length} expired token(s) from stock.`);
+        console.log(`[INFO] [EAM.LOL] Removing ${expiredTokens.length} expired token(s) from stock.`);
         tokenStock = tokenStock.filter(t => now < t.expiresAt);
         if (tokenStock.length === 0) giveNewTokenFromAccounts();
     }
@@ -477,7 +477,7 @@ function checkAndRemoveExpiredStock() {
 const AUTO_REFRESH_INTERVAL = 150 * 1000; // 2 minutes 30 seconds
 let refreshInterval = null;
 function startAutoRefresh() {
-    console.log('[EAM.LOL] AUTO-REFRESH STARTED (interval: 2m 30s)');
+    console.log('[SYSTEM] [EAM.LOL] AUTO-REFRESH STARTED (interval: 2m 30s)');
     setTimeout(async () => {
         await findWorkingApiUrl();
         if (tokenStock.length === 0 && accounts.length > 0) giveNewTokenFromAccounts();
@@ -543,7 +543,7 @@ function forceSetOwnToken(bearer, refresh) {
     DEFAULT_TOKEN.refresh_token = refresh;
     lastRefreshExpiry = getTokenExpiryMs(bearer);
     tokenStock = [{ bearer, refresh, addedAt: Date.now(), expiresAt: lastRefreshExpiry }];
-    console.log(`[EAM.LOL] Token manually set! Expires: ${new Date(lastRefreshExpiry).toUTCString()}`);
+    console.log(`[SUCCESS] [EAM.LOL] Token manually set! Expires: ${new Date(lastRefreshExpiry).toUTCString()}`);
 }
 
 // --- UI HELPERS (SLEEK) ---
@@ -711,7 +711,7 @@ async function processTokenGeneration(interaction, tierName) {
             components: []
         });
     } catch (err) {
-        console.error('[EAM.LOL] DM Error:', err);
+        console.error('[ERROR] [EAM.LOL] DM Error:', err);
         isGenerating = false;
         activeGenerations.delete(userId);
         return interaction.editReply({ content: 'Could not send DM. Please open your DMs.', components: [] });
@@ -793,14 +793,14 @@ const commandsData = [
 
 // --- READY ---
 client.once('ready', async () => {
-    console.log(`[EAM.LOL] ONLINE: ${client.user.tag}`);
+    console.log(`[SYSTEM] [EAM.LOL] ONLINE: ${client.user.tag}`);
     tokenStock = [{ bearer: DEFAULT_TOKEN.bearer, refresh: DEFAULT_TOKEN.refresh_token, addedAt: Date.now(), expiresAt: getTokenExpiryMs(DEFAULT_TOKEN.bearer) }];
     await findWorkingApiUrl();
     const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
     try {
         await rest.put(Routes.applicationCommands(client.user.id), { body: commandsData });
-        console.log('[EAM.LOL] Slash commands registered');
-    } catch (error) { console.error('[EAM.LOL] Failed to register commands:', error); }
+        console.log('[SUCCESS] [EAM.LOL] Slash commands registered');
+    } catch (error) { console.error('[ERROR] [EAM.LOL] Failed to register commands:', error); }
     startAutoRefresh();
 });
 
@@ -1393,7 +1393,7 @@ client.on('interactionCreate', async interaction => {
             }
         }
     } catch (err) {
-        console.error(`[EAM.LOL] Interaction Error:`, err);
+        console.error(`[ERROR] [EAM.LOL] Interaction Error:`, err);
         if (!interaction.replied && !interaction.deferred) interaction.reply({ content: "An error occurred.", flags: 64 }).catch(() => {});
     }
 });
@@ -1433,24 +1433,24 @@ const server = http.createServer((req, res) => {
     res.end('EAM.LOL Token Generator Bot is active.\nAuto-refreshes smartly.\nCredits to @elliott\n');
 });
 const PORT = process.env.PORT || 10000;
-server.listen(PORT, '0.0.0.0', () => console.log(`[EAM.LOL] HTTP server on port ${PORT}`));
+server.listen(PORT, '0.0.0.0', () => console.log(`[SYSTEM] [EAM.LOL] HTTP server on port ${PORT}`));
 
 // --- LOGIN ---
-if (!process.env.DISCORD_TOKEN) console.error('[EAM.LOL] DISCORD_TOKEN missing.');
+if (!process.env.DISCORD_TOKEN) console.error('[ERROR] [EAM.LOL] DISCORD_TOKEN missing.');
 else {
     async function loginWithRetry(attempts = 5) {
         for (let i = 1; i <= attempts; i++) {
             try {
-                console.log(`[EAM.LOL] Login attempt ${i}/${attempts}...`);
+                console.log(`[INFO] [EAM.LOL] Login attempt ${i}/${attempts}...`);
                 await Promise.race([client.login(process.env.DISCORD_TOKEN), new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), 30000))]);
-                console.log('[EAM.LOL] Login successful!');
+                console.log('[SUCCESS] [EAM.LOL] Login successful!');
                 return true;
-            } catch (err) { console.error(`[EAM.LOL] Attempt ${i} failed:`, err.message); if (i === attempts) return false; await new Promise(r => setTimeout(r, 5000 * i)); }
+            } catch (err) { console.error(`[ERROR] [EAM.LOL] Attempt ${i} failed:`, err.message); if (i === attempts) return false; await new Promise(r => setTimeout(r, 5000 * i)); }
         }
         return false;
     }
-    loginWithRetry().then(success => { if (!success) console.error('[EAM.LOL] Failed to connect.'); });
+    loginWithRetry().then(success => { if (!success) console.error('[ERROR] [EAM.LOL] Failed to connect.'); });
 }
 
-process.on('unhandledRejection', (reason) => console.error('[EAM.LOL] Unhandled Rejection:', reason));
-process.on('uncaughtException', (err) => console.error('[EAM.LOL] Uncaught Exception:', err));
+process.on('unhandledRejection', (reason) => console.error('[ERROR] [EAM.LOL] Unhandled Rejection:', reason));
+process.on('uncaughtException', (err) => console.error('[ERROR] [EAM.LOL] Uncaught Exception:', err));
