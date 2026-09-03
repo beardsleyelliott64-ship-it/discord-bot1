@@ -63,8 +63,8 @@ let apiWorking = false;
 
 // --- TOKEN STORAGE ---
 let DEFAULT_TOKEN = {
-  "bearer": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0aWQiOiJlZjgyYjk2NS1iYzVmLTQ3NjktODc1Zi0zMDA3Zjg0OWZkNTQiLCJ1aWQiOiJhMzQ5MTgxOS1lZGNkLTRiZDEtOTJkNS1hODJjZjk5NzBhNjYiLCJ1c24iOiIwelVHYjBrTVhyRGl0b1FYIiwidnJzIjp7ImF1dGhJRCI6IjU3OGQzOThkYzM1NTRiYzc4ZmI1YmVjMzNhM2Q3NzdiIiwiY2xpZW50VXNlckFnZW50IjoiU3RlYW1WUiA5Ljk5LjkuOTk5OV9mZmZmZmZmZiIsImRldmljZUlEIjoiMTgzNTc2MWMyYThiNmM2MjliOTlmZmY5ZWRmZjI4OWQ3ZjNlYTEyOCJ9LCJleHAiOjE3ODgyMjU0OTYsImlhdCI6MTc4ODIyMTg5Nn0.zsyuyJcY7DJUe9ftCFbeJZc5jgIosg32Jm4pyw7GXKs",
-  "refresh_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0aWQiOiJlZjgyYjk2NS1iYzVmLTQ3NjktODc1Zi0zMDA3Zjg0OWZkNTQiLCJ1aWQiOiJhMzQ5MTgxOS1lZGNkLTRiZDEtOTJkNS1hODJjZjk5NzBhNjYiLCJ1c24iOiIwelVHYjBrTVhyRGl0b1FYIiwidnJzIjp7ImF1dGhJRCI6IjU3OGQzOThkYzM1NTRiYzc4ZmI1YmVjMzNhM2Q3NzdiIiwiY2xpZW50VXNlckFnZW50IjoiU3RlYW1WUiA5Ljk5LjkuOTk5OV9mZmZmZmZmZiIsImRldmljZUlEIjoiMTgzNTc2MWMyYThiNmM2MjliOTlmZmY5ZWRmZjI4OWQ3ZjNlYTEyOCJ9LCJleHAiOjE3ODgyNDM0OTYsImlhdCI6MTc4ODIyMTg5Nn0.yMAjCc1nx-TxRlWsN6ftjju6U3nxn5N7r2SqcpYCIHE"
+  "bearer": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0aWQiOiI3YWQ2YjZkZS01MTk4LTRhYmMtYjk0ZC1kODZkZGI3OTRjNDciLCJ1aWQiOiI2ZmQ2MTBmNS1hMDcxLTQyZDgtYTdhMS0zZmE2MDdlNTZhNWIiLCJ1c24iOiJCS1c3dkRVUDJLT1FuUWxGIiwidnJzIjp7ImF1dGhJRCI6IjdhNTUxNjVmZGVjOTQ4YjQ5NTg5MmY5ODFkM2RkNjRlIiwiY2xpZW50VXNlckFnZW50IjoiU3RlYW1WUiA5Ljk5LjkuOTk5OV9mZmZmZmZmZiIsImRldmljZUlEIjoiMTgzNTc2MWMyYThiNmM2MjliOTlmZmY5ZWRmZjI4OWQ3ZjNlYTEyOCJ9LCJleHAiOjE3ODg0NjIyMDEsImlhdCI6MTc4ODQ1NTQwNX0.gQe94DQR-3Ry9Z08Xs6sv3FhhHzxVSLfKLcs3LahmWw",
+  "refresh_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0aWQiOiI3YWQ2YjZkZS01MTk4LTRhYmMtYjk0ZC1kODZkZGI3OTRjNDciLCJ1aWQiOiI2ZmQ2MTBmNS1hMDcxLTQyZDgtYTdhMS0zZmE2MDdlNTZhNWIiLCJ1c24iOiJCS1c3dkRVUDJLT1FuUWxGIiwidnJzIjp7ImF1dGhJRCI6IjdhNTUxNjVmZGVjOTQ4YjQ5NTg5MmY5ODFkM2RkNjRlIiwiY2xpZW50VXNlckFnZW50IjoiU3RlYW1WUiA5Ljk5LjkuOTk5OV9mZmZmZmZmZiIsImRldmljZUlEIjoiMTgzNTc2MWMyYThiNmM2MjliOTlmZmY5ZWRmZjI4OWQ3ZjNlYTEyOCJ9LCJleHAiOjE3ODg0ODAyMDEsImlhdCI6MTc4ODQ1NTQwNX0.45LM2bOaCSPMcYsozRz_O9NRR0y_QiDFnLTFIUf-0O4"
 };
 let tokenStock = [];
 const cooldowns = new Map();
@@ -137,20 +137,25 @@ function getTokenExpiryMs(token) {
     if (p && typeof p.exp === 'number') {
         return p.exp * 1000;
     }
-    console.warn('[WARN] [EAM.LOL] No exp claim in token, defaulting to 1 hour expiry.');
-    return Date.now() + 3600 * 1000;
+    console.warn('[WARN] [EAM.LOL] Token has no valid expiry claim, returning null.');
+    return null;
 }
 
 function isTokenExpiredObj(tokenObj) {
     if (!tokenObj || !tokenObj.bearer) return true;
-    return Date.now() >= getTokenExpiryMs(tokenObj.bearer);
+    const expiry = getTokenExpiryMs(tokenObj.bearer);
+    if (expiry === null) return true;
+    return Date.now() >= expiry;
 }
 
 function secondsUntilExpiry(tokenStr) {
-    return Math.floor((getTokenExpiryMs(tokenStr) - Date.now()) / 1000);
+    const expiry = getTokenExpiryMs(tokenStr);
+    if (expiry === null) return null;
+    return Math.floor((expiry - Date.now()) / 1000);
 }
 
 function formatRemainingTime(expiresAt) {
+    if (expiresAt === null || isNaN(expiresAt)) return 'UNKNOWN';
     const diff = expiresAt - Date.now();
     if (diff <= 0) return 'EXPIRED';
     const seconds = Math.floor(diff / 1000);
@@ -164,24 +169,28 @@ function formatRemainingTime(expiresAt) {
 }
 
 function humanExpiry(expiresAt) {
+    if (expiresAt === null || isNaN(expiresAt)) return 'UNKNOWN';
     const diff = expiresAt - Date.now();
     if (diff <= 0) return 'EXPIRED';
     return `expires in ${formatRemainingTime(expiresAt)} (${new Date(expiresAt).toUTCString()})`;
 }
 
-// --- TOKEN VALIDATION (Now includes Refresh Token Check) ---
+// --- TOKEN VALIDATION ---
 async function validateTokenDetails(bearerToken, refreshToken = null) {
     const expiry = getTokenExpiryMs(bearerToken);
-    const expired = Date.now() >= expiry;
+    const hasExpiry = expiry !== null;
+    const expired = hasExpiry && Date.now() >= expiry;
 
-    // Check Refresh Token if provided
     let refreshExpiry = null;
     let refreshExpired = false;
+    let refreshHasExpiry = false;
     let refreshSecondsRemaining = null;
+
     if (refreshToken) {
         refreshExpiry = getTokenExpiryMs(refreshToken);
-        refreshExpired = Date.now() >= refreshExpiry;
-        refreshSecondsRemaining = Math.floor((refreshExpiry - Date.now()) / 1000);
+        refreshHasExpiry = refreshExpiry !== null;
+        refreshExpired = refreshHasExpiry && Date.now() >= refreshExpiry;
+        refreshSecondsRemaining = refreshHasExpiry ? Math.floor((refreshExpiry - Date.now()) / 1000) : null;
     }
 
     let apiValid = false;
@@ -212,15 +221,18 @@ async function validateTokenDetails(bearerToken, refreshToken = null) {
         apiValid = !expired;
         apiError = err.message;
     }
+
     return {
-        valid: !expired && apiValid,
+        valid: hasExpiry && !expired && apiValid,
         expired,
         expiry,
+        hasExpiry,
         apiValid,
         apiError,
-        secondsRemaining: Math.floor((expiry - Date.now()) / 1000),
+        secondsRemaining: hasExpiry ? Math.floor((expiry - Date.now()) / 1000) : null,
         refreshExpiry,
         refreshExpired,
+        refreshHasExpiry,
         refreshSecondsRemaining
     };
 }
@@ -255,7 +267,7 @@ async function refreshTokenOnly(refreshTk) {
         const newRefresh = data.refresh_token || refreshTk;
         if (!newBearer) throw new Error('No token in response');
         const newExpiry = getTokenExpiryMs(newBearer);
-        if (newExpiry <= Date.now()) throw new Error('Refreshed token already expired');
+        if (newExpiry === null || newExpiry <= Date.now()) throw new Error('Refreshed token already expired or invalid');
         return { success: true, bearer: newBearer, refresh: newRefresh, expiresAt: newExpiry };
     } catch (err) {
         return { success: false, error: err.message };
@@ -295,7 +307,7 @@ async function doRefresh(tokens) {
         if (!newBearer) throw new Error('No token in response');
         if (newBearer === tokens.refresh_token) throw new Error('Refresh returned identical token');
         const newExpiry = getTokenExpiryMs(newBearer);
-        if (newExpiry <= Date.now()) throw new Error('Refreshed token already expired');
+        if (newExpiry === null || newExpiry <= Date.now()) throw new Error('Refreshed token already expired or invalid');
         tokens.bearer = newBearer;
         tokens.refresh_token = newRefresh;
         console.log(`[SUCCESS] [EAM.LOL] Token refreshed! Expires: ${new Date(newExpiry).toISOString()}`);
@@ -614,13 +626,6 @@ async function updateGenerationEmbed(interaction, step, message, ttl = null) {
     await interaction.editReply({ embeds: [embed], components: [row] });
 }
 
-// --- HELPER FOR EXPIRATION-BASED FILENAMES ---
-function getExpiryFileName(expiresAt, extension) {
-    const date = new Date(expiresAt);
-    const iso = date.toISOString().replace(/:/g, '-').replace(/\.\d{3}Z$/, 'Z');
-    return `token-exp-${iso}.${extension}`;
-}
-
 // --- PROCESS TOKEN GENERATION ---
 async function processTokenGeneration(interaction, tierName) {
     const userId = interaction.user.id;
@@ -711,10 +716,11 @@ async function processTokenGeneration(interaction, tierName) {
     };
     const jsonString = JSON.stringify(tokenData, null, 2);
     const jsonBuffer = Buffer.from(jsonString, 'utf-8');
-    const attachment = new AttachmentBuilder(jsonBuffer, { name: getExpiryFileName(tokenObj.expiresAt, 'json') });
+    const attachment = new AttachmentBuilder(jsonBuffer, { name: 'token.json' });
+
     const textVersion = `EAM.LOL TOKEN GENERATOR\n----------------------------------------\nBEARER TOKEN:\n${tokenObj.bearer}\nREFRESH TOKEN:\n${tokenObj.refresh}\nGENERATION ID:\n${genId}\n----------------------------------------\nExpires: ${expiryText}\nSeconds left: ${ttl}s\nAuto-Refresh: Constantly\n----------------------------------------`;
     const textBuffer = Buffer.from(textVersion, 'utf-8');
-    const textAttachment = new AttachmentBuilder(textBuffer, { name: getExpiryFileName(tokenObj.expiresAt, 'txt') });
+    const textAttachment = new AttachmentBuilder(textBuffer, { name: 'token.txt' });
 
     const successEmbed = new EmbedBuilder()
         .setTitle('◆ SECURE TOKEN RECEIPT ◆')
@@ -863,16 +869,17 @@ client.on('interactionCreate', async interaction => {
             if (commandName === 'check-expiry') {
                 const token = options.getString('token');
                 const expiry = getTokenExpiryMs(token);
-                const isExpired = Date.now() >= expiry;
-                const remaining = secondsUntilExpiry(token);
+                const hasExpiry = expiry !== null;
+                const isExpired = hasExpiry && Date.now() >= expiry;
+                const remaining = hasExpiry ? secondsUntilExpiry(token) : null;
                 const embed = new EmbedBuilder()
                     .setTitle('◆ EXPIRY CHECK ◆')
                     .addFields(
-                        { name: 'Status', value: isExpired ? 'EXPIRED' : 'VALID', inline: true },
-                        { name: 'Expires At', value: new Date(expiry).toUTCString(), inline: true },
-                        { name: 'Remaining', value: isExpired ? '0s' : `${remaining}s`, inline: true }
+                        { name: 'Status', value: isExpired ? 'EXPIRED' : (hasExpiry ? 'VALID' : 'UNKNOWN'), inline: true },
+                        { name: 'Expires At', value: hasExpiry ? new Date(expiry).toUTCString() : 'N/A', inline: true },
+                        { name: 'Remaining', value: hasExpiry ? (isExpired ? '0s' : `${remaining}s`) : 'UNKNOWN', inline: true }
                     )
-                    .setColor(isExpired ? 0xED4245 : 0x2ECC71)
+                    .setColor(isExpired ? 0xED4245 : (hasExpiry ? 0x2ECC71 : 0xFEE75C))
                     .setFooter({ text: getLiveUIStats(interaction) });
                 return interaction.reply({ embeds: [embed], flags: 64 });
             }
@@ -901,10 +908,10 @@ client.on('interactionCreate', async interaction => {
                     const tokenData = { token: { bearer: tokenObj.bearer, refresh_token: tokenObj.refresh, expires_at: new Date(tokenObj.expiresAt).toISOString(), seconds_remaining: ttl, added_at: new Date().toISOString(), generation_id: genId }, message: "EAM.LOL Token Generator", credits: "@elliott", auto_refresh: "Refreshed automatically" };
                     const jsonString = JSON.stringify(tokenData, null, 2);
                     const jsonBuffer = Buffer.from(jsonString, 'utf-8');
-                    const attachment = new AttachmentBuilder(jsonBuffer, { name: getExpiryFileName(tokenObj.expiresAt, 'json') });
+                    const attachment = new AttachmentBuilder(jsonBuffer, { name: 'token.json' });
                     const textVersion = `EAM.LOL TOKEN GENERATOR\n----------------------------------------\nBEARER TOKEN:\n${tokenObj.bearer}\nREFRESH TOKEN:\n${tokenObj.refresh}\nGENERATION ID:\n${genId}\n----------------------------------------\nExpires: ${expiryText}\nSeconds left: ${ttl}s\nAuto-Refresh: Constantly\n----------------------------------------`;
                     const textBuffer = Buffer.from(textVersion, 'utf-8');
-                    const textAttachment = new AttachmentBuilder(textBuffer, { name: getExpiryFileName(tokenObj.expiresAt, 'txt') });
+                    const textAttachment = new AttachmentBuilder(textBuffer, { name: 'token.txt' });
                     const embed = new EmbedBuilder()
                         .setTitle('◆ SECURE TOKEN RECEIPT ◆')
                         .setDescription(
@@ -1185,7 +1192,6 @@ client.on('interactionCreate', async interaction => {
                 return;
             }
 
-            // REMOVED ADMIN CHECK FROM DONATE BUTTON
             if (interaction.customId === 'donate_token_btn') {
                 const modal = new ModalBuilder().setCustomId('donate_token_modal').setTitle('Donate Token JSON');
                 const jsonInput = new TextInputBuilder().setCustomId('donate_json_input').setLabel('Paste your JSON here').setStyle(TextInputStyle.Paragraph).setPlaceholder('{"refresh_token":"...","token":"..."}').setRequired(true).setMinLength(20).setMaxLength(2000);
@@ -1193,7 +1199,6 @@ client.on('interactionCreate', async interaction => {
                 return await interaction.showModal(modal);
             }
 
-            // REMOVED ADMIN CHECK FROM CHECK BUTTON
             if (interaction.customId === 'check_token_btn') {
                 const modal = new ModalBuilder().setCustomId('check_token_modal').setTitle('Check Token JSON');
                 const jsonInput = new TextInputBuilder().setCustomId('check_json_input').setLabel('Paste your JSON here').setStyle(TextInputStyle.Paragraph).setPlaceholder('{"token":"...","refresh_token":"..."}').setRequired(true).setMinLength(20).setMaxLength(2000);
@@ -1201,7 +1206,6 @@ client.on('interactionCreate', async interaction => {
                 return await interaction.showModal(modal);
             }
 
-            // REMOVED ADMIN CHECK FROM SPLIT BUTTON
             if (interaction.customId === 'split_token_btn') {
                 const modal = new ModalBuilder().setCustomId('split_token_modal').setTitle('Split Token JSON');
                 const jsonInput = new TextInputBuilder().setCustomId('split_json_input').setLabel('Paste your JSON here').setStyle(TextInputStyle.Paragraph).setPlaceholder('{"token":"...","refresh_token":"..."}').setRequired(true).setMinLength(20).setMaxLength(2000);
@@ -1344,7 +1348,6 @@ client.on('interactionCreate', async interaction => {
                 } else return interaction.editReply({ content: `Invalid code: \`${code}\`` });
             }
 
-            // REMOVED ADMIN CHECK FROM DONATE MODAL
             if (interaction.customId === 'donate_token_modal') {
                 await interaction.deferReply({ flags: 64 });
                 const jsonRaw = interaction.fields.getTextInputValue('donate_json_input').trim();
@@ -1360,7 +1363,7 @@ client.on('interactionCreate', async interaction => {
                 }
                 if (!bearer || !refresh) return interaction.editReply({ content: 'Missing `token` (or bearer) and/or `refresh_token` in the JSON.' });
                 const expiry = getTokenExpiryMs(bearer);
-                if (Date.now() >= expiry) {
+                if (expiry !== null && Date.now() >= expiry) {
                     const refreshResult = await refreshTokenOnly(refresh);
                     if (!refreshResult.success) return interaction.editReply({ content: `Token expired and refresh failed: ${refreshResult.error}` });
                     const newBearer = refreshResult.bearer;
@@ -1373,7 +1376,7 @@ client.on('interactionCreate', async interaction => {
                     if (!accounts.find(a => a.refresh_token === newRefresh)) accounts.push({ token: newBearer, refresh_token: newRefresh, label: `donated_${Date.now()}` });
                     return interaction.editReply({ content: `Token donated and refreshed successfully! New token added to stock (${tokenStock.length} total). ID: \`${genId}\` Expires: ${humanExpiry(newExpiry)}` });
                 } else {
-                    const validation = await validateTokenDetails(bearer);
+                    const validation = await validateTokenDetails(bearer, refresh);
                     if (!validation.valid) return interaction.editReply({ content: `Token validation failed.` });
                     const genId = generateGenerationId();
                     tokenStock.push({ bearer: bearer, refresh: refresh, addedAt: Date.now(), expiresAt: expiry, id: genId, userId: interaction.user.id, username: interaction.user.tag });
@@ -1382,7 +1385,6 @@ client.on('interactionCreate', async interaction => {
                 }
             }
 
-            // --- UPGRADED CHECK TOKEN MODAL ---
             if (interaction.customId === 'check_token_modal') {
                 await interaction.deferReply({ flags: 64 });
                 const jsonRaw = interaction.fields.getTextInputValue('check_json_input').trim();
@@ -1406,17 +1408,18 @@ client.on('interactionCreate', async interaction => {
                     .addFields(
                         { name: 'Bearer Token', value: `\`${bearer.slice(0, 30)}...\` (${bearer.length} chars)`, inline: false },
                         { name: 'Refresh Token', value: `\`${refresh.slice(0, 30)}...\` (${refresh.length} chars)`, inline: false },
-                        { name: 'Bearer Status', value: validation.valid ? '✔ VALID' : '✕ INVALID', inline: true },
-                        { name: 'Refresh Status', value: validation.refreshExpired ? '✕ EXPIRED' : '✔ VALID', inline: true },
-                        { name: 'Bearer Expires', value: new Date(validation.expiry).toUTCString(), inline: true },
-                        { name: 'Bearer Remaining', value: validation.secondsRemaining > 0 ? `${validation.secondsRemaining}s` : 'Expired', inline: true },
-                        { name: 'Refresh Expires', value: validation.refreshExpiry ? new Date(validation.refreshExpiry).toUTCString() : 'N/A', inline: true },
-                        { name: 'Refresh Remaining', value: validation.refreshSecondsRemaining > 0 ? `${validation.refreshSecondsRemaining}s` : (validation.refreshExpiry ? 'Expired' : 'N/A'), inline: true },
+                        { name: 'Bearer Status', value: validation.hasExpiry && validation.valid ? '✔ VALID' : (validation.hasExpiry ? '✕ INVALID' : '✕ UNKNOWN'), inline: true },
+                        { name: 'Refresh Status', value: validation.refreshHasExpiry && !validation.refreshExpired ? '✔ VALID' : (validation.refreshHasExpiry ? '✕ EXPIRED' : '✕ UNKNOWN'), inline: true },
+                        { name: 'Bearer Expires', value: validation.hasExpiry ? new Date(validation.expiry).toUTCString() : 'UNKNOWN', inline: true },
+                        { name: 'Bearer Remaining', value: validation.hasExpiry ? (validation.secondsRemaining > 0 ? `${validation.secondsRemaining}s` : 'Expired') : 'UNKNOWN', inline: true },
+                        { name: 'Refresh Expires', value: validation.refreshHasExpiry ? new Date(validation.refreshExpiry).toUTCString() : 'UNKNOWN', inline: true },
+                        { name: 'Refresh Remaining', value: validation.refreshHasExpiry ? (validation.refreshSecondsRemaining > 0 ? `${validation.refreshSecondsRemaining}s` : 'Expired') : 'UNKNOWN', inline: true },
                         { name: 'API Validation', value: validation.apiValid ? '✔ Passed' : `✕ ${validation.apiError || 'Failed'}`, inline: false }
                     )
                     .setFooter({ text: getLiveUIStats(interaction) });
                 
-                if (!validation.valid) embed.setDescription('> This token is invalid – it may be expired, revoked, or the refresh token is dead.');
+                if (!validation.hasExpiry || !validation.refreshHasExpiry) embed.setDescription('> This token does not have a valid expiry claim. It is likely malformed or invalid.');
+                else if (!validation.valid) embed.setDescription('> This token is invalid – it may be expired, revoked, or the refresh token is dead.');
                 else embed.setDescription('> Token is valid and ready for use.');
                 
                 embed.addFields(
@@ -1430,7 +1433,6 @@ client.on('interactionCreate', async interaction => {
                 return interaction.editReply({ embeds: [embed], components: [row2] });
             }
 
-            // REMOVED ADMIN CHECK FROM SPLIT MODAL
             if (interaction.customId === 'split_token_modal') {
                 await interaction.deferReply({ flags: 64 });
                 const jsonRaw = interaction.fields.getTextInputValue('split_json_input').trim();
@@ -1491,17 +1493,14 @@ client.on('interactionCreate', async interaction => {
         }
         if (!token) return interaction.reply({ content: 'No token found.', flags: 64 });
 
-        // Immediately defer to prevent timeouts
         await interaction.deferReply({ flags: 64 });
 
-        // Attempt to DM the user the token
         try {
             await interaction.user.send({ content: `**${type.charAt(0).toUpperCase() + type.slice(1)} Token**\n\`\`\`\n${token}\n\`\`\`` });
         } catch (dmErr) {
-            // If DMs are closed, just continue (we will show it in the interaction)
+            // DM closed, just ignore
         }
 
-        // Now edit the interaction with the copied token
         return interaction.editReply({ content: `**${type.charAt(0).toUpperCase() + type.slice(1)} Token copied!**\n\`\`\`\n${token}\n\`\`\`` });
     }
 });
