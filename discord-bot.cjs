@@ -63,8 +63,8 @@ let apiWorking = false;
 
 // --- TOKEN STORAGE ---
 let DEFAULT_TOKEN = {
-  "bearer": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0aWQiOiI3YWQ2YjZkZS01MTk4LTRhYmMtYjk0ZC1kODZkZGI3OTRjNDciLCJ1aWQiOiI2ZmQ2MTBmNS1hMDcxLTQyZDgtYTdhMS0zZmE2MDdlNTZhNWIiLCJ1c24iOiJCS1c3dkRVUDJLT1FuUWxGIiwidnJzIjp7ImF1dGhJRCI6IjdhNTUxNjVmZGVjOTQ4YjQ5NTg5MmY5ODFkM2RkNjRlIiwiY2xpZW50VXNlckFnZW50IjoiU3RlYW1WUiA5Ljk5LjkuOTk5OV9mZmZmZmZmZiIsImRldmljZUlEIjoiMTgzNTc2MWMyYThiNmM2MjliOTlmZmY5ZWRmZjI4OWQ3ZjNlYTEyOCJ9LCJleHAiOjE3ODg0NjIyMDEsImlhdCI6MTc4ODQ1NTQwNX0.gQe94DQR-3Ry9Z08Xs6sv3FhhHzxVSLfKLcs3LahmWw",
-  "refresh_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0aWQiOiI3YWQ2YjZkZS01MTk4LTRhYmMtYjk0ZC1kODZkZGI3OTRjNDciLCJ1aWQiOiI2ZmQ2MTBmNS1hMDcxLTQyZDgtYTdhMS0zZmE2MDdlNTZhNWIiLCJ1c24iOiJCS1c3dkRVUDJLT1FuUWxGIiwidnJzIjp7ImF1dGhJRCI6IjdhNTUxNjVmZGVjOTQ4YjQ5NTg5MmY5ODFkM2RkNjRlIiwiY2xpZW50VXNlckFnZW50IjoiU3RlYW1WUiA5Ljk5LjkuOTk5OV9mZmZmZmZmZiIsImRldmljZUlEIjoiMTgzNTc2MWMyYThiNmM2MjliOTlmZmY5ZWRmZjI4OWQ3ZjNlYTEyOCJ9LCJleHAiOjE3ODg0ODAyMDEsImlhdCI6MTc4ODQ1NTQwNX0.45LM2bOaCSPMcYsozRz_O9NRR0y_QiDFnLTFIUf-0O4"
+  "bearer": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0aWQiOiI3YWQ2YjZkZS01MTk4LTRhYmMtYjk0ZC1kODZkZGI3OTRjNDciLCJ1aWQiOiI2ZmQ2MTBmNS1hMDcxLTQyZDgtYTdhMS0zZmE2MDdlNTZhNWIiLCJ1c24iOiJCS1c3dkRVUDJLT1FuUWxGIiwidnJzIjp7ImF1dGhJRCI6IjdhNTUxNjVmZGVjOTQ4YjQ5NTg5MmY5ODFkM2RkNjRlIiwiY2xpZW50VXNlckFnZW50IjoiU3RlYW1WUiA5Ljk5LjkuOTk5OV9mZmZmZmZmZiIsImRldmljZUlEIjoiMTgzNTc2MWMyYThiNmM2MjliOTlmZmY5ZWRmZjI4OWQ3ZjNlYTEyOCJ9LCJleHAiOjE3ODg0NjQwMjgsImlhdCI6MTc4ODQ1NTQwNX0.NYuM_TD_K5H74Gs-nLgb4Z7hhQ2BYXlU5Z36Ga4hgMw",
+  "refresh_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0aWQiOiI3YWQ2YjZkZS01MTk4LTRhYmMtYjk0ZC1kODZkZGI3OTRjNDciLCJ1aWQiOiI2ZmQ2MTBmNS1hMDcxLTQyZDgtYTdhMS0zZmE2MDdlNTZhNWIiLCJ1c24iOiJCS1c3dkRVUDJLT1FuUWxGIiwidnJzIjp7ImF1dGhJRCI6IjdhNTUxNjVmZGVjOTQ4YjQ5NTg5MmY5ODFkM2RkNjRlIiwiY2xpZW50VXNlckFnZW50IjoiU3RlYW1WUiA5Ljk5LjkuOTk5OV9mZmZmZmZmZiIsImRldmljZUlEIjoiMTgzNTc2MWMyYThiNmM2MjliOTlmZmY5ZWRmZjI4OWQ3ZjNlYTEyOCJ9LCJleHAiOjE3ODg0ODIwMjgsImlhdCI6MTc4ODQ1NTQwNX0.UKNLJKCb_1QaKGpAYKGrEh1wyKuEtxatr_rxhC5c0vc"
 };
 let tokenStock = [];
 const cooldowns = new Map();
@@ -79,6 +79,10 @@ let refreshAttempts = 0;
 let lastRefreshExpiry = 0;
 const MAX_FAILS = 5;
 let consecutiveFails = 0;
+
+// --- NEW: Cache for full tokens (for copy buttons) ---
+const tokenCache = new Map();          // messageId -> { bearer, refresh }
+let isRefreshing = false;             // lock for auto-refresh
 
 // --- MULTI-ACCOUNT SUPPORT ---
 function loadAccounts() {
@@ -504,15 +508,23 @@ const AUTO_REFRESH_INTERVAL = 150 * 1000; // 2 minutes 30 seconds
 let refreshInterval = null;
 function startAutoRefresh() {
     console.log('[SYSTEM] [EAM.LOL] AUTO-REFRESH STARTED (interval: 2m 30s)');
-    setTimeout(async () => {
-        await findWorkingApiUrl();
-        if (tokenStock.length === 0 && accounts.length > 0) giveNewTokenFromAccounts();
-        await refreshTokenInStock();
-        refreshInterval = setInterval(async () => {
+    // Clear any existing interval to be safe
+    if (refreshInterval) clearInterval(refreshInterval);
+    refreshInterval = setInterval(async () => {
+        if (isRefreshing) {
+            console.log('[INFO] [EAM.LOL] Refresh already in progress, skipping...');
+            return;
+        }
+        isRefreshing = true;
+        try {
             checkAndRemoveExpiredStock();
             await refreshTokenInStock();
-        }, AUTO_REFRESH_INTERVAL);
-    }, 2000);
+        } catch (err) {
+            console.error('[ERROR] [EAM.LOL] Auto-refresh error:', err);
+        } finally {
+            isRefreshing = false;
+        }
+    }, AUTO_REFRESH_INTERVAL);
 }
 
 // --- HELPERS ---
@@ -1430,7 +1442,13 @@ client.on('interactionCreate', async interaction => {
                     new ButtonBuilder().setCustomId(`copy_bearer_${Date.now()}`).setLabel('Copy Bearer').setStyle(ButtonStyle.Primary),
                     new ButtonBuilder().setCustomId(`copy_refresh_${Date.now()}`).setLabel('Copy Refresh').setStyle(ButtonStyle.Success)
                 );
-                return interaction.editReply({ embeds: [embed], components: [row2] });
+
+                // ---- NEW: Store the full tokens in cache and set auto-cleanup ----
+                const reply = await interaction.editReply({ embeds: [embed], components: [row2] });
+                const msg = await interaction.fetchReply();
+                tokenCache.set(msg.id, { bearer, refresh });
+                setTimeout(() => tokenCache.delete(msg.id), 10 * 60 * 1000); // auto-clear after 10 min
+                return;
             }
 
             if (interaction.customId === 'split_token_modal') {
@@ -1460,7 +1478,12 @@ client.on('interactionCreate', async interaction => {
                     new ButtonBuilder().setCustomId(`copy_bearer_${Date.now()}`).setLabel('Copy Bearer').setStyle(ButtonStyle.Primary),
                     new ButtonBuilder().setCustomId(`copy_refresh_${Date.now()}`).setLabel('Copy Refresh').setStyle(ButtonStyle.Success)
                 );
-                return interaction.editReply({ embeds: [embed], components: [row] });
+                // Also cache for this reply
+                const reply = await interaction.editReply({ embeds: [embed], components: [row] });
+                const msg = await interaction.fetchReply();
+                tokenCache.set(msg.id, { bearer, refresh });
+                setTimeout(() => tokenCache.delete(msg.id), 10 * 60 * 1000);
+                return;
             }
         }
     } catch (err) {
@@ -1469,38 +1492,47 @@ client.on('interactionCreate', async interaction => {
     }
 });
 
-// --- COPY BUTTON HANDLER (Fixed "Didn't respond in time") ---
+// --- COPY BUTTON HANDLER (now uses cache) ---
 client.on('interactionCreate', async interaction => {
     if (interaction.isButton() && interaction.customId.startsWith('copy_')) {
         const parts = interaction.customId.split('_');
         const type = parts[1]; // 'bearer' or 'refresh'
-        const embed = interaction.message.embeds[0];
-        if (!embed) return;
+        const msgId = interaction.message.id;
         let token = '';
-        for (const field of embed.fields) {
-            if (field.name.includes('Bearer') && type === 'bearer') {
-                const match = field.value.match(/```\n([\s\S]*?)\n```/);
-                if (match) token = match[1].trim();
-                else token = field.value.replace(/```\n/g, '').replace(/\n```/g, '').trim();
-                break;
-            }
-            if (field.name.includes('Refresh') && type === 'refresh') {
-                const match = field.value.match(/```\n([\s\S]*?)\n```/);
-                if (match) token = match[1].trim();
-                else token = field.value.replace(/```\n/g, '').replace(/\n```/g, '').trim();
-                break;
+
+        // 1) Try cache first (full token)
+        const cached = tokenCache.get(msgId);
+        if (cached) {
+            token = type === 'bearer' ? cached.bearer : cached.refresh;
+        } else {
+            // 2) Fallback to embed extraction (for older messages)
+            const embed = interaction.message.embeds[0];
+            if (embed) {
+                for (const field of embed.fields) {
+                    if (field.name.includes('Bearer') && type === 'bearer') {
+                        const match = field.value.match(/```\n([\s\S]*?)\n```/);
+                        token = match ? match[1].trim() : field.value.replace(/```\n/g, '').replace(/\n```/g, '').trim();
+                        break;
+                    }
+                    if (field.name.includes('Refresh') && type === 'refresh') {
+                        const match = field.value.match(/```\n([\s\S]*?)\n```/);
+                        token = match ? match[1].trim() : field.value.replace(/```\n/g, '').replace(/\n```/g, '').trim();
+                        break;
+                    }
+                }
             }
         }
+
         if (!token) return interaction.reply({ content: 'No token found.', flags: 64 });
 
         await interaction.deferReply({ flags: 64 });
 
+        // Send full token to DMs (silent if closed)
         try {
             await interaction.user.send({ content: `**${type.charAt(0).toUpperCase() + type.slice(1)} Token**\n\`\`\`\n${token}\n\`\`\`` });
-        } catch (dmErr) {
-            // DM closed, just ignore
-        }
+        } catch (_) {}
 
+        // Reply with the full token (not truncated)
         return interaction.editReply({ content: `**${type.charAt(0).toUpperCase() + type.slice(1)} Token copied!**\n\`\`\`\n${token}\n\`\`\`` });
     }
 });
