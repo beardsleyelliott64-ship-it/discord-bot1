@@ -80,9 +80,9 @@ let lastRefreshExpiry = 0;
 const MAX_FAILS = 5;
 let consecutiveFails = 0;
 
-// --- NEW: Cache for full tokens (for copy buttons) ---
-const tokenCache = new Map();          // messageId -> { bearer, refresh }
-let isRefreshing = false;             // lock for auto-refresh
+// --- Cache for full tokens (for copy buttons) ---
+const tokenCache = new Map();
+let isRefreshing = false;
 
 // --- MULTI-ACCOUNT SUPPORT ---
 function loadAccounts() {
@@ -125,7 +125,7 @@ function switchToNextAccount(currentLabel) {
     return null;
 }
 
-// --- JWT HELPERS (exact expiry) ---
+// --- JWT HELPERS ---
 function decodeJwt(token) {
     try {
         const part = (token || '').split('.')[1];
@@ -179,7 +179,7 @@ function humanExpiry(expiresAt) {
     return `expires in ${formatRemainingTime(expiresAt)} (${new Date(expiresAt).toUTCString()})`;
 }
 
-// --- TOKEN VALIDATION ---
+// --- VALIDATION ---
 async function validateTokenDetails(bearerToken, refreshToken = null) {
     const expiry = getTokenExpiryMs(bearerToken);
     const hasExpiry = expiry !== null;
@@ -241,7 +241,7 @@ async function validateTokenDetails(bearerToken, refreshToken = null) {
     };
 }
 
-// --- Refreshes a token without affecting global state ---
+// --- Refresh token (standalone) ---
 async function refreshTokenOnly(refreshTk) {
     const refreshUrl = `${ACTIVE_API_URL}/v2/account/session/refresh`;
     const controller = new AbortController();
@@ -278,7 +278,7 @@ async function refreshTokenOnly(refreshTk) {
     }
 }
 
-// --- TOKEN REFRESH (global) ---
+// --- Global refresh (updates DEFAULT_TOKEN and tokenStock) ---
 async function doRefresh(tokens) {
     const refreshUrl = `${ACTIVE_API_URL}/v2/account/session/refresh`;
     const controller = new AbortController();
@@ -314,7 +314,7 @@ async function doRefresh(tokens) {
         if (newExpiry === null || newExpiry <= Date.now()) throw new Error('Refreshed token already expired or invalid');
         tokens.bearer = newBearer;
         tokens.refresh_token = newRefresh;
-        console.log(`[SUCCESS] [EAM.LOL] Token refreshed! Expires: ${new Date(newExpiry).toISOString()}`);
+        console.log(`[SUCCESS] [EAM.LOL] Token refreshed! New expiry: ${new Date(newExpiry).toISOString()}`);
         return tokens;
     } catch (err) {
         clearTimeout(timeoutId);
@@ -333,7 +333,7 @@ async function refreshToken(refreshTk) {
         consecutiveFails = 0;
         lastRefreshExpiry = getTokenExpiryMs(result.bearer);
         updateAccountTokens(refreshTk, result.bearer, result.refresh_token);
-        await validateTokenDetails(result.bearer);
+        // Update tokenStock[0] with the new token
         if (tokenStock.length > 0) {
             const old = tokenStock[0];
             tokenStock[0] = {
@@ -356,6 +356,7 @@ async function refreshToken(refreshTk) {
                 username: 'System'
             });
         }
+        console.log(`[SUCCESS] [EAM.LOL] Token refreshed and stock updated. New expiry: ${humanExpiry(lastRefreshExpiry)}`);
         return { success: true, bearer: result.bearer, refresh: result.refresh_token, expiresAt: lastRefreshExpiry };
     } catch (err) {
         const httpCode = err.httpCode || 0;
@@ -368,15 +369,26 @@ async function refreshToken(refreshTk) {
                 DEFAULT_TOKEN.refresh_token = nextAcc.refresh_token;
                 const newExpiry = getTokenExpiryMs(nextAcc.token);
                 if (tokenStock.length > 0) {
+                    const old = tokenStock[0];
                     tokenStock[0] = {
                         bearer: nextAcc.token,
                         refresh: nextAcc.refresh_token,
                         addedAt: Date.now(),
                         expiresAt: newExpiry,
-                        id: tokenStock[0].id || generateGenerationId(),
-                        userId: tokenStock[0].userId || 'system',
-                        username: tokenStock[0].username || 'System'
+                        id: old.id || generateGenerationId(),
+                        userId: old.userId || 'system',
+                        username: old.username || 'System'
                     };
+                } else {
+                    tokenStock.push({
+                        bearer: nextAcc.token,
+                        refresh: nextAcc.refresh_token,
+                        addedAt: Date.now(),
+                        expiresAt: newExpiry,
+                        id: generateGenerationId(),
+                        userId: 'system',
+                        username: 'System'
+                    });
                 }
                 console.log(`[SUCCESS] [EAM.LOL] Switched to ${nextAcc.label} - new token ready`);
                 return { success: true, bearer: nextAcc.token, refresh: nextAcc.refresh_token, expiresAt: newExpiry };
@@ -407,14 +419,15 @@ function giveNewTokenFromAccounts() {
         activeAccountLabel = acc.label;
         const newExpiry = getTokenExpiryMs(acc.token);
         if (tokenStock.length > 0) {
+            const old = tokenStock[0];
             tokenStock[0] = {
                 bearer: acc.token,
                 refresh: acc.refresh_token,
                 addedAt: Date.now(),
                 expiresAt: newExpiry,
-                id: tokenStock[0].id || generateGenerationId(),
-                userId: tokenStock[0].userId || 'system',
-                username: tokenStock[0].username || 'System'
+                id: old.id || generateGenerationId(),
+                userId: old.userId || 'system',
+                username: old.username || 'System'
             };
         } else {
             tokenStock.push({
@@ -434,14 +447,15 @@ function giveNewTokenFromAccounts() {
         DEFAULT_TOKEN.refresh_token = DEFAULT_TOKEN.refresh_token;
         const newExpiry = getTokenExpiryMs(DEFAULT_TOKEN.bearer);
         if (tokenStock.length > 0) {
+            const old = tokenStock[0];
             tokenStock[0] = {
                 bearer: DEFAULT_TOKEN.bearer,
                 refresh: DEFAULT_TOKEN.refresh_token,
                 addedAt: Date.now(),
                 expiresAt: newExpiry,
-                id: tokenStock[0].id || generateGenerationId(),
-                userId: tokenStock[0].userId || 'system',
-                username: tokenStock[0].username || 'System'
+                id: old.id || generateGenerationId(),
+                userId: old.userId || 'system',
+                username: old.username || 'System'
             };
         } else {
             tokenStock.push({
@@ -458,12 +472,9 @@ function giveNewTokenFromAccounts() {
     }
 }
 
-// --- REFRESHER LOGIC (FORCED EVERY 2:30 MINUTES) ---
+// --- REFRESHER (called every 2:30) ---
 async function refreshTokenInStock() {
-    if (isGenerating) {
-        console.log('[INFO] [EAM.LOL] Skipping auto-refresh - generation in progress');
-        return;
-    }
+    // Always try to refresh, even if generating – we need the token to stay alive
     if (tokenStock.length === 0) {
         console.log('[INFO] [EAM.LOL] Stock empty - loading from accounts...');
         giveNewTokenFromAccounts();
@@ -481,7 +492,7 @@ async function refreshTokenInStock() {
     try {
         const result = await refreshToken(tokenObj.refresh);
         if (result.success) {
-            console.log('[SUCCESS] [EAM.LOL] Token refreshed successfully! Max TTL applied.');
+            console.log('[SUCCESS] [EAM.LOL] Token refreshed successfully! New expiry:', humanExpiry(result.expiresAt));
             consecutiveFails = 0;
         } else {
             console.log('[ERROR] [EAM.LOL] Refresh failed - getting new token from accounts...');
@@ -508,7 +519,6 @@ const AUTO_REFRESH_INTERVAL = 150 * 1000; // 2 minutes 30 seconds
 let refreshInterval = null;
 function startAutoRefresh() {
     console.log('[SYSTEM] [EAM.LOL] AUTO-REFRESH STARTED (interval: 2m 30s)');
-    // Clear any existing interval to be safe
     if (refreshInterval) clearInterval(refreshInterval);
     refreshInterval = setInterval(async () => {
         if (isRefreshing) {
@@ -584,7 +594,7 @@ function forceSetOwnToken(bearer, refresh) {
     console.log(`[SUCCESS] [EAM.LOL] Token manually set! Expires: ${new Date(lastRefreshExpiry).toUTCString()}`);
 }
 
-// --- ULTRA INFO-DENSE UI HELPERS ---
+// --- UI HELPERS ---
 function buildSleekProgress(step, total = 4, width = 16) {
     const filled = Math.round((step / total) * width);
     const empty = width - filled;
@@ -1443,11 +1453,11 @@ client.on('interactionCreate', async interaction => {
                     new ButtonBuilder().setCustomId(`copy_refresh_${Date.now()}`).setLabel('Copy Refresh').setStyle(ButtonStyle.Success)
                 );
 
-                // ---- NEW: Store the full tokens in cache and set auto-cleanup ----
+                // Cache full tokens for copy buttons
                 const reply = await interaction.editReply({ embeds: [embed], components: [row2] });
                 const msg = await interaction.fetchReply();
                 tokenCache.set(msg.id, { bearer, refresh });
-                setTimeout(() => tokenCache.delete(msg.id), 10 * 60 * 1000); // auto-clear after 10 min
+                setTimeout(() => tokenCache.delete(msg.id), 10 * 60 * 1000);
                 return;
             }
 
@@ -1478,7 +1488,6 @@ client.on('interactionCreate', async interaction => {
                     new ButtonBuilder().setCustomId(`copy_bearer_${Date.now()}`).setLabel('Copy Bearer').setStyle(ButtonStyle.Primary),
                     new ButtonBuilder().setCustomId(`copy_refresh_${Date.now()}`).setLabel('Copy Refresh').setStyle(ButtonStyle.Success)
                 );
-                // Also cache for this reply
                 const reply = await interaction.editReply({ embeds: [embed], components: [row] });
                 const msg = await interaction.fetchReply();
                 tokenCache.set(msg.id, { bearer, refresh });
@@ -1492,7 +1501,7 @@ client.on('interactionCreate', async interaction => {
     }
 });
 
-// --- COPY BUTTON HANDLER (now uses cache) ---
+// --- COPY BUTTON HANDLER (now uses cache for full tokens) ---
 client.on('interactionCreate', async interaction => {
     if (interaction.isButton() && interaction.customId.startsWith('copy_')) {
         const parts = interaction.customId.split('_');
@@ -1505,7 +1514,7 @@ client.on('interactionCreate', async interaction => {
         if (cached) {
             token = type === 'bearer' ? cached.bearer : cached.refresh;
         } else {
-            // 2) Fallback to embed extraction (for older messages)
+            // 2) Fallback to embed extraction
             const embed = interaction.message.embeds[0];
             if (embed) {
                 for (const field of embed.fields) {
@@ -1532,7 +1541,7 @@ client.on('interactionCreate', async interaction => {
             await interaction.user.send({ content: `**${type.charAt(0).toUpperCase() + type.slice(1)} Token**\n\`\`\`\n${token}\n\`\`\`` });
         } catch (_) {}
 
-        // Reply with the full token (not truncated)
+        // Reply with the full token
         return interaction.editReply({ content: `**${type.charAt(0).toUpperCase() + type.slice(1)} Token copied!**\n\`\`\`\n${token}\n\`\`\`` });
     }
 });
