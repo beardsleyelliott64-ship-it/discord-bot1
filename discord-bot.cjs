@@ -45,7 +45,7 @@ const VIP_ROLE_ID = "1542337978016469093";
 const BOOSTER_ROLE_ID = "1542337979807178832";
 const NO_COOLDOWN_ROLE_ID = ADMIN_ROLE_ID;
 const GENERATION_COOLDOWN = 0;
-const REQUIRED_ROLE_ID = "1544637223058542642";
+const REQUIRED_ROLE_ID = "1544637223058542642"; // Make sure to set this to a role everyone has!
 
 // --- DONATION LINKS ---
 const DONATION_LINKS = {
@@ -546,8 +546,8 @@ function forceSetOwnToken(bearer, refresh) {
     console.log(`[SUCCESS] [EAM.LOL] Token manually set! Expires: ${new Date(lastRefreshExpiry).toUTCString()}`);
 }
 
-// --- UI HELPERS (ULTRA SLEEK, NO WEIRD EMOJIS) ---
-function buildSleekProgress(step, total = 4, width = 14) {
+// --- ULTRA SPACIOUS PREMIUM UI HELPERS ---
+function buildSleekProgress(step, total = 4, width = 16) {
     const filled = Math.round((step / total) * width);
     const empty = width - filled;
     return '█'.repeat(filled) + '░'.repeat(empty);
@@ -566,13 +566,13 @@ async function updateGenerationEmbed(interaction, step, message, ttl = null) {
         if (idx === step) suffix = '  ⟳';
         else if (idx < step) suffix = '  ✔';
         return `${icon} ${label}${suffix}`;
-    }).join('\n');
+    }).join('\n\n');
 
     const progress = buildSleekProgress(step, 4);
     const percent = Math.round((step / 4) * 100);
 
     const embed = new EmbedBuilder()
-        .setTitle('◈ EAM.LOL TOKEN GENERATOR ◈')
+        .setTitle('◆ EAM.LOL TOKEN GENERATOR ◆')
         .setDescription(
             `\`${progress}  ${percent}%\`\n\n` +
             `${statusLines}`
@@ -596,7 +596,7 @@ function getExpiryFileName(expiresAt, extension) {
     return `token-exp-${iso}.${extension}`;
 }
 
-// --- PROCESS TOKEN GENERATION ---
+// --- PROCESS TOKEN GENERATION (VERY COOL DM UI) ---
 async function processTokenGeneration(interaction, tierName) {
     const userId = interaction.user.id;
     const member = interaction.member;
@@ -692,12 +692,19 @@ async function processTokenGeneration(interaction, tierName) {
     const textAttachment = new AttachmentBuilder(textBuffer, { name: getExpiryFileName(tokenObj.expiresAt, 'txt') });
 
     const successEmbed = new EmbedBuilder()
-        .setTitle('◈ TOKEN GENERATED ◈')
-        .setDescription('> Your token has been generated and delivered.\n> Check your Direct Messages for the attached files.')
-        .addFields(
-            { name: 'Generation ID', value: `\`${genId}\``, inline: true },
-            { name: 'Validity', value: expiryText, inline: true },
-            { name: 'Stock Left', value: `${tokenStock.length}`, inline: true }
+        .setTitle('◆ SECURE TOKEN RECEIPT ◆')
+        .setDescription(
+            '```\n' +
+            '------------------------------------------------\n' +
+            ' ◆ EAM.LOL SECURE TOKEN RECEIPT ◆\n' +
+            '------------------------------------------------\n' +
+            ' STATUS      :  ✔ VALID\n' +
+            ' EXPIRATION  :  ' + expiryText + '\n' +
+            ' GENERATION  :  ' + genId + '\n' +
+            ' REMINING    :  ' + ttl + 's\n' +
+            '------------------------------------------------\n' +
+            ' Files attached below.\n' +
+            '```'
         )
         .setColor(0x00FFAA)
         .setFooter({ text: 'EAM.LOL | Secure Token Service' });
@@ -728,7 +735,7 @@ async function showRemoveStock(interaction, page = 0) {
     const start = page * STOCK_PER_PAGE;
     const pageEntries = entries.slice(start, start + STOCK_PER_PAGE);
     const embed = new EmbedBuilder()
-        .setTitle('◈ REMOVE TOKEN ◈')
+        .setTitle('◆ REMOVE TOKEN ◆')
         .setDescription(`**${entries.length}** active tokens | Page ${page+1}/${totalPages}`)
         .setColor(0xED4245);
     pageEntries.forEach(entry => embed.addFields({ name: `\`${entry.id}\``, value: `User: ${entry.username}`, inline: false }));
@@ -764,10 +771,10 @@ const commandsData = [
         { name: 'Support', value: 'support' },
         { name: 'Generator', value: 'generator' }
     )).setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-    new SlashCommandBuilder().setName('donate-panel').setDescription('Post a donation panel with payment links.').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-    new SlashCommandBuilder().setName('donation-panel').setDescription('Post a panel to donate tokens by pasting JSON.').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-    new SlashCommandBuilder().setName('check-panel').setDescription('Post a panel to check/validate a token from JSON.').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-    new SlashCommandBuilder().setName('split-panel').setDescription('Post a panel to split a token JSON into bearer and refresh.').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    new SlashCommandBuilder().setName('donate-panel').setDescription('Post a donation panel with payment links.'),
+    new SlashCommandBuilder().setName('donation-panel').setDescription('Post a panel to donate tokens by pasting JSON.'),
+    new SlashCommandBuilder().setName('check-panel').setDescription('Post a panel to check/validate a token from JSON.'),
+    new SlashCommandBuilder().setName('split-panel').setDescription('Post a panel to split a token JSON into bearer and refresh.'),
     new SlashCommandBuilder().setName('announce').setDescription('DM all members with your announcement message.').addStringOption(opt => opt.setName('message').setDescription('The announcement message').setRequired(true)).setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     new SlashCommandBuilder().setName('check-expiry').setDescription('Check when a token expires (based on JWT exp claim)').addStringOption(opt => opt.setName('token').setDescription('The token to check').setRequired(true))
 ].map(cmd => cmd.toJSON());
@@ -800,31 +807,33 @@ client.on('interactionCreate', async interaction => {
                 const question = options.getString('question');
                 const answers = ['Yes.', 'No.', 'Maybe.', 'Definitely.', 'Ask again later.', 'Outlook not so good.'];
                 const ans = answers[Math.floor(Math.random() * answers.length)];
-                const embed = new EmbedBuilder().setTitle('8-Ball').addFields({ name: 'Question', value: question }, { name: 'Answer', value: ans }).setColor(0x3498DB);
+                const embed = new EmbedBuilder().setTitle('◆ 8-BALL ◆').addFields({ name: 'Question', value: question }, { name: 'Answer', value: ans }).setColor(0x3498DB);
                 return interaction.reply({ embeds: [embed] });
             }
             if (commandName === 'help') {
-                const embed = new EmbedBuilder().setTitle("◈ EAM.LOL COMMANDS ◈").setDescription("Token Generator Bot").setColor(0x3498DB)
-                    .addFields(
-                        { name: "/token", value: "Generate a fresh token to your DMs", inline: false },
-                        { name: "/generator", value: "Post the generator panel", inline: false },
-                        { name: "/gen-codes", value: "List active generation IDs", inline: false },
-                        { name: "/remove-stock", value: "Remove a token by selection", inline: false },
-                        { name: "/force_refresh", value: "Force refresh the current token", inline: false },
-                        { name: "/announce", value: "DM all members with your message", inline: false },
-                        { name: "/donate-panel", value: "Post a donation panel with payment links", inline: false },
-                        { name: "/donation-panel", value: "Donate a token by pasting JSON", inline: false },
-                        { name: "/check-panel", value: "Check/validate a token from JSON", inline: false },
-                        { name: "/check-expiry", value: "Check expiry of a raw token", inline: false },
-                        { name: "/split-panel", value: "Split a token JSON into bearer and refresh", inline: false },
-                        { name: "Auto-Refresh", value: "Smart (multi-account)", inline: false },
-                        { name: "Credits", value: "@elliott", inline: false }
-                    ).setFooter({ text: "EAM.LOL | Never expires" });
+                const embed = new EmbedBuilder().setTitle("◆ EAM.LOL COMMAND INTERFACE ◆").setDescription(
+                    `> Welcome to the EAM.LOL Command Interface.\n` +
+                    `> All commands are listed below.\n\n` +
+                    `**◆ TOKEN GENERATION**\n` +
+                    `> /token - Generate a fresh token\n` +
+                    `> /generator - Post the generator panel\n\n` +
+                    `**◆ ADMIN TOOLS**\n` +
+                    `> /stock - Add token stock\n` +
+                    `> /remove-stock - Remove a token by selection\n` +
+                    `> /force_refresh - Force refresh the current token\n` +
+                    `> /announce - DM all members\n\n` +
+                    `**◆ UTILITIES**\n` +
+                    `> /check-expiry - Check the expiry of a raw token\n` +
+                    `> /split-panel - Split a token JSON\n` +
+                    `> /donation-panel - Donate a token\n` +
+                    `> /donate-panel - Donate via payment links\n\n` +
+                    `> Credits: @elliott`
+                ).setColor(0x3498DB).setFooter({ text: "EAM.LOL | Never expires" });
                 return interaction.reply({ embeds: [embed], flags: 64 });
             }
             if (commandName === 'serverinfo') {
                 const guild = interaction.guild;
-                const embed = new EmbedBuilder().setTitle(`Server: ${guild.name}`).setThumbnail(guild.iconURL())
+                const embed = new EmbedBuilder().setTitle(`◆ Server: ${guild.name} ◆`).setThumbnail(guild.iconURL())
                     .addFields(
                         { name: 'Members', value: `${guild.memberCount}`, inline: true },
                         { name: 'Created', value: `<t:${Math.floor(guild.createdTimestamp/1000)}:R>`, inline: true },
@@ -838,7 +847,7 @@ client.on('interactionCreate', async interaction => {
                 const isExpired = Date.now() >= expiry;
                 const remaining = secondsUntilExpiry(token);
                 const embed = new EmbedBuilder()
-                    .setTitle('◈ EXPIRY CHECK ◈')
+                    .setTitle('◆ EXPIRY CHECK ◆')
                     .addFields(
                         { name: 'Status', value: isExpired ? 'EXPIRED' : 'VALID', inline: true },
                         { name: 'Expires At', value: new Date(expiry).toUTCString(), inline: true },
@@ -877,7 +886,23 @@ client.on('interactionCreate', async interaction => {
                     const textVersion = `EAM.LOL TOKEN GENERATOR\n----------------------------------------\nBEARER TOKEN:\n${tokenObj.bearer}\nREFRESH TOKEN:\n${tokenObj.refresh}\nGENERATION ID:\n${genId}\n----------------------------------------\nExpires: ${expiryText}\nSeconds left: ${ttl}s\nAuto-Refresh: Constantly\n----------------------------------------`;
                     const textBuffer = Buffer.from(textVersion, 'utf-8');
                     const textAttachment = new AttachmentBuilder(textBuffer, { name: getExpiryFileName(tokenObj.expiresAt, 'txt') });
-                    const embed = new EmbedBuilder().setTitle('◈ TOKEN GENERATED ◈').setDescription('> Token sent to your DMs.').addFields({ name: 'ID', value: `\`${genId}\``, inline: true }, { name: 'Validity', value: expiryText, inline: true }).setColor(0x00FFAA).setFooter({ text: 'EAM.LOL' });
+                    const embed = new EmbedBuilder()
+                        .setTitle('◆ SECURE TOKEN RECEIPT ◆')
+                        .setDescription(
+                            '```\n' +
+                            '------------------------------------------------\n' +
+                            ' ◆ EAM.LOL SECURE TOKEN RECEIPT ◆\n' +
+                            '------------------------------------------------\n' +
+                            ' STATUS      :  ✔ VALID\n' +
+                            ' EXPIRATION  :  ' + expiryText + '\n' +
+                            ' GENERATION  :  ' + genId + '\n' +
+                            ' REMINING    :  ' + ttl + 's\n' +
+                            '------------------------------------------------\n' +
+                            ' Files attached below.\n' +
+                            '```'
+                        )
+                        .setColor(0x00FFAA)
+                        .setFooter({ text: 'EAM.LOL' });
                     await interaction.user.send({ embeds: [embed], files: [attachment, textAttachment] });
                     isGenerating = false;
                     return interaction.editReply({ content: `Token sent to DMs | ID: \`${genId}\` | ${expiryText}` });
@@ -903,7 +928,7 @@ client.on('interactionCreate', async interaction => {
                 for (const [id, member] of members) {
                     if (member.user.bot) continue;
                     try {
-                        await member.send({ embeds: [new EmbedBuilder().setTitle('ANNOUNCEMENT').setDescription(messageContent).setColor(0xFFAA00).setTimestamp().setFooter({ text: `From ${guild.name}` })] });
+                        await member.send({ embeds: [new EmbedBuilder().setTitle('◆ ANNOUNCEMENT ◆').setDescription(messageContent).setColor(0xFFAA00).setTimestamp().setFooter({ text: `From ${guild.name}` })] });
                         successCount++;
                     } catch (err) { failCount++; }
                     index++;
@@ -913,11 +938,10 @@ client.on('interactionCreate', async interaction => {
                 return interaction.editReply({ content: `Announcement DMs sent! ${successCount} succeeded, ${failCount} failed (skipped bots).` });
             }
 
-            // --- DONATE-PANEL ---
+            // --- DONATE-PANEL --- (Removed Admin Check)
             if (commandName === 'donate-panel') {
-                if (!hasAdminAccess(interaction)) return interaction.reply({ content: 'Admin only.', flags: 64 });
                 const embed = new EmbedBuilder()
-                    .setTitle('◈ SUPPORT THE PROJECT ◈')
+                    .setTitle('◆ SUPPORT THE PROJECT ◆')
                     .setDescription('> Your contributions keep this bot alive and the tokens flowing.\n> Choose a platform below to send a donation.\n> Every bit helps – thank you!')
                     .addFields(
                         { name: 'PayPal', value: `[Click to donate](${DONATION_LINKS.paypal})`, inline: true },
@@ -935,11 +959,10 @@ client.on('interactionCreate', async interaction => {
                 return interaction.reply({ embeds: [embed], components: [row1, row2], ephemeral: false });
             }
 
-            // --- DONATION-PANEL ---
+            // --- DONATION-PANEL --- (Removed Admin Check)
             if (commandName === 'donation-panel') {
-                if (!hasAdminAccess(interaction)) return interaction.reply({ content: 'Admin only.', flags: 64 });
                 const embed = new EmbedBuilder()
-                    .setTitle('◈ DONATE A TOKEN ◈')
+                    .setTitle('◆ DONATE A TOKEN ◆')
                     .setDescription('> Paste a valid JSON containing `token` (bearer) and `refresh_token`.\n> The bot will validate and add it to the stock.\n> If expired, it will attempt to refresh it automatically.')
                     .setColor(0x5865F2)
                     .setFooter({ text: 'EAM.LOL | Token Donation' });
@@ -947,11 +970,10 @@ client.on('interactionCreate', async interaction => {
                 return interaction.reply({ embeds: [embed], components: [row], ephemeral: false });
             }
 
-            // --- CHECK-PANEL ---
+            // --- CHECK-PANEL --- (Removed Admin Check)
             if (commandName === 'check-panel') {
-                if (!hasAdminAccess(interaction)) return interaction.reply({ content: 'Admin only.', flags: 64 });
                 const embed = new EmbedBuilder()
-                    .setTitle('◈ CHECK TOKEN ◈')
+                    .setTitle('◆ CHECK TOKEN ◆')
                     .setDescription('> Paste a JSON containing `token` (or bearer) and `refresh_token`.\n> The bot will extract and validate them.')
                     .setColor(0x3498DB)
                     .setFooter({ text: 'EAM.LOL | Token Check' });
@@ -959,11 +981,10 @@ client.on('interactionCreate', async interaction => {
                 return interaction.reply({ embeds: [embed], components: [row], ephemeral: false });
             }
 
-            // --- SPLIT-PANEL ---
+            // --- SPLIT-PANEL --- (Removed Admin Check)
             if (commandName === 'split-panel') {
-                if (!hasAdminAccess(interaction)) return interaction.reply({ content: 'Admin only.', flags: 64 });
                 const embed = new EmbedBuilder()
-                    .setTitle('◈ SPLIT TOKEN ◈')
+                    .setTitle('◆ SPLIT TOKEN ◆')
                     .setDescription('> Paste a JSON containing `token` (or bearer) and `refresh_token`.\n> The bot will extract and return them separately with copy buttons.')
                     .setColor(0x2ECC71)
                     .setFooter({ text: 'EAM.LOL | Token Split' });
@@ -971,7 +992,7 @@ client.on('interactionCreate', async interaction => {
                 return interaction.reply({ embeds: [embed], components: [row], ephemeral: false });
             }
 
-            // --- ADMIN COMMANDS ---
+            // --- ADMIN COMMANDS (Keeping admin checks here) ---
             const adminCommands = ['stock', 'stock_main', 'generator', 'force_refresh', 'remove-stock', 'reset-stock', 'gen-codes', 'remove-token', 'refresh_cooldown_all', 'panel'];
             if (adminCommands.includes(commandName)) {
                 if (!hasAdminAccess(interaction)) return interaction.reply({ content: 'Access Denied.', flags: 64 });
@@ -982,7 +1003,7 @@ client.on('interactionCreate', async interaction => {
                     const refresh = options.getString('refresh');
                     if (!bearer || !refresh) return interaction.editReply({ content: 'Both tokens required.' });
                     forceSetOwnToken(bearer, refresh);
-                    const embed = new EmbedBuilder().setTitle('◈ Main Token Updated ◈').setDescription('Token updated successfully.').setColor(0x2ECC71).addFields({ name: 'Valid For', value: humanExpiry(lastRefreshExpiry), inline: true }, { name: 'Stock', value: `${tokenStock.length} token(s)`, inline: true });
+                    const embed = new EmbedBuilder().setTitle('◆ MAIN TOKEN UPDATED ◆').setDescription('Token updated successfully.').setColor(0x2ECC71).addFields({ name: 'Valid For', value: humanExpiry(lastRefreshExpiry), inline: true }, { name: 'Stock', value: `${tokenStock.length} token(s)`, inline: true });
                     return interaction.editReply({ embeds: [embed] });
                 }
 
@@ -996,8 +1017,8 @@ client.on('interactionCreate', async interaction => {
 
                 if (commandName === 'generator') {
                     const embed = new EmbedBuilder()
-                        .setTitle('◈ EAM.LOL TOKEN GENERATOR ◈')
-                        .setDescription('> Generate your personal access token instantly.\n> One-click generation with live status.\n> Delivered securely to your Direct Messages.\n> Smart auto-refresh keeps your token active.')
+                        .setTitle('◆ EAM.LOL TOKEN GENERATOR ◆')
+                        .setDescription('> Generate your personal access token instantly.\n\n> One-click generation with live status.\n\n> Delivered securely to your Direct Messages.\n\n> Smart auto-refresh keeps your token active.')
                         .setColor(0x5865F2)
                         .setFooter({ text: 'Always available | Never expires' });
                     const row = new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('gen_public').setLabel('GENERATE TOKEN').setStyle(ButtonStyle.Success));
@@ -1010,7 +1031,7 @@ client.on('interactionCreate', async interaction => {
                     try {
                         const result = await refreshToken(tokenStock[0].refresh);
                         if (result.success) {
-                            const embed = new EmbedBuilder().setTitle('◈ Token Refreshed ◈').setDescription('Token refreshed successfully.').setColor(0x2ECC71)
+                            const embed = new EmbedBuilder().setTitle('◆ TOKEN REFRESHED ◆').setDescription('Token refreshed successfully.').setColor(0x2ECC71)
                                 .addFields({ name: 'Expiry', value: humanExpiry(tokenStock[0].expiresAt), inline: true }, { name: 'Stock', value: `${tokenStock.length} token(s)`, inline: true });
                             return interaction.editReply({ embeds: [embed] });
                         } else return interaction.editReply({ content: 'Refresh failed - will retry.' });
@@ -1037,7 +1058,7 @@ client.on('interactionCreate', async interaction => {
                 if (commandName === 'gen-codes') {
                     const entries = tokenStock.filter(t => t.id && t.id.length > 0).map(t => ({ id: t.id, username: t.username || `<@${t.userId}>` }));
                     if (entries.length === 0) return interaction.reply({ content: 'No active IDs.', flags: 64 });
-                    const embed = new EmbedBuilder().setTitle('◈ Active Generation IDs ◈').setDescription(`**${entries.length}** active token(s)`).setColor(0x5865F2);
+                    const embed = new EmbedBuilder().setTitle('◆ ACTIVE GENERATION IDS ◆').setDescription(`**${entries.length}** active token(s)`).setColor(0x5865F2);
                     entries.forEach(entry => embed.addFields({ name: `\`${entry.id}\``, value: `User: ${entry.username}`, inline: false }));
                     return interaction.reply({ embeds: [embed], flags: 64 });
                 }
@@ -1051,22 +1072,22 @@ client.on('interactionCreate', async interaction => {
                 if (commandName === 'panel') {
                     const subArg = options.getString('type');
                     if (subArg === 'generator') {
-                        const embed = new EmbedBuilder().setTitle('◈ EAM.LOL TOKEN GENERATOR ◈').setDescription('> Generate your token below.\n> DMs must be open.').setColor(0x5865F2).setFooter({ text: 'Never expires' });
+                        const embed = new EmbedBuilder().setTitle('◆ EAM.LOL TOKEN GENERATOR ◆').setDescription('> Generate your token below.\n\n> DMs must be open.').setColor(0x5865F2).setFooter({ text: 'Never expires' });
                         const row = new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('gen_public').setLabel('GENERATE').setStyle(ButtonStyle.Success));
                         return interaction.reply({ embeds: [embed], components: [row], ephemeral: false });
                     }
                     if (subArg === 'verify') {
-                        const embed = new EmbedBuilder().setTitle("◈ VERIFICATION ◈").setDescription("Click below to verify.").setColor(0x1ABC9C);
+                        const embed = new EmbedBuilder().setTitle("◆ VERIFICATION ◆").setDescription("Click below to verify.").setColor(0x1ABC9C);
                         const row = new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('verify_btn').setLabel('VERIFY').setStyle(ButtonStyle.Success));
                         return interaction.reply({ embeds: [embed], components: [row] });
                     }
                     if (subArg === 'redeem') {
-                        const embed = new EmbedBuilder().setTitle("◈ KEY REDEEM ◈").setDescription("Got a code? Click below to redeem.").setColor(0x5865F2);
+                        const embed = new EmbedBuilder().setTitle("◆ KEY REDEEM ◆").setDescription("Got a code? Click below to redeem.").setColor(0x5865F2);
                         const row = new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('redeem_btn').setLabel('REDEEM KEY').setStyle(ButtonStyle.Primary));
                         return interaction.reply({ embeds: [embed], components: [row] });
                     }
                     if (subArg === 'support') {
-                        const embed = new EmbedBuilder().setTitle("◈ SUPPORT ◈").setDescription("Select your department.").setColor(0xFEE75C);
+                        const embed = new EmbedBuilder().setTitle("◆ SUPPORT ◆").setDescription("Select your department.").setColor(0xFEE75C);
                         const row = new ActionRowBuilder().addComponents(new StringSelectMenuBuilder().setCustomId('support_select').setPlaceholder('Select department...').addOptions([ { label: 'General Support', value: 'General Inquiry' }, { label: 'Token Help', value: 'Token Help' } ]));
                         return interaction.reply({ embeds: [embed], components: [row] });
                     }
@@ -1092,8 +1113,8 @@ client.on('interactionCreate', async interaction => {
             if (interaction.customId === 'donate_info') {
                 await interaction.reply({
                     embeds: [new EmbedBuilder()
-                        .setTitle('◈ Donation Info ◈')
-                        .setDescription('> Donations help cover hosting costs and development time.\n> All funds go directly to keeping the bot online.\n> Thank you for your support!')
+                        .setTitle('◆ DONATION INFO ◆')
+                        .setDescription('> Donations help cover hosting costs and development time.\n\n> All funds go directly to keeping the bot online.\n\n> Thank you for your support!')
                         .setColor(0xF1C40F)
                     ],
                     flags: 64
@@ -1101,24 +1122,24 @@ client.on('interactionCreate', async interaction => {
                 return;
             }
 
+            // REMOVED ADMIN CHECK FROM DONATE BUTTON
             if (interaction.customId === 'donate_token_btn') {
-                if (!hasAdminAccess(interaction)) return interaction.reply({ content: 'Admin only.', flags: 64 });
                 const modal = new ModalBuilder().setCustomId('donate_token_modal').setTitle('Donate Token JSON');
                 const jsonInput = new TextInputBuilder().setCustomId('donate_json_input').setLabel('Paste your JSON here').setStyle(TextInputStyle.Paragraph).setPlaceholder('{"refresh_token":"...","token":"..."}').setRequired(true).setMinLength(20).setMaxLength(2000);
                 modal.addComponents(new ActionRowBuilder().addComponents(jsonInput));
                 return await interaction.showModal(modal);
             }
 
+            // REMOVED ADMIN CHECK FROM CHECK BUTTON
             if (interaction.customId === 'check_token_btn') {
-                if (!hasAdminAccess(interaction)) return interaction.reply({ content: 'Admin only.', flags: 64 });
                 const modal = new ModalBuilder().setCustomId('check_token_modal').setTitle('Check Token JSON');
                 const jsonInput = new TextInputBuilder().setCustomId('check_json_input').setLabel('Paste your JSON here').setStyle(TextInputStyle.Paragraph).setPlaceholder('{"token":"...","refresh_token":"..."}').setRequired(true).setMinLength(20).setMaxLength(2000);
                 modal.addComponents(new ActionRowBuilder().addComponents(jsonInput));
                 return await interaction.showModal(modal);
             }
 
+            // REMOVED ADMIN CHECK FROM SPLIT BUTTON
             if (interaction.customId === 'split_token_btn') {
-                if (!hasAdminAccess(interaction)) return interaction.reply({ content: 'Admin only.', flags: 64 });
                 const modal = new ModalBuilder().setCustomId('split_token_modal').setTitle('Split Token JSON');
                 const jsonInput = new TextInputBuilder().setCustomId('split_json_input').setLabel('Paste your JSON here').setStyle(TextInputStyle.Paragraph).setPlaceholder('{"token":"...","refresh_token":"..."}').setRequired(true).setMinLength(20).setMaxLength(2000);
                 modal.addComponents(new ActionRowBuilder().addComponents(jsonInput));
@@ -1134,7 +1155,7 @@ client.on('interactionCreate', async interaction => {
                 const totalPages = Math.ceil(entries.length / STOCK_PER_PAGE);
                 const start = page * STOCK_PER_PAGE;
                 const pageEntries = entries.slice(start, start + STOCK_PER_PAGE);
-                const embed = new EmbedBuilder().setTitle('◈ REMOVE TOKEN ◈').setDescription(`**${entries.length}** active | Page ${page+1}/${totalPages}`).setColor(0xED4245);
+                const embed = new EmbedBuilder().setTitle('◆ REMOVE TOKEN ◆').setDescription(`**${entries.length}** active | Page ${page+1}/${totalPages}`).setColor(0xED4245);
                 pageEntries.forEach(entry => embed.addFields({ name: `\`${entry.id}\``, value: `User: ${entry.username}`, inline: false }));
                 const row = new ActionRowBuilder();
                 pageEntries.forEach(entry => row.addComponents(new ButtonBuilder().setCustomId(`remove_${entry.id}`).setLabel(`Remove ${entry.id}`).setStyle(ButtonStyle.Danger)));
@@ -1200,7 +1221,7 @@ client.on('interactionCreate', async interaction => {
                         { id: interaction.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] }
                     ],
                 });
-                const embed = new EmbedBuilder().setTitle(`TICKET: ${category.toUpperCase()}`).setDescription(`Welcome, <@${interaction.user.id}>.`).setColor(0xFEE75C).setTimestamp();
+                const embed = new EmbedBuilder().setTitle(`◆ TICKET: ${category.toUpperCase()} ◆`).setDescription(`Welcome, <@${interaction.user.id}>.`).setColor(0xFEE75C).setTimestamp();
                 const closeButton = new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('close_ticket_btn').setLabel('CLOSE').setStyle(ButtonStyle.Danger));
                 await ticketChannel.send({ embeds: [embed], components: [closeButton] });
                 return interaction.editReply({ content: `Ticket created: <#${ticketChannel.id}>` });
@@ -1225,7 +1246,7 @@ client.on('interactionCreate', async interaction => {
                 } else tokenStock.push({ bearer, refresh, addedAt: Date.now(), expiresAt: getTokenExpiryMs(bearer) });
                 const refreshResult = await refreshToken(refresh);
                 let statusMessage = refreshResult.success ? 'Token updated and REFRESHED!' : 'Token updated but refresh failed.';
-                const embed = new EmbedBuilder().setTitle('◈ Token Refreshed ◈').setDescription(statusMessage).setColor(0x2ECC71)
+                const embed = new EmbedBuilder().setTitle('◆ TOKEN REFRESHED ◆').setDescription(statusMessage).setColor(0x2ECC71)
                     .addFields(
                         { name: 'Bearer Token', value: `\`\`\`\n${bearer}\n\`\`\``, inline: false },
                         { name: 'Refresh Token', value: `\`\`\`\n${refresh}\n\`\`\``, inline: false },
@@ -1259,8 +1280,8 @@ client.on('interactionCreate', async interaction => {
                 } else return interaction.editReply({ content: `Invalid code: \`${code}\`` });
             }
 
+            // REMOVED ADMIN CHECK FROM DONATE MODAL
             if (interaction.customId === 'donate_token_modal') {
-                if (!hasAdminAccess(interaction)) return interaction.reply({ content: 'Access Denied.', flags: 64 });
                 await interaction.deferReply({ flags: 64 });
                 const jsonRaw = interaction.fields.getTextInputValue('donate_json_input').trim();
                 let parsed;
@@ -1297,8 +1318,8 @@ client.on('interactionCreate', async interaction => {
                 }
             }
 
+            // REMOVED ADMIN CHECK FROM CHECK MODAL
             if (interaction.customId === 'check_token_modal') {
-                if (!hasAdminAccess(interaction)) return interaction.reply({ content: 'Access Denied.', flags: 64 });
                 await interaction.deferReply({ flags: 64 });
                 const jsonRaw = interaction.fields.getTextInputValue('check_json_input').trim();
                 let parsed;
@@ -1314,7 +1335,7 @@ client.on('interactionCreate', async interaction => {
                 if (!bearer || !refresh) return interaction.editReply({ content: 'Missing `token` (or bearer) and/or `refresh_token` in the JSON.' });
                 const validation = await validateTokenDetails(bearer);
                 let embed = new EmbedBuilder()
-                    .setTitle('◈ TOKEN CHECK RESULT ◈')
+                    .setTitle('◆ TOKEN CHECK RESULT ◆')
                     .setColor(validation.valid ? 0x2ECC71 : 0xED4245)
                     .addFields(
                         { name: 'Bearer Token', value: `\`${bearer.slice(0, 30)}...\` (${bearer.length} chars)`, inline: false },
@@ -1338,8 +1359,8 @@ client.on('interactionCreate', async interaction => {
                 return interaction.editReply({ embeds: [embed], components: [row2] });
             }
 
+            // REMOVED ADMIN CHECK FROM SPLIT MODAL
             if (interaction.customId === 'split_token_modal') {
-                if (!hasAdminAccess(interaction)) return interaction.reply({ content: 'Access Denied.', flags: 64 });
                 await interaction.deferReply({ flags: 64 });
                 const jsonRaw = interaction.fields.getTextInputValue('split_json_input').trim();
                 let parsed;
@@ -1354,7 +1375,7 @@ client.on('interactionCreate', async interaction => {
                 }
                 if (!bearer || !refresh) return interaction.editReply({ content: 'Missing `token` (or bearer) and/or `refresh_token` in the JSON.' });
                 const embed = new EmbedBuilder()
-                    .setTitle('◈ TOKEN SPLIT ◈')
+                    .setTitle('◆ TOKEN SPLIT ◆')
                     .setDescription('> Extracted Bearer and Refresh tokens – copy them individually below.')
                     .setColor(0x2ECC71)
                     .addFields(
