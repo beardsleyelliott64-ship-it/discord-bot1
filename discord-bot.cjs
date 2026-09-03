@@ -474,6 +474,18 @@ async function refreshTokenInStock() {
     }
 }
 
+// --- NEW: EXPIRED TOKEN CLEANUP ---
+function checkAndRemoveExpiredStock() {
+    if (tokenStock.length === 0) return;
+    const now = Date.now();
+    const expiredTokens = tokenStock.filter(t => now >= t.expiresAt);
+    if (expiredTokens.length > 0) {
+        console.log(`🧹 [EAM.LOL] Removing ${expiredTokens.length} expired token(s) from stock.`);
+        tokenStock = tokenStock.filter(t => now < t.expiresAt);
+        if (tokenStock.length === 0) giveNewTokenFromAccounts();
+    }
+}
+
 const AUTO_REFRESH_INTERVAL = 60 * 1000; // check every 60 seconds
 let refreshInterval = null;
 function startAutoRefresh() {
@@ -483,6 +495,7 @@ function startAutoRefresh() {
         if (tokenStock.length === 0 && accounts.length > 0) giveNewTokenFromAccounts();
         await refreshTokenInStock();
         refreshInterval = setInterval(async () => {
+            checkAndRemoveExpiredStock();
             await refreshTokenInStock();
         }, AUTO_REFRESH_INTERVAL);
     }, 2000);
@@ -588,6 +601,13 @@ async function updateGenerationEmbed(interaction, step, message, ttl = null) {
     await interaction.editReply({ embeds: [embed], components: [row] });
 }
 
+// --- NEW: HELPER FOR EXPIRATION-BASED FILENAMES ---
+function getExpiryFileName(expiresAt, extension) {
+    const date = new Date(expiresAt);
+    const iso = date.toISOString().replace(/:/g, '-').replace(/\.\d{3}Z$/, 'Z');
+    return `token-exp-${iso}.${extension}`;
+}
+
 // --- PROCESS TOKEN GENERATION ---
 async function processTokenGeneration(interaction, tierName) {
     const userId = interaction.user.id;
@@ -679,10 +699,11 @@ async function processTokenGeneration(interaction, tierName) {
     };
     const jsonString = JSON.stringify(tokenData, null, 2);
     const jsonBuffer = Buffer.from(jsonString, 'utf-8');
-    const attachment = new AttachmentBuilder(jsonBuffer, { name: 'token.json' });
-    const textVersion = `EAM.LOL TOKEN GENERATOR\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\nBEARER TOKEN:\n${tokenObj.bearer}\nREFRESH TOKEN:\n${tokenObj.refresh}\nGENERATION ID:\n${genId}\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n⏳ Valid for: ${expiryText}\n⏱️ Seconds left: ${ttl}s\n🔄 Auto-Refresh: Constantly\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`;
+    // CHANGE HERE: rename files based on expiration date
+    const attachment = new AttachmentBuilder(jsonBuffer, { name: getExpiryFileName(tokenObj.expiresAt, 'json') });
+    const textVersion = `EAM.LOL TOKEN GENERATOR\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\nBEARER TOKEN:\n${tokenObj.bearer}\nREFRESH TOKEN:\n${tokenObj.refresh}\nGENERATION ID:\n${genId}\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n⏳ Expires: ${humanExpiry(tokenObj.expiresAt)}\n⏱️ Seconds left: ${ttl}s\n🔄 Auto-Refresh: Constantly\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`;
     const textBuffer = Buffer.from(textVersion, 'utf-8');
-    const textAttachment = new AttachmentBuilder(textBuffer, { name: 'token.txt' });
+    const textAttachment = new AttachmentBuilder(textBuffer, { name: getExpiryFileName(tokenObj.expiresAt, 'txt') });
 
     const successEmbed = new EmbedBuilder()
         .setTitle('◇ TOKEN GENERATED')
@@ -780,7 +801,12 @@ const commandsData = [
         .setName('announce')
         .setDescription('DM all members with your announcement message.')
         .addStringOption(opt => opt.setName('message').setDescription('The announcement message').setRequired(true))
-        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    // NEW COMMAND: /check-expiry
+    new SlashCommandBuilder()
+        .setName('check-expiry')
+        .setDescription('Check when a token expires (based on JWT exp claim)')
+        .addStringOption(opt => opt.setName('token').setDescription('The token to check').setRequired(true))
 ].map(cmd => cmd.toJSON());
 
 // --- READY ---
@@ -830,6 +856,7 @@ client.on('interactionCreate', async interaction => {
                         { name: "`/donate-panel`", value: "Post a donation panel with payment links", inline: false },
                         { name: "`/donation-panel`", value: "Donate a token by pasting JSON", inline: false },
                         { name: "`/check-panel`", value: "Check/validate a token from JSON", inline: false },
+                        { name: "`/check-expiry`", value: "Check expiry of a raw token", inline: false },
                         { name: "`/split-panel`", value: "Split a token JSON into bearer and refresh", inline: false },
                         { name: "Auto-Refresh", value: "Smart (multi-account)", inline: false },
                         { name: "Credits", value: "@elliott", inline: false }
@@ -846,6 +873,24 @@ client.on('interactionCreate', async interaction => {
                     ).setColor(0x3498DB).setTimestamp();
                 return interaction.reply({ embeds: [embed] });
             }
+            // NEW: /check-expiry
+            if (commandName === 'check-expiry') {
+                const token = options.getString('token');
+                const expiry = getTokenExpiryMs(token);
+                const isExpired = Date.now() >= expiry;
+                const remaining = secondsUntilExpiry(token);
+                const embed = new EmbedBuilder()
+                    .setTitle('◆ EXPIRY CHECK')
+                    .addFields(
+                        { name: 'Status', value: isExpired ? '❌ **EXPIRED**' : '✅ **VALID**', inline: true },
+                        { name: 'Expires At', value: new Date(expiry).toUTCString(), inline: true },
+                        { name: 'Remaining', value: isExpired ? '0s' : `${remaining}s`, inline: true }
+                    )
+                    .setColor(isExpired ? 0xED4245 : 0x2ECC71)
+                    .setFooter({ text: 'EAM.LOL · Expiry Check' });
+                return interaction.reply({ embeds: [embed], flags: 64 });
+            }
+
             if (commandName === 'token') {
                 await interaction.deferReply({ flags: 64 });
                 if (tokenStock.length === 0) giveNewTokenFromAccounts();
@@ -870,10 +915,11 @@ client.on('interactionCreate', async interaction => {
                     const tokenData = { token: { bearer: tokenObj.bearer, refresh_token: tokenObj.refresh, expires_at: new Date(tokenObj.expiresAt).toISOString(), seconds_remaining: ttl, added_at: new Date().toISOString(), generation_id: genId }, message: "EAM.LOL Token Generator", credits: "@elliott", auto_refresh: "Refreshed automatically" };
                     const jsonString = JSON.stringify(tokenData, null, 2);
                     const jsonBuffer = Buffer.from(jsonString, 'utf-8');
-                    const attachment = new AttachmentBuilder(jsonBuffer, { name: 'token.json' });
-                    const textVersion = `EAM.LOL TOKEN GENERATOR\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\nBEARER TOKEN:\n${tokenObj.bearer}\nREFRESH TOKEN:\n${tokenObj.refresh}\nGENERATION ID:\n${genId}\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n⏳ Valid for: ${expiryText}\n⏱️ Seconds left: ${ttl}s\n🔄 Auto-Refresh: Constantly\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`;
+                    // CHANGE HERE: rename files based on expiration date
+                    const attachment = new AttachmentBuilder(jsonBuffer, { name: getExpiryFileName(tokenObj.expiresAt, 'json') });
+                    const textVersion = `EAM.LOL TOKEN GENERATOR\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\nBEARER TOKEN:\n${tokenObj.bearer}\nREFRESH TOKEN:\n${tokenObj.refresh}\nGENERATION ID:\n${genId}\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n⏳ Expires: ${humanExpiry(tokenObj.expiresAt)}\n⏱️ Seconds left: ${ttl}s\n🔄 Auto-Refresh: Constantly\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`;
                     const textBuffer = Buffer.from(textVersion, 'utf-8');
-                    const textAttachment = new AttachmentBuilder(textBuffer, { name: 'token.txt' });
+                    const textAttachment = new AttachmentBuilder(textBuffer, { name: getExpiryFileName(tokenObj.expiresAt, 'txt') });
                     const embed = new EmbedBuilder().setTitle('◇ TOKEN GENERATED').setDescription('> Token sent to your DMs.').addFields({ name: 'ID', value: `\`${genId}\``, inline: true }, { name: 'Validity', value: expiryText, inline: true }).setColor(0x00FFAA).setFooter({ text: 'EAM.LOL' });
                     await interaction.user.send({ embeds: [embed], files: [attachment, textAttachment] });
                     isGenerating = false;
