@@ -169,9 +169,12 @@ function humanExpiry(expiresAt) {
     return `expires in ${formatRemainingTime(expiresAt)} (${new Date(expiresAt).toUTCString()})`;
 }
 
-// --- TOKEN VALIDATION (returns { valid: boolean, details? }) ---
-async function validateTokenWithApi(bearerToken) {
-    // Attempt to validate with API; if fails (404 etc) fallback to JWT expiry.
+// --- TOKEN VALIDATION (returns object with valid, expiry, apiValid, etc.) ---
+async function validateTokenDetails(bearerToken) {
+    const expiry = getTokenExpiryMs(bearerToken);
+    const expired = Date.now() >= expiry;
+    let apiValid = false;
+    let apiError = null;
     try {
         const url = `${ACTIVE_API_URL}/v2/account/me`;
         const controller = new AbortController();
@@ -186,26 +189,30 @@ async function validateTokenWithApi(bearerToken) {
         });
         clearTimeout(timeoutId);
         if (response.status === 200) {
-            console.log('✅ [EAM.LOL] API validation succeeded.');
-            return { valid: true };
+            apiValid = true;
         } else if (response.status === 401 || response.status === 403) {
-            console.warn(`⚠️ [EAM.LOL] API validation returned ${response.status} – token invalid.`);
-            return { valid: false, reason: 'Unauthorized' };
+            apiValid = false;
+            apiError = `Unauthorized (${response.status})`;
         } else if (response.status === 404) {
-            // Endpoint not found – fallback to JWT expiry
-            console.warn('⚠️ [EAM.LOL] API endpoint not found, falling back to JWT expiry.');
-            const expiresAt = getTokenExpiryMs(bearerToken);
-            return { valid: Date.now() < expiresAt };
+            // endpoint not found, fallback to JWT
+            apiValid = !expired;
+            apiError = 'API endpoint not found, using JWT expiry';
         } else {
-            console.warn(`⚠️ [EAM.LOL] API validation returned ${response.status} – ignoring.`);
-            const expiresAt = getTokenExpiryMs(bearerToken);
-            return { valid: Date.now() < expiresAt };
+            apiValid = !expired;
+            apiError = `HTTP ${response.status}`;
         }
     } catch (err) {
-        console.warn(`⚠️ [EAM.LOL] API validation error: ${err.message} – falling back to JWT expiry.`);
-        const expiresAt = getTokenExpiryMs(bearerToken);
-        return { valid: Date.now() < expiresAt };
+        apiValid = !expired;
+        apiError = err.message;
     }
+    return {
+        valid: !expired && apiValid,
+        expired,
+        expiry,
+        apiValid,
+        apiError,
+        secondsRemaining: Math.floor((expiry - Date.now()) / 1000)
+    };
 }
 
 // --- Refreshes a token without affecting global state (for donation panel) ---
@@ -301,7 +308,7 @@ async function refreshToken(refreshTk) {
         lastRefreshExpiry = getTokenExpiryMs(result.bearer);
         updateAccountTokens(refreshTk, result.bearer, result.refresh_token);
         // Validate (non-blocking)
-        await validateTokenWithApi(result.bearer);
+        await validateTokenDetails(result.bearer);
         if (tokenStock.length > 0) {
             const old = tokenStock[0];
             tokenStock[0] = {
@@ -644,7 +651,7 @@ async function processTokenGeneration(interaction, tierName) {
     }
 
     // Non-blocking validation
-    await validateTokenWithApi(tokenObj.bearer);
+    await validateTokenDetails(tokenObj.bearer);
 
     await updateGenerationEmbed(interaction, 3, `Finalizing (${ttl}s left)...`, ttl);
     const genId = generateGenerationId();
@@ -753,17 +760,22 @@ const commandsData = [
         { name: 'Support', value: 'support' },
         { name: 'Generator', value: 'generator' }
     )).setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-    // Existing donation link panel
     new SlashCommandBuilder()
         .setName('donate-panel')
         .setDescription('Post a donation panel with payment links.')
         .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-    // NEW: Token donation panel (paste JSON)
     new SlashCommandBuilder()
         .setName('donation-panel')
-        .setDescription('Post a panel to donate tokens by pasting a JSON with refresh_token and token.')
+        .setDescription('Post a panel to donate tokens by pasting JSON.')
         .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-    // Announce command
+    new SlashCommandBuilder()
+        .setName('check-panel')
+        .setDescription('Post a panel to check/validate a token from JSON.')
+        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    new SlashCommandBuilder()
+        .setName('split-panel')
+        .setDescription('Post a panel to split a token JSON into bearer and refresh.')
+        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     new SlashCommandBuilder()
         .setName('announce')
         .setDescription('DM all members with your announcement message.')
@@ -797,7 +809,7 @@ client.on('interactionCreate', async interaction => {
 
             const { commandName, options } = interaction;
 
-            // --- Existing commands (ping, 8ball, help, serverinfo, token, announce, admin commands) ---
+            // --- Existing commands ---
             if (commandName === 'ping') return interaction.reply({ content: `Pong! ${client.ws.ping}ms`, flags: 64 });
             if (commandName === '8ball') {
                 const question = options.getString('question');
@@ -817,6 +829,8 @@ client.on('interactionCreate', async interaction => {
                         { name: "`/announce`", value: "DM all members with your message", inline: false },
                         { name: "`/donate-panel`", value: "Post a donation panel with payment links", inline: false },
                         { name: "`/donation-panel`", value: "Donate a token by pasting JSON", inline: false },
+                        { name: "`/check-panel`", value: "Check/validate a token from JSON", inline: false },
+                        { name: "`/split-panel`", value: "Split a token JSON into bearer and refresh", inline: false },
                         { name: "Auto-Refresh", value: "Smart (multi-account)", inline: false },
                         { name: "Credits", value: "@elliott", inline: false }
                     ).setFooter({ text: "EAM.LOL · Never expires" });
@@ -846,7 +860,7 @@ client.on('interactionCreate', async interaction => {
                 if (Date.now() >= tokenObj.expiresAt) { giveNewTokenFromAccounts(); if (tokenStock.length > 0) tokenObj = tokenStock[0]; else { isGenerating = false; return interaction.editReply({ content: '✘ Token expired.' }); } }
                 const ttl = Math.floor((tokenObj.expiresAt - Date.now()) / 1000);
                 if (ttl <= 0) { isGenerating = false; return interaction.editReply({ content: '✘ Token expired.' }); }
-                await validateTokenWithApi(tokenObj.bearer);
+                await validateTokenDetails(tokenObj.bearer);
                 const genId = generateGenerationId();
                 tokenObj.id = genId;
                 tokenObj.userId = interaction.user.id;
@@ -870,7 +884,7 @@ client.on('interactionCreate', async interaction => {
                 }
             }
 
-            // --- ANNOUNCE COMMAND ---
+            // --- ANNOUNCE ---
             if (commandName === 'announce') {
                 if (!hasAdminAccess(interaction)) {
                     return interaction.reply({ content: '✘ You need admin permissions to use this command.', flags: 64 });
@@ -944,7 +958,7 @@ client.on('interactionCreate', async interaction => {
                 return interaction.reply({ embeds: [embed], components: [row1, row2], ephemeral: false });
             }
 
-            // --- NEW: DONATION-PANEL (Token donation by JSON) ---
+            // --- DONATION-PANEL (token donation) ---
             if (commandName === 'donation-panel') {
                 if (!hasAdminAccess(interaction)) return interaction.reply({ content: '✘ Admin only.', flags: 64 });
                 const embed = new EmbedBuilder()
@@ -966,7 +980,49 @@ client.on('interactionCreate', async interaction => {
                 return interaction.reply({ embeds: [embed], components: [row], ephemeral: false });
             }
 
-            // --- ADMIN COMMANDS (stock, etc.) ---
+            // --- CHECK-PANEL (validate token) ---
+            if (commandName === 'check-panel') {
+                if (!hasAdminAccess(interaction)) return interaction.reply({ content: '✘ Admin only.', flags: 64 });
+                const embed = new EmbedBuilder()
+                    .setTitle('◆ CHECK TOKEN')
+                    .setDescription(
+                        '> Paste a JSON containing `token` (or bearer) and `refresh_token`.\n' +
+                        '> The bot will extract and validate them.'
+                    )
+                    .setColor(0x3498DB)
+                    .setFooter({ text: 'EAM.LOL · Token Check' });
+                const row = new ActionRowBuilder()
+                    .addComponents(
+                        new ButtonBuilder()
+                            .setCustomId('check_token_btn')
+                            .setLabel('🔍 Check Token')
+                            .setStyle(ButtonStyle.Primary)
+                    );
+                return interaction.reply({ embeds: [embed], components: [row], ephemeral: false });
+            }
+
+            // --- SPLIT-PANEL (split token) ---
+            if (commandName === 'split-panel') {
+                if (!hasAdminAccess(interaction)) return interaction.reply({ content: '✘ Admin only.', flags: 64 });
+                const embed = new EmbedBuilder()
+                    .setTitle('◆ SPLIT TOKEN')
+                    .setDescription(
+                        '> Paste a JSON containing `token` (or bearer) and `refresh_token`.\n' +
+                        '> The bot will extract and return them separately with copy buttons.'
+                    )
+                    .setColor(0x2ECC71)
+                    .setFooter({ text: 'EAM.LOL · Token Split' });
+                const row = new ActionRowBuilder()
+                    .addComponents(
+                        new ButtonBuilder()
+                            .setCustomId('split_token_btn')
+                            .setLabel('✂️ Split Token')
+                            .setStyle(ButtonStyle.Success)
+                    );
+                return interaction.reply({ embeds: [embed], components: [row], ephemeral: false });
+            }
+
+            // --- ADMIN COMMANDS ---
             const adminCommands = ['stock', 'stock_main', 'generator', 'force_refresh', 'remove-stock', 'reset-stock', 'gen-codes', 'remove-token', 'refresh_cooldown_all', 'panel'];
             if (adminCommands.includes(commandName)) {
                 if (!hasAdminAccess(interaction)) return interaction.reply({ content: '✘ Access Denied.', flags: 64 });
@@ -1094,7 +1150,6 @@ client.on('interactionCreate', async interaction => {
                 return;
             }
 
-            // Donation info button (from /donate-panel)
             if (interaction.customId === 'donate_info') {
                 await interaction.reply({
                     embeds: [new EmbedBuilder()
@@ -1111,12 +1166,8 @@ client.on('interactionCreate', async interaction => {
                 return;
             }
 
-            // NEW: Donate Token button (opens modal)
             if (interaction.customId === 'donate_token_btn') {
-                // Only admins can use the panel
-                if (!hasAdminAccess(interaction)) {
-                    return interaction.reply({ content: '✘ Admin only.', flags: 64 });
-                }
+                if (!hasAdminAccess(interaction)) return interaction.reply({ content: '✘ Admin only.', flags: 64 });
                 const modal = new ModalBuilder()
                     .setCustomId('donate_token_modal')
                     .setTitle('📥 Donate Token JSON');
@@ -1125,6 +1176,42 @@ client.on('interactionCreate', async interaction => {
                     .setLabel('Paste your JSON here')
                     .setStyle(TextInputStyle.Paragraph)
                     .setPlaceholder('{"refresh_token":"...","token":"..."}')
+                    .setRequired(true)
+                    .setMinLength(20)
+                    .setMaxLength(2000);
+                modal.addComponents(new ActionRowBuilder().addComponents(jsonInput));
+                return await interaction.showModal(modal);
+            }
+
+            // --- Check Token Button ---
+            if (interaction.customId === 'check_token_btn') {
+                if (!hasAdminAccess(interaction)) return interaction.reply({ content: '✘ Admin only.', flags: 64 });
+                const modal = new ModalBuilder()
+                    .setCustomId('check_token_modal')
+                    .setTitle('🔍 Check Token JSON');
+                const jsonInput = new TextInputBuilder()
+                    .setCustomId('check_json_input')
+                    .setLabel('Paste your JSON here')
+                    .setStyle(TextInputStyle.Paragraph)
+                    .setPlaceholder('{"token":"...","refresh_token":"..."}')
+                    .setRequired(true)
+                    .setMinLength(20)
+                    .setMaxLength(2000);
+                modal.addComponents(new ActionRowBuilder().addComponents(jsonInput));
+                return await interaction.showModal(modal);
+            }
+
+            // --- Split Token Button ---
+            if (interaction.customId === 'split_token_btn') {
+                if (!hasAdminAccess(interaction)) return interaction.reply({ content: '✘ Admin only.', flags: 64 });
+                const modal = new ModalBuilder()
+                    .setCustomId('split_token_modal')
+                    .setTitle('✂️ Split Token JSON');
+                const jsonInput = new TextInputBuilder()
+                    .setCustomId('split_json_input')
+                    .setLabel('Paste your JSON here')
+                    .setStyle(TextInputStyle.Paragraph)
+                    .setPlaceholder('{"token":"...","refresh_token":"..."}')
                     .setRequired(true)
                     .setMinLength(20)
                     .setMaxLength(2000);
@@ -1217,7 +1304,7 @@ client.on('interactionCreate', async interaction => {
 
         // --- MODAL SUBMITS ---
         if (interaction.isModalSubmit()) {
-            // --- Refresh Token Modal (admin) ---
+            // --- Refresh Token Modal ---
             if (interaction.customId === 'refresh_token_modal_submit') {
                 if (!hasAdminAccess(interaction)) return interaction.reply({ content: '✘ Access Denied.', flags: 64 });
                 await interaction.deferReply({ flags: 64 });
@@ -1247,7 +1334,7 @@ client.on('interactionCreate', async interaction => {
                 return interaction.editReply({ embeds: [embed], components: [row1, row2] });
             }
 
-            // --- Stock Modal (admin) ---
+            // --- Stock Modal ---
             if (interaction.customId === 'stock_modal') {
                 if (!hasAdminAccess(interaction)) return interaction.reply({ content: '✘ Access Denied.', flags: 64 });
                 await interaction.deferReply({ flags: 64 });
@@ -1270,7 +1357,7 @@ client.on('interactionCreate', async interaction => {
                 } else return interaction.editReply({ content: `✘ Invalid code: \`${code}\`` });
             }
 
-            // --- NEW: Donate Token Modal ---
+            // --- Donate Token Modal ---
             if (interaction.customId === 'donate_token_modal') {
                 if (!hasAdminAccess(interaction)) return interaction.reply({ content: '✘ Access Denied.', flags: 64 });
                 await interaction.deferReply({ flags: 64 });
@@ -1299,7 +1386,7 @@ client.on('interactionCreate', async interaction => {
                     const newRefresh = refreshResult.refresh;
                     const newExpiry = refreshResult.expiresAt;
                     // Optionally validate with API
-                    const apiValid = await validateTokenWithApi(newBearer);
+                    const apiValid = await validateTokenDetails(newBearer);
                     if (!apiValid.valid) {
                         return interaction.editReply({ content: `❌ Refreshed token still invalid according to API.` });
                     }
@@ -1321,9 +1408,9 @@ client.on('interactionCreate', async interaction => {
                     return interaction.editReply({ content: `✅ Token donated and refreshed successfully!\n📦 New token added to stock (${tokenStock.length} total).\n🔑 ID: \`${genId}\`\n⏳ ${humanExpiry(newExpiry)}` });
                 } else {
                     // Not expired – validate with API
-                    const apiValid = await validateTokenWithApi(bearer);
-                    if (!apiValid.valid) {
-                        return interaction.editReply({ content: `❌ Token validation failed: ${apiValid.reason || 'unknown'}` });
+                    const validation = await validateTokenDetails(bearer);
+                    if (!validation.valid) {
+                        return interaction.editReply({ content: `❌ Token validation failed.` });
                     }
                     // Add to stock
                     const genId = generateGenerationId();
@@ -1343,6 +1430,123 @@ client.on('interactionCreate', async interaction => {
                     return interaction.editReply({ content: `✅ Token donated successfully!\n📦 Added to stock (${tokenStock.length} total).\n🔑 ID: \`${genId}\`\n⏳ ${humanExpiry(expiry)}` });
                 }
             }
+
+            // --- NEW: Check Token Modal ---
+            if (interaction.customId === 'check_token_modal') {
+                if (!hasAdminAccess(interaction)) return interaction.reply({ content: '✘ Access Denied.', flags: 64 });
+                await interaction.deferReply({ flags: 64 });
+                const jsonRaw = interaction.fields.getTextInputValue('check_json_input').trim();
+                let parsed;
+                try {
+                    parsed = JSON.parse(jsonRaw);
+                } catch (e) {
+                    return interaction.editReply({ content: '❌ Invalid JSON. Please check the format.' });
+                }
+                const bearer = parsed.token || parsed.bearer || parsed.access_token;
+                const refresh = parsed.refresh_token;
+                if (!bearer || !refresh) {
+                    return interaction.editReply({ content: '❌ Missing `token` (or bearer) and/or `refresh_token` in the JSON.' });
+                }
+                const validation = await validateTokenDetails(bearer);
+                let embed = new EmbedBuilder()
+                    .setTitle('◆ TOKEN CHECK RESULT')
+                    .setColor(validation.valid ? 0x2ECC71 : 0xED4245)
+                    .addFields(
+                        { name: 'Bearer Token', value: `\`${bearer.slice(0, 30)}...\` (${bearer.length} chars)`, inline: false },
+                        { name: 'Refresh Token', value: `\`${refresh.slice(0, 30)}...\` (${refresh.length} chars)`, inline: false },
+                        { name: 'Status', value: validation.valid ? '✅ **Valid**' : '❌ **Invalid**', inline: true },
+                        { name: 'Expiry (UTC)', value: new Date(validation.expiry).toUTCString(), inline: true },
+                        { name: 'Seconds Remaining', value: validation.secondsRemaining > 0 ? `${validation.secondsRemaining}s` : 'Expired', inline: true },
+                        { name: 'API Validation', value: validation.apiValid ? '✅ Passed' : `⚠️ ${validation.apiError || 'Failed'}`, inline: false }
+                    )
+                    .setFooter({ text: 'EAM.LOL · Token Check' });
+                if (!validation.valid) {
+                    embed.setDescription('> This token is **invalid** – it may be expired or revoked.');
+                } else {
+                    embed.setDescription('> Token is **valid** – ready for use.');
+                }
+                // Add copy buttons for bearer and refresh
+                const row1 = new ActionRowBuilder()
+                    .addComponents(
+                        new ButtonBuilder()
+                            .setCustomId(`copy_bearer_${Date.now()}`)
+                            .setLabel('Copy Bearer')
+                            .setStyle(ButtonStyle.Primary),
+                        new ButtonBuilder()
+                            .setCustomId(`copy_refresh_${Date.now()}`)
+                            .setLabel('Copy Refresh')
+                            .setStyle(ButtonStyle.Success)
+                    );
+                // We need to store the full bearer/refresh somewhere to copy? We'll rely on the embed fields; our copy handler looks for fields named exactly "Bearer Token" and "Refresh Token".
+                // But we don't have those field names – we have "Bearer Token" and "Refresh Token" but with ellipsis. Let's add them as separate fields with full tokens in code blocks.
+                // To keep the embed clean, we'll add the full tokens as hidden fields? Better: the copy handler already works with field names containing "Bearer" and "Refresh".
+                // We'll add fields with full tokens as hidden (or use value with code block). But we don't want to show full tokens in the embed. We'll just use the button's custom data to send the token in the reply.
+                // Actually, the copy handler looks at embed fields. So we need to include fields with the full token.
+                // Let's add them as inline fields with code block, but that may be long. Alternatively, we can handle copy via button interaction directly.
+                // Since we already have a generic copy handler that reads embed fields, we can add the full token as a field value with a code block.
+                // But we also want to keep the embed clean. We'll add them as hidden fields (using \u200b) but that's ugly.
+                // Better: we'll just reply with the tokens in a separate ephemeral message? Or we can handle the button click directly.
+                // For simplicity, I'll keep the current copy handler and add fields with the full token but with a code block and maybe wrap them in a details field.
+                // I'll add a field "Full Bearer Token" and "Full Refresh Token" with the actual tokens in code blocks.
+                embed.addFields(
+                    { name: 'Full Bearer Token', value: `\`\`\`\n${bearer}\n\`\`\``, inline: false },
+                    { name: 'Full Refresh Token', value: `\`\`\`\n${refresh}\n\`\`\``, inline: false }
+                );
+                // Now copy buttons will work because they look for fields containing "Bearer" and "Refresh".
+                // Also, we can add direct copy buttons with custom IDs.
+                // We'll use the generic copy handler which reads fields.
+                const row2 = new ActionRowBuilder()
+                    .addComponents(
+                        new ButtonBuilder()
+                            .setCustomId(`copy_bearer_${Date.now()}`)
+                            .setLabel('📋 Copy Bearer')
+                            .setStyle(ButtonStyle.Primary),
+                        new ButtonBuilder()
+                            .setCustomId(`copy_refresh_${Date.now()}`)
+                            .setLabel('📋 Copy Refresh')
+                            .setStyle(ButtonStyle.Success)
+                    );
+                return interaction.editReply({ embeds: [embed], components: [row2] });
+            }
+
+            // --- NEW: Split Token Modal ---
+            if (interaction.customId === 'split_token_modal') {
+                if (!hasAdminAccess(interaction)) return interaction.reply({ content: '✘ Access Denied.', flags: 64 });
+                await interaction.deferReply({ flags: 64 });
+                const jsonRaw = interaction.fields.getTextInputValue('split_json_input').trim();
+                let parsed;
+                try {
+                    parsed = JSON.parse(jsonRaw);
+                } catch (e) {
+                    return interaction.editReply({ content: '❌ Invalid JSON. Please check the format.' });
+                }
+                const bearer = parsed.token || parsed.bearer || parsed.access_token;
+                const refresh = parsed.refresh_token;
+                if (!bearer || !refresh) {
+                    return interaction.editReply({ content: '❌ Missing `token` (or bearer) and/or `refresh_token` in the JSON.' });
+                }
+                const embed = new EmbedBuilder()
+                    .setTitle('✂️ TOKEN SPLIT')
+                    .setDescription('> Extracted Bearer and Refresh tokens – copy them individually below.')
+                    .setColor(0x2ECC71)
+                    .addFields(
+                        { name: 'Bearer Token', value: `\`\`\`\n${bearer}\n\`\`\``, inline: false },
+                        { name: 'Refresh Token', value: `\`\`\`\n${refresh}\n\`\`\``, inline: false }
+                    )
+                    .setFooter({ text: 'EAM.LOL · Token Split' });
+                const row = new ActionRowBuilder()
+                    .addComponents(
+                        new ButtonBuilder()
+                            .setCustomId(`copy_bearer_${Date.now()}`)
+                            .setLabel('📋 Copy Bearer')
+                            .setStyle(ButtonStyle.Primary),
+                        new ButtonBuilder()
+                            .setCustomId(`copy_refresh_${Date.now()}`)
+                            .setLabel('📋 Copy Refresh')
+                            .setStyle(ButtonStyle.Success)
+                    );
+                return interaction.editReply({ embeds: [embed], components: [row] });
+            }
         }
     } catch (err) {
         console.error(`❌ [EAM.LOL] Interaction Error:`, err);
@@ -1354,16 +1558,27 @@ client.on('interactionCreate', async interaction => {
 client.on('interactionCreate', async interaction => {
     if (interaction.isButton() && interaction.customId.startsWith('copy_')) {
         const parts = interaction.customId.split('_');
-        const type = parts[1];
+        const type = parts[1]; // 'bearer' or 'refresh'
         const embed = interaction.message.embeds[0];
         if (!embed) return;
         let token = '';
         for (const field of embed.fields) {
-            if (field.name.includes('Bearer') && type === 'bearer') token = field.value.replace(/```\n/g, '').replace(/\n```/g, '').trim();
-            if (field.name.includes('Refresh') && type === 'refresh') token = field.value.replace(/```\n/g, '').replace(/\n```/g, '').trim();
+            if (field.name.includes('Bearer') && type === 'bearer') {
+                // Extract from code block
+                const match = field.value.match(/```\n([\s\S]*?)\n```/);
+                if (match) token = match[1].trim();
+                else token = field.value.replace(/```\n/g, '').replace(/\n```/g, '').trim();
+                break;
+            }
+            if (field.name.includes('Refresh') && type === 'refresh') {
+                const match = field.value.match(/```\n([\s\S]*?)\n```/);
+                if (match) token = match[1].trim();
+                else token = field.value.replace(/```\n/g, '').replace(/\n```/g, '').trim();
+                break;
+            }
         }
-        if (!token) return interaction.reply({ content: 'No token found.', flags: 64 });
-        await interaction.reply({ content: `✔ **${type.charAt(0).toUpperCase() + type.slice(1)} Token copied!**\n\`\`\`\n${token}\n\`\`\``, flags: 64 });
+        if (!token) return interaction.reply({ content: '❌ No token found.', flags: 64 });
+        await interaction.reply({ content: `✅ **${type.charAt(0).toUpperCase() + type.slice(1)} Token copied!**\n\`\`\`\n${token}\n\`\`\``, flags: 64 });
         try { await interaction.user.send({ content: `**${type.charAt(0).toUpperCase() + type.slice(1)} Token**\n\`\`\`\n${token}\n\`\`\`` }); } catch (dmErr) {}
     }
 });
