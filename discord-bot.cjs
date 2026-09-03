@@ -169,10 +169,21 @@ function humanExpiry(expiresAt) {
     return `expires in ${formatRemainingTime(expiresAt)} (${new Date(expiresAt).toUTCString()})`;
 }
 
-// --- TOKEN VALIDATION ---
-async function validateTokenDetails(bearerToken) {
+// --- TOKEN VALIDATION (Now includes Refresh Token Check) ---
+async function validateTokenDetails(bearerToken, refreshToken = null) {
     const expiry = getTokenExpiryMs(bearerToken);
     const expired = Date.now() >= expiry;
+
+    // Check Refresh Token if provided
+    let refreshExpiry = null;
+    let refreshExpired = false;
+    let refreshSecondsRemaining = null;
+    if (refreshToken) {
+        refreshExpiry = getTokenExpiryMs(refreshToken);
+        refreshExpired = Date.now() >= refreshExpiry;
+        refreshSecondsRemaining = Math.floor((refreshExpiry - Date.now()) / 1000);
+    }
+
     let apiValid = false;
     let apiError = null;
     try {
@@ -207,7 +218,10 @@ async function validateTokenDetails(bearerToken) {
         expiry,
         apiValid,
         apiError,
-        secondsRemaining: Math.floor((expiry - Date.now()) / 1000)
+        secondsRemaining: Math.floor((expiry - Date.now()) / 1000),
+        refreshExpiry,
+        refreshExpired,
+        refreshSecondsRemaining
     };
 }
 
@@ -1368,7 +1382,7 @@ client.on('interactionCreate', async interaction => {
                 }
             }
 
-            // REMOVED ADMIN CHECK FROM CHECK MODAL
+            // --- UPGRADED CHECK TOKEN MODAL ---
             if (interaction.customId === 'check_token_modal') {
                 await interaction.deferReply({ flags: 64 });
                 const jsonRaw = interaction.fields.getTextInputValue('check_json_input').trim();
@@ -1383,21 +1397,28 @@ client.on('interactionCreate', async interaction => {
                     refresh = parsed.refresh_token;
                 }
                 if (!bearer || !refresh) return interaction.editReply({ content: 'Missing `token` (or bearer) and/or `refresh_token` in the JSON.' });
-                const validation = await validateTokenDetails(bearer);
+                
+                const validation = await validateTokenDetails(bearer, refresh);
+                
                 let embed = new EmbedBuilder()
                     .setTitle('◆ TOKEN CHECK RESULT ◆')
-                    .setColor(validation.valid ? 0x2ECC71 : 0xED4245)
+                    .setColor(validation.valid && !validation.refreshExpired ? 0x2ECC71 : 0xED4245)
                     .addFields(
                         { name: 'Bearer Token', value: `\`${bearer.slice(0, 30)}...\` (${bearer.length} chars)`, inline: false },
                         { name: 'Refresh Token', value: `\`${refresh.slice(0, 30)}...\` (${refresh.length} chars)`, inline: false },
-                        { name: 'Status', value: validation.valid ? 'VALID' : 'INVALID', inline: true },
-                        { name: 'Expiry (UTC)', value: new Date(validation.expiry).toUTCString(), inline: true },
-                        { name: 'Seconds Remaining', value: validation.secondsRemaining > 0 ? `${validation.secondsRemaining}s` : 'Expired', inline: true },
-                        { name: 'API Validation', value: validation.apiValid ? 'Passed' : `Failed: ${validation.apiError || 'Unknown'}`, inline: false }
+                        { name: 'Bearer Status', value: validation.valid ? '✔ VALID' : '✕ INVALID', inline: true },
+                        { name: 'Refresh Status', value: validation.refreshExpired ? '✕ EXPIRED' : '✔ VALID', inline: true },
+                        { name: 'Bearer Expires', value: new Date(validation.expiry).toUTCString(), inline: true },
+                        { name: 'Bearer Remaining', value: validation.secondsRemaining > 0 ? `${validation.secondsRemaining}s` : 'Expired', inline: true },
+                        { name: 'Refresh Expires', value: validation.refreshExpiry ? new Date(validation.refreshExpiry).toUTCString() : 'N/A', inline: true },
+                        { name: 'Refresh Remaining', value: validation.refreshSecondsRemaining > 0 ? `${validation.refreshSecondsRemaining}s` : (validation.refreshExpiry ? 'Expired' : 'N/A'), inline: true },
+                        { name: 'API Validation', value: validation.apiValid ? '✔ Passed' : `✕ ${validation.apiError || 'Failed'}`, inline: false }
                     )
                     .setFooter({ text: getLiveUIStats(interaction) });
-                if (!validation.valid) embed.setDescription('> This token is invalid – it may be expired or revoked.');
-                else embed.setDescription('> Token is valid – ready for use.');
+                
+                if (!validation.valid) embed.setDescription('> This token is invalid – it may be expired, revoked, or the refresh token is dead.');
+                else embed.setDescription('> Token is valid and ready for use.');
+                
                 embed.addFields(
                     { name: 'Full Bearer Token', value: `\`\`\`\n${bearer}\n\`\`\``, inline: false },
                     { name: 'Full Refresh Token', value: `\`\`\`\n${refresh}\n\`\`\``, inline: false }
@@ -1446,7 +1467,7 @@ client.on('interactionCreate', async interaction => {
     }
 });
 
-// --- COPY BUTTON HANDLER ---
+// --- COPY BUTTON HANDLER (Fixed "Didn't respond in time") ---
 client.on('interactionCreate', async interaction => {
     if (interaction.isButton() && interaction.customId.startsWith('copy_')) {
         const parts = interaction.customId.split('_');
@@ -1469,8 +1490,19 @@ client.on('interactionCreate', async interaction => {
             }
         }
         if (!token) return interaction.reply({ content: 'No token found.', flags: 64 });
-        await interaction.reply({ content: `**${type.charAt(0).toUpperCase() + type.slice(1)} Token copied!**\n\`\`\`\n${token}\n\`\`\``, flags: 64 });
-        try { await interaction.user.send({ content: `**${type.charAt(0).toUpperCase() + type.slice(1)} Token**\n\`\`\`\n${token}\n\`\`\`` }); } catch (dmErr) {}
+
+        // Immediately defer to prevent timeouts
+        await interaction.deferReply({ flags: 64 });
+
+        // Attempt to DM the user the token
+        try {
+            await interaction.user.send({ content: `**${type.charAt(0).toUpperCase() + type.slice(1)} Token**\n\`\`\`\n${token}\n\`\`\`` });
+        } catch (dmErr) {
+            // If DMs are closed, just continue (we will show it in the interaction)
+        }
+
+        // Now edit the interaction with the copied token
+        return interaction.editReply({ content: `**${type.charAt(0).toUpperCase() + type.slice(1)} Token copied!**\n\`\`\`\n${token}\n\`\`\`` });
     }
 });
 
