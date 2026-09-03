@@ -1357,7 +1357,7 @@ client.on('interactionCreate', async interaction => {
                 } else return interaction.editReply({ content: `✘ Invalid code: \`${code}\`` });
             }
 
-            // --- Donate Token Modal ---
+            // --- Donate Token Modal (fixed extraction) ---
             if (interaction.customId === 'donate_token_modal') {
                 if (!hasAdminAccess(interaction)) return interaction.reply({ content: '✘ Access Denied.', flags: 64 });
                 await interaction.deferReply({ flags: 64 });
@@ -1368,8 +1368,15 @@ client.on('interactionCreate', async interaction => {
                 } catch (e) {
                     return interaction.editReply({ content: '❌ Invalid JSON. Please check the format.' });
                 }
-                const bearer = parsed.token || parsed.bearer || parsed.access_token;
-                const refresh = parsed.refresh_token;
+                let bearer, refresh;
+                if (parsed.token && typeof parsed.token === 'object') {
+                    // Nested: { token: { bearer, refresh_token } }
+                    bearer = parsed.token.bearer || parsed.token.token || parsed.token.access_token;
+                    refresh = parsed.token.refresh_token;
+                } else {
+                    bearer = parsed.token || parsed.bearer || parsed.access_token;
+                    refresh = parsed.refresh_token;
+                }
                 if (!bearer || !refresh) {
                     return interaction.editReply({ content: '❌ Missing `token` (or bearer) and/or `refresh_token` in the JSON.' });
                 }
@@ -1431,7 +1438,7 @@ client.on('interactionCreate', async interaction => {
                 }
             }
 
-            // --- NEW: Check Token Modal ---
+            // --- Check Token Modal (fixed extraction) ---
             if (interaction.customId === 'check_token_modal') {
                 if (!hasAdminAccess(interaction)) return interaction.reply({ content: '✘ Access Denied.', flags: 64 });
                 await interaction.deferReply({ flags: 64 });
@@ -1442,8 +1449,14 @@ client.on('interactionCreate', async interaction => {
                 } catch (e) {
                     return interaction.editReply({ content: '❌ Invalid JSON. Please check the format.' });
                 }
-                const bearer = parsed.token || parsed.bearer || parsed.access_token;
-                const refresh = parsed.refresh_token;
+                let bearer, refresh;
+                if (parsed.token && typeof parsed.token === 'object') {
+                    bearer = parsed.token.bearer || parsed.token.token || parsed.token.access_token;
+                    refresh = parsed.token.refresh_token;
+                } else {
+                    bearer = parsed.token || parsed.bearer || parsed.access_token;
+                    refresh = parsed.refresh_token;
+                }
                 if (!bearer || !refresh) {
                     return interaction.editReply({ content: '❌ Missing `token` (or bearer) and/or `refresh_token` in the JSON.' });
                 }
@@ -1465,36 +1478,11 @@ client.on('interactionCreate', async interaction => {
                 } else {
                     embed.setDescription('> Token is **valid** – ready for use.');
                 }
-                // Add copy buttons for bearer and refresh
-                const row1 = new ActionRowBuilder()
-                    .addComponents(
-                        new ButtonBuilder()
-                            .setCustomId(`copy_bearer_${Date.now()}`)
-                            .setLabel('Copy Bearer')
-                            .setStyle(ButtonStyle.Primary),
-                        new ButtonBuilder()
-                            .setCustomId(`copy_refresh_${Date.now()}`)
-                            .setLabel('Copy Refresh')
-                            .setStyle(ButtonStyle.Success)
-                    );
-                // We need to store the full bearer/refresh somewhere to copy? We'll rely on the embed fields; our copy handler looks for fields named exactly "Bearer Token" and "Refresh Token".
-                // But we don't have those field names – we have "Bearer Token" and "Refresh Token" but with ellipsis. Let's add them as separate fields with full tokens in code blocks.
-                // To keep the embed clean, we'll add the full tokens as hidden fields? Better: the copy handler already works with field names containing "Bearer" and "Refresh".
-                // We'll add fields with full tokens as hidden (or use value with code block). But we don't want to show full tokens in the embed. We'll just use the button's custom data to send the token in the reply.
-                // Actually, the copy handler looks at embed fields. So we need to include fields with the full token.
-                // Let's add them as inline fields with code block, but that may be long. Alternatively, we can handle copy via button interaction directly.
-                // Since we already have a generic copy handler that reads embed fields, we can add the full token as a field value with a code block.
-                // But we also want to keep the embed clean. We'll add them as hidden fields (using \u200b) but that's ugly.
-                // Better: we'll just reply with the tokens in a separate ephemeral message? Or we can handle the button click directly.
-                // For simplicity, I'll keep the current copy handler and add fields with the full token but with a code block and maybe wrap them in a details field.
-                // I'll add a field "Full Bearer Token" and "Full Refresh Token" with the actual tokens in code blocks.
+                // Add full tokens for copying
                 embed.addFields(
                     { name: 'Full Bearer Token', value: `\`\`\`\n${bearer}\n\`\`\``, inline: false },
                     { name: 'Full Refresh Token', value: `\`\`\`\n${refresh}\n\`\`\``, inline: false }
                 );
-                // Now copy buttons will work because they look for fields containing "Bearer" and "Refresh".
-                // Also, we can add direct copy buttons with custom IDs.
-                // We'll use the generic copy handler which reads fields.
                 const row2 = new ActionRowBuilder()
                     .addComponents(
                         new ButtonBuilder()
@@ -1509,7 +1497,7 @@ client.on('interactionCreate', async interaction => {
                 return interaction.editReply({ embeds: [embed], components: [row2] });
             }
 
-            // --- NEW: Split Token Modal ---
+            // --- Split Token Modal (fixed extraction) ---
             if (interaction.customId === 'split_token_modal') {
                 if (!hasAdminAccess(interaction)) return interaction.reply({ content: '✘ Access Denied.', flags: 64 });
                 await interaction.deferReply({ flags: 64 });
@@ -1520,8 +1508,14 @@ client.on('interactionCreate', async interaction => {
                 } catch (e) {
                     return interaction.editReply({ content: '❌ Invalid JSON. Please check the format.' });
                 }
-                const bearer = parsed.token || parsed.bearer || parsed.access_token;
-                const refresh = parsed.refresh_token;
+                let bearer, refresh;
+                if (parsed.token && typeof parsed.token === 'object') {
+                    bearer = parsed.token.bearer || parsed.token.token || parsed.token.access_token;
+                    refresh = parsed.token.refresh_token;
+                } else {
+                    bearer = parsed.token || parsed.bearer || parsed.access_token;
+                    refresh = parsed.refresh_token;
+                }
                 if (!bearer || !refresh) {
                     return interaction.editReply({ content: '❌ Missing `token` (or bearer) and/or `refresh_token` in the JSON.' });
                 }
