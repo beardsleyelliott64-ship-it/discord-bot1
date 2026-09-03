@@ -433,7 +433,7 @@ function giveNewTokenFromAccounts() {
     }
 }
 
-// --- REFRESHER LOGIC (IMPROVED) ---
+// --- REFRESHER LOGIC (FORCED EVERY 2:30 MINUTES) ---
 async function refreshTokenInStock() {
     if (isGenerating) {
         console.log('⏸️ [EAM.LOL] Skipping auto-refresh — generation in progress');
@@ -444,25 +444,20 @@ async function refreshTokenInStock() {
         giveNewTokenFromAccounts();
         return;
     }
+    
     const tokenObj = tokenStock[0];
     if (!tokenObj.refresh) {
         console.log('❌ [EAM.LOL] No refresh token in stock – loading new token...');
         giveNewTokenFromAccounts();
         return;
     }
-    const ttl = secondsUntilExpiry(tokenObj.bearer);
-    console.log(`⏱️ [EAM.LOL] Current token TTL: ${ttl}s`);
 
-    if (ttl > 600) {
-        console.log(`✅ [EAM.LOL] Token valid for ${ttl}s — no refresh needed.`);
-        return;
-    }
-
-    console.log(`🔄 [EAM.LOL] Token expiring soon (${ttl}s) — attempting refresh...`);
+    // 🚀 FORCED REFRESH EVERY 2:30 MINUTES
+    console.log(`🔄 [EAM.LOL] 2:30 interval reached - Forcing token refresh...`);
     try {
         const result = await refreshToken(tokenObj.refresh);
         if (result.success) {
-            console.log('✅ [EAM.LOL] Token refreshed successfully!');
+            console.log('✅ [EAM.LOL] Token refreshed successfully! Max TTL applied.');
             consecutiveFails = 0;
         } else {
             console.log('❌ [EAM.LOL] Refresh failed — getting new token from accounts...');
@@ -486,14 +481,16 @@ function checkAndRemoveExpiredStock() {
     }
 }
 
-const AUTO_REFRESH_INTERVAL = 60 * 1000; // check every 60 seconds
+// CHANGE HERE: Auto-refresh interval (2 minutes and 30 seconds)
+const AUTO_REFRESH_INTERVAL = 150 * 1000; 
 let refreshInterval = null;
 function startAutoRefresh() {
-    console.log('🔄 [EAM.LOL] AUTO-REFRESH STARTED (interval: 60s)');
+    console.log('🔄 [EAM.LOL] AUTO-REFRESH STARTED (interval: 2m 30s)');
     setTimeout(async () => {
         await findWorkingApiUrl();
         if (tokenStock.length === 0 && accounts.length > 0) giveNewTokenFromAccounts();
         await refreshTokenInStock();
+        // Set the interval to the 2.5 minute timer
         refreshInterval = setInterval(async () => {
             checkAndRemoveExpiredStock();
             await refreshTokenInStock();
