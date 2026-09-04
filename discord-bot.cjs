@@ -48,8 +48,8 @@ const VIP_ROLE_ID = "1542337978016469093";
 const BOOSTER_ROLE_ID = "1542337979807178832";
 const NO_COOLDOWN_ROLE_ID = ADMIN_ROLE_ID;
 const GENERATION_COOLDOWN = 0;
-const REQUIRED_ROLE_ID = "1544637223058542642";
-const MOD_ROLE_ID = "1544645742373765151";
+const REQUIRED_ROLE_ID = "1544637223058542642"; // Only this role can see applications
+const MOD_ROLE_ID = "1544645742373765151"; // Role given when accepted
 const MOD_APP_CHANNEL_ID = "1545515386328326256";
 
 const DONATION_LINKS = {
@@ -938,6 +938,9 @@ async function showRemoveStock(interaction, page = 0) {
     await interaction.reply({ embeds: [embed], components, flags: 64 });
 }
 
+// --- APPLICATION DATA STORE ---
+const modApplications = new Map();
+
 // --- SLASH COMMANDS ---
 const commandsData = [
     new SlashCommandBuilder().setName('8ball').setDescription('Ask the magic 8ball a question').addStringOption(opt => opt.setName('question').setDescription('Your question').setRequired(true)),
@@ -1428,7 +1431,7 @@ client.on('interactionCreate', async interaction => {
                     .setRequired(false)
                     .setMaxLength(1000);
 
-                // IMPORTANT: Only 5 rows allowed! (This is the fix for the BASE_TYPE_MAX_LENGTH error)
+                // IMPORTANT: Only 5 rows allowed!
                 modal.addComponents(
                     new ActionRowBuilder().addComponents(nameInput),
                     new ActionRowBuilder().addComponents(ageInput),
@@ -1438,6 +1441,53 @@ client.on('interactionCreate', async interaction => {
                 );
 
                 return await interaction.showModal(modal);
+            }
+
+            // --- ACCEPT / DECLINE APPLICATION ---
+            if (interaction.customId === 'accept_mod_app' || interaction.customId === 'decline_mod_app') {
+                if (!hasRequiredRole(interaction) && !hasAdminAccess(interaction)) {
+                    return interaction.reply({ content: 'You do not have permission to handle applications.', flags: 64 });
+                }
+
+                const msgId = interaction.message.id;
+                const appData = modApplications.get(msgId);
+                if (!appData) {
+                    return interaction.reply({ content: 'Application data not found or expired.', flags: 64 });
+                }
+
+                const applicantId = appData.userId;
+                const applicant = await client.users.fetch(applicantId).catch(() => null);
+
+                if (interaction.customId === 'accept_mod_app') {
+                    // Add MOD_ROLE_ID to the applicant
+                    try {
+                        const guild = interaction.guild;
+                        const member = await guild.members.fetch(applicantId);
+                        const role = guild.roles.cache.get(MOD_ROLE_ID);
+                        if (role) {
+                            await member.roles.add(role);
+                        }
+                        
+                        await interaction.reply({ content: 'Application accepted!', flags: 64 });
+                        await interaction.message.edit({ components: [] }); // Disable buttons
+
+                        if (applicant) {
+                            await applicant.send({ embeds: [new EmbedBuilder().setTitle('✅ Application Accepted').setDescription('Congratulations! You have been accepted as a Moderator. Welcome to the team!').setColor(0x2ECC71)] });
+                        }
+                    } catch (err) {
+                        console.error('[ERROR] Could not accept application:', err);
+                        await interaction.reply({ content: 'Failed to accept application (check bot permissions).', flags: 64 });
+                    }
+                } else {
+                    await interaction.reply({ content: 'Application declined.', flags: 64 });
+                    await interaction.message.edit({ components: [] }); // Disable buttons
+
+                    if (applicant) {
+                        await applicant.send({ embeds: [new EmbedBuilder().setTitle('❌ Application Declined').setDescription('We are sorry, but your application was not accepted at this time.').setColor(0xED4245)] });
+                    }
+                }
+                modApplications.delete(msgId);
+                return;
             }
 
             // --- SUBSCRIPTION PANEL BUTTONS ---
@@ -1650,7 +1700,34 @@ client.on('interactionCreate', async interaction => {
 
                 if (channel) {
                     try {
-                        await channel.send({ embeds: [embed] });
+                        // Configure permissions: Only REQUIRED_ROLE_ID can view
+                        const requiredRole = interaction.guild.roles.cache.get(REQUIRED_ROLE_ID);
+                        if (requiredRole) {
+                            await channel.permissionOverwrites.edit(requiredRole, {
+                                ViewChannel: true,
+                                SendMessages: true,
+                                ReadMessageHistory: true
+                            });
+                            await channel.permissionOverwrites.edit(interaction.guild.id, {
+                                ViewChannel: false
+                            });
+                        }
+
+                        // Add Accept/Decline buttons
+                        const buttons = new ActionRowBuilder()
+                            .addComponents(
+                                new ButtonBuilder().setCustomId('accept_mod_app').setLabel('✅ Accept').setStyle(ButtonStyle.Success),
+                                new ButtonBuilder().setCustomId('decline_mod_app').setLabel('❌ Decline').setStyle(ButtonStyle.Danger)
+                            );
+
+                        const sentMsg = await channel.send({ embeds: [embed], components: [buttons] });
+                        
+                        // Store application data for the buttons
+                        modApplications.set(sentMsg.id, {
+                            userId: interaction.user.id,
+                            username: interaction.user.tag
+                        });
+
                         await interaction.editReply({ content: '✅ Your application has been submitted successfully! Staff will review it shortly.' });
                         try {
                             await interaction.user.send({ embeds: [new EmbedBuilder().setTitle('📨 Application Received').setDescription('Your moderator application has been submitted. We will get back to you soon.').setColor(0x2ECC71)] });
