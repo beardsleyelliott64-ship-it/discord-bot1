@@ -86,7 +86,7 @@ let isRefreshing = false;
 
 // --- SUBSCRIPTION SYSTEM ---
 const subscribedUsers = new Set(); // user IDs
-const AUTO_DELIVERY_INTERVAL = 10 * 60 * 1000; // 10 minutes
+const AUTO_DELIVERY_INTERVAL = 2 * 60 * 1000; // 2 minutes (was 10)
 let deliveryInterval = null;
 
 // --- MULTI-ACCOUNT SUPPORT ---
@@ -566,7 +566,7 @@ async function deliverTokenToUser(user) {
             added_at: new Date().toISOString(),
             generation_id: genId
         },
-        message: "EAM.LOL Auto-Delivery (every 10 min)",
+        message: "EAM.LOL Auto-Delivery (every 2 min)",
         credits: "@elliott",
         auto_refresh: "Refreshed automatically"
     };
@@ -585,7 +585,7 @@ async function deliverTokenToUser(user) {
             { name: 'Generation ID', value: genId, inline: true },
             { name: 'Expires', value: expiryText, inline: true }
         )
-        .setFooter({ text: 'EAM.LOL | Auto-Subscription (10 min interval)' });
+        .setFooter({ text: 'EAM.LOL | Auto-Subscription (2 min interval)' });
 
     try {
         await user.send({ embeds: [embed], files: [attachment, textAttachment] });
@@ -899,10 +899,10 @@ const commandsData = [
     new SlashCommandBuilder().setName('split-panel').setDescription('Post a panel to split a token JSON into bearer and refresh.'),
     new SlashCommandBuilder().setName('announce').setDescription('DM all members with your announcement message.').addStringOption(opt => opt.setName('message').setDescription('The announcement message').setRequired(true)).setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     new SlashCommandBuilder().setName('check-expiry').setDescription('Check when a token expires (based on JWT exp claim)').addStringOption(opt => opt.setName('token').setDescription('The token to check').setRequired(true)),
-    // New subscription commands
+    // Subscription commands
     new SlashCommandBuilder()
         .setName('subscribe')
-        .setDescription('Subscribe to automatic token deliveries in DMs (every 10 minutes)'),
+        .setDescription('Subscribe to automatic token deliveries in DMs (every 2 minutes)'),
     new SlashCommandBuilder()
         .setName('unsubscribe')
         .setDescription('Stop automatic token deliveries')
@@ -940,7 +940,7 @@ client.on('interactionCreate', async interaction => {
                 subscribedUsers.add(interaction.user.id);
                 // Send a test token immediately
                 await deliverTokenToUser(interaction.user);
-                return interaction.reply({ content: '✅ You will now receive a fresh token in your DMs **every 10 minutes**!', flags: 64 });
+                return interaction.reply({ content: '✅ You will now receive a fresh token in your DMs **every 2 minutes**!', flags: 64 });
             }
 
             if (commandName === 'unsubscribe') {
@@ -966,7 +966,7 @@ client.on('interactionCreate', async interaction => {
                 )
                 .addFields(
                     { name: '◆ GENERATION', value: '/token - Generate a fresh token\n/generator - Post the generator panel', inline: true },
-                    { name: '◆ SUBSCRIPTION', value: '/subscribe - Get tokens in DMs every 10 min\n/unsubscribe - Stop auto-delivery', inline: true },
+                    { name: '◆ SUBSCRIPTION', value: '/subscribe - Get tokens in DMs every 2 min\n/unsubscribe - Stop auto-delivery', inline: true },
                     { name: '◆ UTILITIES', value: '/check-expiry - Check expiry of a raw token\n/check-panel - Check/validate a token from JSON', inline: true },
                     { name: '◆ EXTRAS', value: '/donation-panel - Donate a token\n/split-panel - Split a token JSON', inline: true },
                     { name: '◆ ADMIN ONLY', value: '/stock - Add token stock\n/force_refresh - Force refresh\n/announce - DM all members', inline: true }
