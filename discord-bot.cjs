@@ -1412,14 +1412,6 @@ client.on('interactionCreate', async interaction => {
                     .setRequired(true)
                     .setMaxLength(1000);
 
-                const experienceInput = new TextInputBuilder()
-                    .setCustomId('mod_app_experience')
-                    .setLabel('Do you have any moderation experience?')
-                    .setStyle(TextInputStyle.Paragraph)
-                    .setPlaceholder('Previous roles, servers, etc.')
-                    .setRequired(false)
-                    .setMaxLength(1000);
-
                 const availabilityInput = new TextInputBuilder()
                     .setCustomId('mod_app_availability')
                     .setLabel('Availability (timezone & hours)')
@@ -1428,21 +1420,21 @@ client.on('interactionCreate', async interaction => {
                     .setRequired(true)
                     .setMaxLength(200);
 
-                const extraInput = new TextInputBuilder()
-                    .setCustomId('mod_app_extra')
-                    .setLabel('Anything else you want to add?')
+                const experienceInput = new TextInputBuilder()
+                    .setCustomId('mod_app_experience')
+                    .setLabel('Experience & Anything Else')
                     .setStyle(TextInputStyle.Paragraph)
-                    .setPlaceholder('Optional extra info')
+                    .setPlaceholder('Previous roles, servers, or anything else we should know...')
                     .setRequired(false)
                     .setMaxLength(1000);
 
+                // IMPORTANT: Only 5 rows allowed! (This is the fix for the BASE_TYPE_MAX_LENGTH error)
                 modal.addComponents(
                     new ActionRowBuilder().addComponents(nameInput),
                     new ActionRowBuilder().addComponents(ageInput),
                     new ActionRowBuilder().addComponents(whyInput),
-                    new ActionRowBuilder().addComponents(experienceInput),
                     new ActionRowBuilder().addComponents(availabilityInput),
-                    new ActionRowBuilder().addComponents(extraInput)
+                    new ActionRowBuilder().addComponents(experienceInput)
                 );
 
                 return await interaction.showModal(modal);
@@ -1627,9 +1619,8 @@ client.on('interactionCreate', async interaction => {
                 const name = interaction.fields.getTextInputValue('mod_app_name');
                 const age = interaction.fields.getTextInputValue('mod_app_age');
                 const why = interaction.fields.getTextInputValue('mod_app_why');
-                const experience = interaction.fields.getTextInputValue('mod_app_experience') || 'None provided';
                 const availability = interaction.fields.getTextInputValue('mod_app_availability');
-                const extra = interaction.fields.getTextInputValue('mod_app_extra') || 'None';
+                const extra = interaction.fields.getTextInputValue('mod_app_experience') || 'None'; // Combined field
 
                 const embed = new EmbedBuilder()
                     .setTitle('📩 New Moderator Application')
@@ -1640,7 +1631,6 @@ client.on('interactionCreate', async interaction => {
                         { name: '📛 Full Name', value: name, inline: true },
                         { name: '🎂 Age', value: age, inline: true },
                         { name: '❓ Why do you want to be a mod?', value: why, inline: false },
-                        { name: '📋 Experience', value: experience, inline: false },
                         { name: '🕒 Availability', value: availability, inline: false },
                         { name: '📝 Additional Info', value: extra, inline: false }
                     )
