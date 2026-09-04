@@ -1820,16 +1820,25 @@ const server = http.createServer((req, res) => {
 const PORT = process.env.PORT || 10000;
 server.listen(PORT, '0.0.0.0', () => console.log(`[SYSTEM] [EAM.LOL] HTTP server on port ${PORT}`));
 
-// --- LOGIN (FIXED – no artificial timeout) ---
+// --- LOGIN (with error handling) ---
 if (!process.env.DISCORD_TOKEN) {
     console.error('[ERROR] [EAM.LOL] DISCORD_TOKEN environment variable is missing.');
     process.exit(1);
 } else {
+    // Log the token length (first few chars for debugging) – be careful not to expose the full token
+    console.log(`[INFO] [EAM.LOL] Token length: ${process.env.DISCORD_TOKEN.length}`);
+    console.log(`[INFO] [EAM.LOL] Token starts with: ${process.env.DISCORD_TOKEN.substring(0, 10)}...`);
+
+    // Add a global error listener
+    client.on('error', (error) => {
+        console.error('[ERROR] [EAM.LOL] Client error:', error);
+    });
+
     async function loginWithRetry(attempts = 5) {
         for (let i = 1; i <= attempts; i++) {
             try {
                 console.log(`[INFO] [EAM.LOL] Login attempt ${i}/${attempts}...`);
-                // No Promise.race – just let the login resolve or reject naturally
+                // No timeout – just let it resolve or reject
                 await client.login(process.env.DISCORD_TOKEN);
                 console.log('[SUCCESS] [EAM.LOL] Login successful!');
                 return true;
@@ -1839,7 +1848,7 @@ if (!process.env.DISCORD_TOKEN) {
                     console.error('[ERROR] [EAM.LOL] All login attempts failed. Check your token and intents.');
                     return false;
                 }
-                // Wait longer between attempts (exponential backoff)
+                // Wait longer between attempts
                 await new Promise(r => setTimeout(r, 10000 * i));
             }
         }
