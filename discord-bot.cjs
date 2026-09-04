@@ -989,7 +989,6 @@ client.once('ready', async () => {
 // --- INTERACTION HANDLER ---
 client.on('interactionCreate', async interaction => {
     try {
-        // --- SLASH COMMANDS ---
         if (interaction.isChatInputCommand()) {
             if (!hasRequiredRole(interaction)) {
                 console.log(`[ACCESS DENIED] ${interaction.user.tag} tried to use /${interaction.commandName} but lacks role ${REQUIRED_ROLE_ID}`);
@@ -1006,7 +1005,6 @@ client.on('interactionCreate', async interaction => {
 
             const { commandName, options } = interaction;
 
-            // --- SUBSCRIPTION COMMANDS ---
             if (commandName === 'subscribe') {
                 if (subscribedUsers.has(interaction.user.id)) {
                     return interaction.editReply({ content: 'You are already subscribed!', flags: 64 });
@@ -1086,7 +1084,6 @@ client.on('interactionCreate', async interaction => {
                 return;
             }
 
-            // --- FAST COMMANDS ---
             if (commandName === 'ping') {
                 return interaction.reply({ content: `Pong! ${client.ws.ping}ms`, flags: 64 });
             }
@@ -1125,13 +1122,11 @@ client.on('interactionCreate', async interaction => {
                 return interaction.reply({ embeds: [embed] });
             }
 
-            // --- TOKEN GENERATION (already deferred) ---
             if (commandName === 'token') {
                 await processTokenGeneration(interaction, 'Public Token');
                 return;
             }
 
-            // --- ANNOUNCE ---
             if (commandName === 'announce') {
                 if (!hasAdminAccess(interaction)) return interaction.editReply({ content: 'You need admin permissions to use this command.', flags: 64 });
                 const messageContent = options.getString('message');
@@ -1156,7 +1151,6 @@ client.on('interactionCreate', async interaction => {
                 return interaction.editReply({ content: `Announcement DMs sent! ${successCount} succeeded, ${failCount} failed (skipped bots).` });
             }
 
-            // --- DONATE-PANEL ---
             if (commandName === 'donate-panel') {
                 const embed = new EmbedBuilder()
                     .setTitle('◆ SUPPORT THE PROJECT ◆')
@@ -1177,7 +1171,6 @@ client.on('interactionCreate', async interaction => {
                 return interaction.editReply({ embeds: [embed], components: [row1, row2], ephemeral: false });
             }
 
-            // --- DONATION-PANEL (token donation) ---
             if (commandName === 'donation-panel') {
                 const embed = new EmbedBuilder()
                     .setTitle('◆ DONATE A TOKEN ◆')
@@ -1193,7 +1186,6 @@ client.on('interactionCreate', async interaction => {
                 return interaction.editReply({ embeds: [embed], components: [row], ephemeral: false });
             }
 
-            // --- CHECK-PANEL ---
             if (commandName === 'check-panel') {
                 const embed = new EmbedBuilder()
                     .setTitle('◆ CHECK TOKEN ◆')
@@ -1209,7 +1201,6 @@ client.on('interactionCreate', async interaction => {
                 return interaction.editReply({ embeds: [embed], components: [row], ephemeral: false });
             }
 
-            // --- SPLIT-PANEL ---
             if (commandName === 'split-panel') {
                 const embed = new EmbedBuilder()
                     .setTitle('◆ SPLIT TOKEN ◆')
@@ -1225,7 +1216,6 @@ client.on('interactionCreate', async interaction => {
                 return interaction.editReply({ embeds: [embed], components: [row], ephemeral: false });
             }
 
-            // --- ADMIN COMMANDS ---
             const adminCommands = ['stock', 'stock_main', 'generator', 'force_refresh', 'remove-stock', 'reset-stock', 'gen-codes', 'remove-token', 'refresh_cooldown_all', 'panel'];
             if (adminCommands.includes(commandName)) {
                 if (!hasAdminAccess(interaction)) return interaction.editReply({ content: 'Access Denied.', flags: 64 });
@@ -1345,7 +1335,6 @@ client.on('interactionCreate', async interaction => {
             }
         }
 
-        // --- BUTTON HANDLERS ---
         if (interaction.isButton()) {
             if (interaction.customId === 'mod_app_apply') {
                 const modal = new ModalBuilder()
@@ -1546,12 +1535,10 @@ client.on('interactionCreate', async interaction => {
                 return;
             }
 
-            // Fallback
             await interaction.deferUpdate();
             await interaction.editReply({ content: 'This button is not yet handled.', flags: 64 });
         }
 
-        // --- SELECT MENU ---
         if (interaction.isStringSelectMenu() && interaction.customId === 'support_select') {
             await interaction.deferReply({ flags: 64 });
             const category = interaction.values[0];
@@ -1571,7 +1558,6 @@ client.on('interactionCreate', async interaction => {
             } catch (err) { return interaction.editReply({ content: "Failed to create ticket." }); }
         }
 
-        // --- MODAL SUBMITS ---
         if (interaction.isModalSubmit()) {
             if (interaction.customId === 'mod_app_modal') {
                 await interaction.deferReply({ flags: 64 });
@@ -1820,26 +1806,35 @@ const server = http.createServer((req, res) => {
 const PORT = process.env.PORT || 10000;
 server.listen(PORT, '0.0.0.0', () => console.log(`[SYSTEM] [EAM.LOL] HTTP server on port ${PORT}`));
 
-// --- LOGIN (with error handling) ---
+// --- LOGIN (with timeout and debug) ---
 if (!process.env.DISCORD_TOKEN) {
     console.error('[ERROR] [EAM.LOL] DISCORD_TOKEN environment variable is missing.');
     process.exit(1);
 } else {
-    // Log the token length (first few chars for debugging) – be careful not to expose the full token
-    console.log(`[INFO] [EAM.LOL] Token length: ${process.env.DISCORD_TOKEN.length}`);
-    console.log(`[INFO] [EAM.LOL] Token starts with: ${process.env.DISCORD_TOKEN.substring(0, 10)}...`);
+    // Enable debug logging
+    client.on('debug', (info) => console.log('[DEBUG]', info));
 
-    // Add a global error listener
-    client.on('error', (error) => {
-        console.error('[ERROR] [EAM.LOL] Client error:', error);
+    // Also log WebSocket connection events
+    client.on('shardDisconnect', (event, id) => {
+        console.log(`[SHARD] Shard ${id} disconnected:`, event);
+    });
+    client.on('shardReconnecting', (id) => {
+        console.log(`[SHARD] Shard ${id} reconnecting...`);
+    });
+    client.on('shardResume', (id, replayed) => {
+        console.log(`[SHARD] Shard ${id} resumed, replayed ${replayed} events`);
     });
 
     async function loginWithRetry(attempts = 5) {
         for (let i = 1; i <= attempts; i++) {
             try {
                 console.log(`[INFO] [EAM.LOL] Login attempt ${i}/${attempts}...`);
-                // No timeout – just let it resolve or reject
-                await client.login(process.env.DISCORD_TOKEN);
+                // Race against a 60-second timeout
+                const loginPromise = client.login(process.env.DISCORD_TOKEN);
+                const timeoutPromise = new Promise((_, reject) => 
+                    setTimeout(() => reject(new Error('Login timed out after 60 seconds')), 60000)
+                );
+                await Promise.race([loginPromise, timeoutPromise]);
                 console.log('[SUCCESS] [EAM.LOL] Login successful!');
                 return true;
             } catch (err) {
