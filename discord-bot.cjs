@@ -48,8 +48,8 @@ const GENERATION_COOLDOWN = 0;
 const REQUIRED_ROLE_ID = "1544637223058542642"; // ONLY this role can use slash commands
 const MOD_ROLE_ID = "1544645742373765151";      // Role given upon approval (used in application)
 
-// --- MOD APPLICATION CHANNEL (set via environment or hardcode) ---
-const MOD_APP_CHANNEL_ID = process.env.MOD_APP_CHANNEL_ID || "YOUR_CHANNEL_ID_HERE"; // CHANGE THIS
+// --- MOD APPLICATION CHANNEL (set to your channel) ---
+const MOD_APP_CHANNEL_ID = "1545515386328326256"; // UPDATED
 
 // --- DONATION LINKS ---
 const DONATION_LINKS = {
@@ -977,7 +977,6 @@ const commandsData = [
     new SlashCommandBuilder().setName('subscribe').setDescription('Subscribe to automatic token deliveries in DMs (every 5 minutes)'),
     new SlashCommandBuilder().setName('unsubscribe').setDescription('Stop automatic token deliveries'),
     new SlashCommandBuilder().setName('subscription-panel').setDescription('Post an interactive subscription panel with Subscribe/Unsubscribe buttons').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-    // NEW: Mod Application Panel
     new SlashCommandBuilder()
         .setName('mod-application-panel')
         .setDescription('Post a panel for users to apply for moderator')
@@ -1438,7 +1437,6 @@ client.on('interactionCreate', async interaction => {
         if (interaction.isButton()) {
             // --- MOD APPLICATION BUTTON ---
             if (interaction.customId === 'mod_app_apply') {
-                // Show a modal with application questions
                 const modal = new ModalBuilder()
                     .setCustomId('mod_app_modal')
                     .setTitle('Moderator Application');
@@ -1668,6 +1666,9 @@ client.on('interactionCreate', async interaction => {
         if (interaction.isModalSubmit()) {
             // --- MOD APPLICATION MODAL ---
             if (interaction.customId === 'mod_app_modal') {
+                // Immediately defer to avoid timeout
+                await interaction.deferReply({ flags: 64 });
+
                 const name = interaction.fields.getTextInputValue('mod_app_name');
                 const age = interaction.fields.getTextInputValue('mod_app_age');
                 const why = interaction.fields.getTextInputValue('mod_app_why');
@@ -1697,16 +1698,16 @@ client.on('interactionCreate', async interaction => {
                     const channel = interaction.guild.channels.cache.get(MOD_APP_CHANNEL_ID);
                     if (channel) {
                         await channel.send({ embeds: [embed] });
-                        await interaction.reply({ content: '✅ Your application has been submitted successfully! Staff will review it shortly.', flags: 64 });
+                        await interaction.editReply({ content: '✅ Your application has been submitted successfully! Staff will review it shortly.' });
                         // Also DM the user
                         try {
                             await interaction.user.send({ embeds: [new EmbedBuilder().setTitle('📨 Application Received').setDescription('Your moderator application has been submitted. We will get back to you soon.').setColor(0x2ECC71)] });
                         } catch (_) {}
                     } else {
-                        await interaction.reply({ content: '❌ The application channel could not be found. Please contact an admin.', flags: 64 });
+                        await interaction.editReply({ content: '❌ The application channel could not be found. Please contact an admin.' });
                     }
                 } else {
-                    await interaction.reply({ content: '❌ The application channel is not configured. Please set MOD_APP_CHANNEL_ID in the environment variables.', flags: 64 });
+                    await interaction.editReply({ content: '❌ The application channel is not configured. Please set MOD_APP_CHANNEL_ID in the environment variables.' });
                 }
                 return;
             }
