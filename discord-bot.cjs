@@ -19,6 +19,10 @@ const {
 
 const http = require('http');
 const dns = require('dns');
+const { promisify } = require('util');
+const dnsLookup = promisify(dns.lookup);
+
+// Set DNS to Google – helps with resolution on Render
 dns.setServers(['8.8.8.8', '1.1.1.1']);
 console.log('[INFO] [EAM.LOL] DNS set to Google DNS (8.8.8.8, 1.1.1.1)');
 
@@ -1806,33 +1810,49 @@ const server = http.createServer((req, res) => {
 const PORT = process.env.PORT || 10000;
 server.listen(PORT, '0.0.0.0', () => console.log(`[SYSTEM] [EAM.LOL] HTTP server on port ${PORT}`));
 
-// --- LOGIN (with timeout and debug) ---
+// --- LOGIN (with DNS test, 90-second timeout, and shard error logging) ---
 if (!process.env.DISCORD_TOKEN) {
     console.error('[ERROR] [EAM.LOL] DISCORD_TOKEN environment variable is missing.');
     process.exit(1);
 } else {
-    // Enable debug logging
+    // Test DNS resolution for Discord's gateway
+    (async () => {
+        try {
+            console.log('[INFO] [EAM.LOL] Testing DNS resolution for gateway.discord.gg...');
+            const address = await dnsLookup('gateway.discord.gg');
+            console.log(`[INFO] [EAM.LOL] Gateway resolves to: ${address.address}`);
+        } catch (err) {
+            console.error('[ERROR] [EAM.LOL] DNS lookup failed for gateway.discord.gg:', err.message);
+            console.error('[ERROR] [EAM.LOL] This may cause connection issues. Check your network.');
+        }
+    })();
+
+    // Enable shard debugging
     client.on('debug', (info) => console.log('[DEBUG]', info));
+    client.on('shardError', (error, shardId) => {
+        console.error(`[SHARD ERROR] Shard ${shardId}:`, error);
+    });
+    client.on('shardReady', (shardId) => {
+        console.log(`[SHARD READY] Shard ${shardId} is ready.`);
+    });
+    client.on('shardDisconnect', (event, shardId) => {
+        console.log(`[SHARD DISCONNECT] Shard ${shardId}:`, event);
+    });
+    client.on('shardReconnecting', (shardId) => {
+        console.log(`[SHARD RECONNECT] Shard ${shardId} is reconnecting...`);
+    });
+    client.on('shardResume', (shardId, replayed) => {
+        console.log(`[SHARD RESUME] Shard ${shardId} resumed, replayed ${replayed} events.`);
+    });
 
-    // Also log WebSocket connection events
-    client.on('shardDisconnect', (event, id) => {
-        console.log(`[SHARD] Shard ${id} disconnected:`, event);
-    });
-    client.on('shardReconnecting', (id) => {
-        console.log(`[SHARD] Shard ${id} reconnecting...`);
-    });
-    client.on('shardResume', (id, replayed) => {
-        console.log(`[SHARD] Shard ${id} resumed, replayed ${replayed} events`);
-    });
-
-    async function loginWithRetry(attempts = 5) {
+    async function loginWithRetry(attempts = 3) {
         for (let i = 1; i <= attempts; i++) {
             try {
                 console.log(`[INFO] [EAM.LOL] Login attempt ${i}/${attempts}...`);
-                // Race against a 60-second timeout
+                // Race with a 90-second timeout
                 const loginPromise = client.login(process.env.DISCORD_TOKEN);
                 const timeoutPromise = new Promise((_, reject) => 
-                    setTimeout(() => reject(new Error('Login timed out after 60 seconds')), 60000)
+                    setTimeout(() => reject(new Error('Login timed out after 90 seconds')), 90000)
                 );
                 await Promise.race([loginPromise, timeoutPromise]);
                 console.log('[SUCCESS] [EAM.LOL] Login successful!');
@@ -1840,16 +1860,17 @@ if (!process.env.DISCORD_TOKEN) {
             } catch (err) {
                 console.error(`[ERROR] [EAM.LOL] Attempt ${i} failed:`, err.message || err);
                 if (i === attempts) {
-                    console.error('[ERROR] [EAM.LOL] All login attempts failed. Check your token and intents.');
+                    console.error('[ERROR] [EAM.LOL] All login attempts failed. Check your token, intents, and network.');
                     return false;
                 }
-                // Wait longer between attempts
-                await new Promise(r => setTimeout(r, 10000 * i));
+                // Wait 15 seconds before retry
+                await new Promise(r => setTimeout(r, 15000));
             }
         }
         return false;
     }
-    loginWithRetry().then(success => { 
+
+    loginWithRetry().then(success => {
         if (!success) {
             console.error('[ERROR] [EAM.LOL] Failed to connect. Exiting.');
             process.exit(1);
