@@ -22,7 +22,7 @@ const dns = require('dns');
 const { promisify } = require('util');
 const dnsLookup = promisify(dns.lookup);
 
-// Set DNS to Google – helps with resolution on Render
+// Set DNS to Google – helps with resolution on Render/Railway
 dns.setServers(['8.8.8.8', '1.1.1.1']);
 console.log('[INFO] [EAM.LOL] DNS set to Google DNS (8.8.8.8, 1.1.1.1)');
 
@@ -49,7 +49,7 @@ const VIP_ROLE_ID = "1542337978016469093";
 const BOOSTER_ROLE_ID = "1542337979807178832";
 const NO_COOLDOWN_ROLE_ID = ADMIN_ROLE_ID;
 const GENERATION_COOLDOWN = 0;
-const REQUIRED_ROLE_ID = "1544637223058542642";
+const REQUIRED_ROLE_ID = "1544637223058542642"; // Only users with this role can use slash commands
 const MOD_ROLE_ID = "1544645742373765151";
 const MOD_APP_CHANNEL_ID = "1545515386328326256";
 
@@ -688,10 +688,13 @@ function removeTokenById(id) {
     return { success: true, message: `Token \`${id}\` removed. Remaining: ${tokenStock.length}` };
 }
 
+// --- ROLE CHECKS ---
+// Only users with REQUIRED_ROLE_ID can use slash commands
 function hasRequiredRole(interaction) {
     return interaction.member?.roles?.cache?.has(REQUIRED_ROLE_ID) || false;
 }
 
+// Admin access (for posting panels, etc.) – can be overridden
 function hasAdminAccess(interaction) {
     if (interaction.member?.permissions.has(PermissionFlagsBits.Administrator)) return true;
     if (interaction.member?.roles?.cache?.has(ADMIN_ROLE_ID)) return true;
@@ -1801,7 +1804,7 @@ client.on('interactionCreate', async interaction => {
     }
 });
 
-// --- HEALTH CHECK ---
+// --- HEALTH CHECK (optional for Railway, but harmless) ---
 const server = http.createServer((req, res) => {
     if (req.url === '/health') { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ status: 'ok', bot: 'online', timestamp: Date.now() })); return; }
     res.writeHead(200, { 'Content-Type': 'text/plain' });
