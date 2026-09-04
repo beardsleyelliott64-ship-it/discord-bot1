@@ -45,7 +45,7 @@ const VIP_ROLE_ID = "1542337978016469093";
 const BOOSTER_ROLE_ID = "1542337979807178832";
 const NO_COOLDOWN_ROLE_ID = ADMIN_ROLE_ID;
 const GENERATION_COOLDOWN = 0;
-const REQUIRED_ROLE_ID = "1544637223058542642";
+const REQUIRED_ROLE_ID = "1544637223058542642"; // Only this role can use slash commands
 
 // --- DONATION LINKS ---
 const DONATION_LINKS = {
@@ -86,11 +86,8 @@ let isRefreshing = false;
 
 // --- SUBSCRIPTION SYSTEM ---
 const subscribedUsers = new Set(); // user IDs
-const AUTO_DELIVERY_INTERVAL = 5 * 60 * 1000; // 5 minutes (changed from 2)
+const AUTO_DELIVERY_INTERVAL = 5 * 60 * 1000; // 5 minutes
 let deliveryInterval = null;
-
-// Store panel message info so we can update it (optional, but we'll keep it)
-let subscriptionPanelMessage = null; // { channelId, messageId }
 
 // --- MULTI-ACCOUNT SUPPORT ---
 function loadAccounts() {
@@ -934,6 +931,7 @@ client.once('ready', async () => {
 client.on('interactionCreate', async interaction => {
     try {
         if (interaction.isChatInputCommand()) {
+            // --- ROLE RESTRICTION: only users with REQUIRED_ROLE_ID can run commands ---
             if (!hasRequiredRole(interaction)) {
                 return interaction.reply({ content: `You need <@&${REQUIRED_ROLE_ID}> to use bot commands.`, flags: 64 });
             }
@@ -963,15 +961,21 @@ client.on('interactionCreate', async interaction => {
             if (commandName === 'subscription-panel') {
                 if (!hasAdminAccess(interaction)) return interaction.reply({ content: 'Access Denied.', flags: 64 });
                 
-                // Build the panel embed
+                // --- UPDATED PANEL WITH STEPS AND FREE NOTICE ---
                 const embed = new EmbedBuilder()
                     .setTitle('🔔 SUBSCRIPTION PANEL')
-                    .setDescription('Click the button below to **subscribe** or **unsubscribe** from automatic token deliveries.\n\nYou will receive a fresh token in your DMs **every 5 minutes**.')
+                    .setDescription(
+                        '**How to use this panel:**\n' +
+                        '1️⃣ Click **✅ Subscribe** – you\'ll get a fresh token in your DMs **every 5 minutes**.\n' +
+                        '2️⃣ Click **❌ Unsubscribe** – stop receiving tokens.\n' +
+                        '3️⃣ Open your DMs – the bot will send you a new token immediately and then every 5 minutes.\n\n' +
+                        '**💸 Cost:** Absolutely **free** – no payments, no subscriptions, no hidden fees.'
+                    )
                     .setColor(0x5865F2)
                     .addFields(
-                        { name: '📊 Status', value: 'Click a button to toggle your subscription.', inline: false }
+                        { name: '📊 Current Status', value: 'Click a button to toggle your subscription.', inline: false }
                     )
-                    .setFooter({ text: 'EAM.LOL | Auto-Subscription' });
+                    .setFooter({ text: 'EAM.LOL | Auto-Subscription (5 min interval)' });
 
                 const row = new ActionRowBuilder()
                     .addComponents(
