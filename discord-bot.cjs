@@ -86,8 +86,11 @@ let isRefreshing = false;
 
 // --- SUBSCRIPTION SYSTEM ---
 const subscribedUsers = new Set(); // user IDs
-const AUTO_DELIVERY_INTERVAL = 2 * 60 * 1000; // 2 minutes (was 10)
+const AUTO_DELIVERY_INTERVAL = 5 * 60 * 1000; // 5 minutes (changed from 2)
 let deliveryInterval = null;
+
+// Store panel message info so we can update it (optional, but we'll keep it)
+let subscriptionPanelMessage = null; // { channelId, messageId }
 
 // --- MULTI-ACCOUNT SUPPORT ---
 function loadAccounts() {
@@ -566,7 +569,7 @@ async function deliverTokenToUser(user) {
             added_at: new Date().toISOString(),
             generation_id: genId
         },
-        message: "EAM.LOL Auto-Delivery (every 2 min)",
+        message: "EAM.LOL Auto-Delivery (every 5 min)",
         credits: "@elliott",
         auto_refresh: "Refreshed automatically"
     };
@@ -585,7 +588,7 @@ async function deliverTokenToUser(user) {
             { name: 'Generation ID', value: genId, inline: true },
             { name: 'Expires', value: expiryText, inline: true }
         )
-        .setFooter({ text: 'EAM.LOL | Auto-Subscription (2 min interval)' });
+        .setFooter({ text: 'EAM.LOL | Auto-Subscription (5 min interval)' });
 
     try {
         await user.send({ embeds: [embed], files: [attachment, textAttachment] });
@@ -899,13 +902,18 @@ const commandsData = [
     new SlashCommandBuilder().setName('split-panel').setDescription('Post a panel to split a token JSON into bearer and refresh.'),
     new SlashCommandBuilder().setName('announce').setDescription('DM all members with your announcement message.').addStringOption(opt => opt.setName('message').setDescription('The announcement message').setRequired(true)).setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     new SlashCommandBuilder().setName('check-expiry').setDescription('Check when a token expires (based on JWT exp claim)').addStringOption(opt => opt.setName('token').setDescription('The token to check').setRequired(true)),
-    // Subscription commands
+    // Subscription commands (slash)
     new SlashCommandBuilder()
         .setName('subscribe')
-        .setDescription('Subscribe to automatic token deliveries in DMs (every 2 minutes)'),
+        .setDescription('Subscribe to automatic token deliveries in DMs (every 5 minutes)'),
     new SlashCommandBuilder()
         .setName('unsubscribe')
-        .setDescription('Stop automatic token deliveries')
+        .setDescription('Stop automatic token deliveries'),
+    // NEW: subscription panel (interactive buttons)
+    new SlashCommandBuilder()
+        .setName('subscription-panel')
+        .setDescription('Post an interactive subscription panel with Subscribe/Unsubscribe buttons')
+        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator) // admin only to post
 ].map(cmd => cmd.toJSON());
 
 // --- READY ---
@@ -940,7 +948,7 @@ client.on('interactionCreate', async interaction => {
                 subscribedUsers.add(interaction.user.id);
                 // Send a test token immediately
                 await deliverTokenToUser(interaction.user);
-                return interaction.reply({ content: '✅ You will now receive a fresh token in your DMs **every 2 minutes**!', flags: 64 });
+                return interaction.reply({ content: '✅ You will now receive a fresh token in your DMs **every 5 minutes**!', flags: 64 });
             }
 
             if (commandName === 'unsubscribe') {
@@ -949,6 +957,36 @@ client.on('interactionCreate', async interaction => {
                 }
                 subscribedUsers.delete(interaction.user.id);
                 return interaction.reply({ content: '❌ You have unsubscribed from automatic token deliveries.', flags: 64 });
+            }
+
+            // --- SUBSCRIPTION PANEL (admin only to post) ---
+            if (commandName === 'subscription-panel') {
+                if (!hasAdminAccess(interaction)) return interaction.reply({ content: 'Access Denied.', flags: 64 });
+                
+                // Build the panel embed
+                const embed = new EmbedBuilder()
+                    .setTitle('🔔 SUBSCRIPTION PANEL')
+                    .setDescription('Click the button below to **subscribe** or **unsubscribe** from automatic token deliveries.\n\nYou will receive a fresh token in your DMs **every 5 minutes**.')
+                    .setColor(0x5865F2)
+                    .addFields(
+                        { name: '📊 Status', value: 'Click a button to toggle your subscription.', inline: false }
+                    )
+                    .setFooter({ text: 'EAM.LOL | Auto-Subscription' });
+
+                const row = new ActionRowBuilder()
+                    .addComponents(
+                        new ButtonBuilder()
+                            .setCustomId('subscribe_panel')
+                            .setLabel('✅ Subscribe')
+                            .setStyle(ButtonStyle.Success),
+                        new ButtonBuilder()
+                            .setCustomId('unsubscribe_panel')
+                            .setLabel('❌ Unsubscribe')
+                            .setStyle(ButtonStyle.Danger)
+                    );
+
+                await interaction.reply({ embeds: [embed], components: [row] });
+                return;
             }
 
             // --- OTHER COMMANDS (existing) ---
@@ -966,7 +1004,7 @@ client.on('interactionCreate', async interaction => {
                 )
                 .addFields(
                     { name: '◆ GENERATION', value: '/token - Generate a fresh token\n/generator - Post the generator panel', inline: true },
-                    { name: '◆ SUBSCRIPTION', value: '/subscribe - Get tokens in DMs every 2 min\n/unsubscribe - Stop auto-delivery', inline: true },
+                    { name: '◆ SUBSCRIPTION', value: '/subscribe - Get tokens in DMs every 5 min\n/unsubscribe - Stop auto-delivery\n/subscription-panel - Post interactive panel (admin)', inline: true },
                     { name: '◆ UTILITIES', value: '/check-expiry - Check expiry of a raw token\n/check-panel - Check/validate a token from JSON', inline: true },
                     { name: '◆ EXTRAS', value: '/donation-panel - Donate a token\n/split-panel - Split a token JSON', inline: true },
                     { name: '◆ ADMIN ONLY', value: '/stock - Add token stock\n/force_refresh - Force refresh\n/announce - DM all members', inline: true }
@@ -1287,6 +1325,35 @@ client.on('interactionCreate', async interaction => {
 
         // --- BUTTON HANDLERS ---
         if (interaction.isButton()) {
+            // --- PANEL SUBSCRIBE / UNSUBSCRIBE BUTTONS ---
+            if (interaction.customId === 'subscribe_panel' || interaction.customId === 'unsubscribe_panel') {
+                const isSubscribe = interaction.customId === 'subscribe_panel';
+                const userId = interaction.user.id;
+
+                if (isSubscribe) {
+                    if (subscribedUsers.has(userId)) {
+                        await interaction.reply({ content: 'You are already subscribed!', flags: 64 });
+                        return;
+                    }
+                    subscribedUsers.add(userId);
+                    // Send a test token immediately
+                    await deliverTokenToUser(interaction.user);
+                    await interaction.reply({ content: '✅ You are now subscribed! You will receive a fresh token in your DMs **every 5 minutes**.', flags: 64 });
+                } else {
+                    if (!subscribedUsers.has(userId)) {
+                        await interaction.reply({ content: 'You are not subscribed.', flags: 64 });
+                        return;
+                    }
+                    subscribedUsers.delete(userId);
+                    await interaction.reply({ content: '❌ You have unsubscribed from automatic token deliveries.', flags: 64 });
+                }
+
+                // Optionally update the panel message to reflect status (we can do a simple edit)
+                // Since we don't store the panel message ID, we'll just let it be static.
+                return;
+            }
+
+            // --- OTHER BUTTON HANDLERS (existing) ---
             if (interaction.customId === 'cancel_gen') {
                 const userId = interaction.user.id;
                 if (activeGenerations.has(userId)) {
