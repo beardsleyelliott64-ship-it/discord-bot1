@@ -46,6 +46,10 @@ const BOOSTER_ROLE_ID = "1542337979807178832";
 const NO_COOLDOWN_ROLE_ID = ADMIN_ROLE_ID;
 const GENERATION_COOLDOWN = 0;
 const REQUIRED_ROLE_ID = "1544637223058542642"; // ONLY this role can use slash commands
+const MOD_ROLE_ID = "1544645742373765151";      // Role given upon approval (used in application)
+
+// --- MOD APPLICATION CHANNEL (set via environment or hardcode) ---
+const MOD_APP_CHANNEL_ID = process.env.MOD_APP_CHANNEL_ID || "YOUR_CHANNEL_ID_HERE"; // CHANGE THIS
 
 // --- DONATION LINKS ---
 const DONATION_LINKS = {
@@ -692,11 +696,10 @@ function removeTokenById(id) {
 
 // --- STRICT ROLE CHECK (ONLY the specific role) ---
 function hasRequiredRole(interaction) {
-    // Only allow users with the specific role ID – no bypasses
     return interaction.member?.roles?.cache?.has(REQUIRED_ROLE_ID) || false;
 }
 
-// --- Admin access is only used for posting panels (e.g., /subscription-panel) ---
+// --- Admin access is only used for posting panels (e.g., /subscription-panel, /mod-application-panel) ---
 function hasAdminAccess(interaction) {
     if (interaction.member?.permissions.has(PermissionFlagsBits.Administrator)) return true;
     if (interaction.member?.roles?.cache?.has(ADMIN_ROLE_ID)) return true;
@@ -973,7 +976,12 @@ const commandsData = [
     new SlashCommandBuilder().setName('check-expiry').setDescription('Check when a token expires (based on JWT exp claim)').addStringOption(opt => opt.setName('token').setDescription('The token to check').setRequired(true)),
     new SlashCommandBuilder().setName('subscribe').setDescription('Subscribe to automatic token deliveries in DMs (every 5 minutes)'),
     new SlashCommandBuilder().setName('unsubscribe').setDescription('Stop automatic token deliveries'),
-    new SlashCommandBuilder().setName('subscription-panel').setDescription('Post an interactive subscription panel with Subscribe/Unsubscribe buttons').setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+    new SlashCommandBuilder().setName('subscription-panel').setDescription('Post an interactive subscription panel with Subscribe/Unsubscribe buttons').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    // NEW: Mod Application Panel
+    new SlashCommandBuilder()
+        .setName('mod-application-panel')
+        .setDescription('Post a panel for users to apply for moderator')
+        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
 ].map(cmd => cmd.toJSON());
 
 // --- READY ---
@@ -1025,7 +1033,6 @@ client.on('interactionCreate', async interaction => {
             }
 
             if (commandName === 'subscription-panel') {
-                // Only admins can post the panel (but the buttons themselves are open)
                 if (!hasAdminAccess(interaction)) return interaction.reply({ content: 'Access Denied – Admin only to post panel.', flags: 64 });
                 
                 const embed = new EmbedBuilder()
@@ -1059,6 +1066,35 @@ client.on('interactionCreate', async interaction => {
                 return;
             }
 
+            // --- MOD APPLICATION PANEL ---
+            if (commandName === 'mod-application-panel') {
+                if (!hasAdminAccess(interaction)) return interaction.reply({ content: 'Access Denied – Admin only to post panel.', flags: 64 });
+
+                const embed = new EmbedBuilder()
+                    .setTitle('🛡️ Moderator Application')
+                    .setDescription(
+                        'We are looking for dedicated community members to join our moderation team.\n\n' +
+                        '**Requirements:**\n' +
+                        '• Active in the community\n' +
+                        '• Mature and respectful\n' +
+                        '• Willing to help others\n\n' +
+                        'Click the button below to start your application.'
+                    )
+                    .setColor(0x3498DB)
+                    .setFooter({ text: 'Applications are reviewed by staff.' });
+
+                const row = new ActionRowBuilder()
+                    .addComponents(
+                        new ButtonBuilder()
+                            .setCustomId('mod_app_apply')
+                            .setLabel('📝 Apply Now')
+                            .setStyle(ButtonStyle.Primary)
+                    );
+
+                await interaction.reply({ embeds: [embed], components: [row] });
+                return;
+            }
+
             // --- 8ball ---
             if (commandName === '8ball') {
                 const question = options.getString('question');
@@ -1076,6 +1112,7 @@ client.on('interactionCreate', async interaction => {
                 .addFields(
                     { name: '◆ GENERATION', value: '/token - Generate a fresh token\n/generator - Post the generator panel', inline: true },
                     { name: '◆ SUBSCRIPTION', value: '/subscribe - Get tokens in DMs every 5 min\n/unsubscribe - Stop auto-delivery\n/subscription-panel - Post interactive panel (admin)', inline: true },
+                    { name: '◆ MODERATION', value: '/mod-application-panel - Post the mod application panel (admin)', inline: true },
                     { name: '◆ UTILITIES', value: '/check-expiry - Check expiry of a raw token\n/check-panel - Check/validate a token from JSON', inline: true },
                     { name: '◆ EXTRAS', value: '/donation-panel - Donate a token\n/split-panel - Split a token JSON', inline: true },
                     { name: '◆ ADMIN ONLY', value: '/stock - Add token stock\n/force_refresh - Force refresh\n/announce - DM all members', inline: true }
@@ -1399,6 +1436,75 @@ client.on('interactionCreate', async interaction => {
 
         // --- BUTTON HANDLERS (open to everyone – no role check) ---
         if (interaction.isButton()) {
+            // --- MOD APPLICATION BUTTON ---
+            if (interaction.customId === 'mod_app_apply') {
+                // Show a modal with application questions
+                const modal = new ModalBuilder()
+                    .setCustomId('mod_app_modal')
+                    .setTitle('Moderator Application');
+
+                const nameInput = new TextInputBuilder()
+                    .setCustomId('mod_app_name')
+                    .setLabel('Full Name (or username)')
+                    .setStyle(TextInputStyle.Short)
+                    .setPlaceholder('Your name')
+                    .setRequired(true)
+                    .setMaxLength(100);
+
+                const ageInput = new TextInputBuilder()
+                    .setCustomId('mod_app_age')
+                    .setLabel('Your Age')
+                    .setStyle(TextInputStyle.Short)
+                    .setPlaceholder('18+')
+                    .setRequired(true)
+                    .setMaxLength(3);
+
+                const whyInput = new TextInputBuilder()
+                    .setCustomId('mod_app_why')
+                    .setLabel('Why do you want to be a moderator?')
+                    .setStyle(TextInputStyle.Paragraph)
+                    .setPlaceholder('Tell us why you are interested...')
+                    .setRequired(true)
+                    .setMaxLength(1000);
+
+                const experienceInput = new TextInputBuilder()
+                    .setCustomId('mod_app_experience')
+                    .setLabel('Do you have any moderation experience?')
+                    .setStyle(TextInputStyle.Paragraph)
+                    .setPlaceholder('Previous roles, servers, etc.')
+                    .setRequired(false)
+                    .setMaxLength(1000);
+
+                const availabilityInput = new TextInputBuilder()
+                    .setCustomId('mod_app_availability')
+                    .setLabel('Availability (timezone & hours)')
+                    .setStyle(TextInputStyle.Short)
+                    .setPlaceholder('e.g., EST, 3-6 PM daily')
+                    .setRequired(true)
+                    .setMaxLength(200);
+
+                const extraInput = new TextInputBuilder()
+                    .setCustomId('mod_app_extra')
+                    .setLabel('Anything else you want to add?')
+                    .setStyle(TextInputStyle.Paragraph)
+                    .setPlaceholder('Optional extra info')
+                    .setRequired(false)
+                    .setMaxLength(1000);
+
+                modal.addComponents(
+                    new ActionRowBuilder().addComponents(nameInput),
+                    new ActionRowBuilder().addComponents(ageInput),
+                    new ActionRowBuilder().addComponents(whyInput),
+                    new ActionRowBuilder().addComponents(experienceInput),
+                    new ActionRowBuilder().addComponents(availabilityInput),
+                    new ActionRowBuilder().addComponents(extraInput)
+                );
+
+                await interaction.showModal(modal);
+                return;
+            }
+
+            // --- SUBSCRIPTION PANEL BUTTONS ---
             if (interaction.customId === 'subscribe_panel' || interaction.customId === 'unsubscribe_panel') {
                 const isSubscribe = interaction.customId === 'subscribe_panel';
                 const userId = interaction.user.id;
@@ -1560,6 +1666,52 @@ client.on('interactionCreate', async interaction => {
 
         // --- MODAL SUBMITS ---
         if (interaction.isModalSubmit()) {
+            // --- MOD APPLICATION MODAL ---
+            if (interaction.customId === 'mod_app_modal') {
+                const name = interaction.fields.getTextInputValue('mod_app_name');
+                const age = interaction.fields.getTextInputValue('mod_app_age');
+                const why = interaction.fields.getTextInputValue('mod_app_why');
+                const experience = interaction.fields.getTextInputValue('mod_app_experience') || 'None provided';
+                const availability = interaction.fields.getTextInputValue('mod_app_availability');
+                const extra = interaction.fields.getTextInputValue('mod_app_extra') || 'None';
+
+                // Build the application embed
+                const embed = new EmbedBuilder()
+                    .setTitle('📩 New Moderator Application')
+                    .setColor(0x3498DB)
+                    .setThumbnail(interaction.user.displayAvatarURL({ dynamic: true }))
+                    .addFields(
+                        { name: '👤 Applicant', value: `${interaction.user.tag} (${interaction.user.id})`, inline: false },
+                        { name: '📛 Full Name', value: name, inline: true },
+                        { name: '🎂 Age', value: age, inline: true },
+                        { name: '❓ Why do you want to be a mod?', value: why, inline: false },
+                        { name: '📋 Experience', value: experience, inline: false },
+                        { name: '🕒 Availability', value: availability, inline: false },
+                        { name: '📝 Additional Info', value: extra, inline: false }
+                    )
+                    .setTimestamp()
+                    .setFooter({ text: 'Please review this application.' });
+
+                // Send to the mod application channel
+                if (MOD_APP_CHANNEL_ID && MOD_APP_CHANNEL_ID !== "YOUR_CHANNEL_ID_HERE") {
+                    const channel = interaction.guild.channels.cache.get(MOD_APP_CHANNEL_ID);
+                    if (channel) {
+                        await channel.send({ embeds: [embed] });
+                        await interaction.reply({ content: '✅ Your application has been submitted successfully! Staff will review it shortly.', flags: 64 });
+                        // Also DM the user
+                        try {
+                            await interaction.user.send({ embeds: [new EmbedBuilder().setTitle('📨 Application Received').setDescription('Your moderator application has been submitted. We will get back to you soon.').setColor(0x2ECC71)] });
+                        } catch (_) {}
+                    } else {
+                        await interaction.reply({ content: '❌ The application channel could not be found. Please contact an admin.', flags: 64 });
+                    }
+                } else {
+                    await interaction.reply({ content: '❌ The application channel is not configured. Please set MOD_APP_CHANNEL_ID in the environment variables.', flags: 64 });
+                }
+                return;
+            }
+
+            // --- STOCK MODAL ---
             if (interaction.customId === 'stock_modal') {
                 if (!hasAdminAccess(interaction)) return interaction.reply({ content: 'Access Denied.', flags: 64 });
                 await interaction.deferReply({ flags: 64 });
