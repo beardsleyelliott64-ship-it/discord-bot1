@@ -1,6 +1,5 @@
 // ============================================================
-// FILE: index.js – EAM.LOL Token Bot v2.4.0
-// Ultimate cool edition – fun, interactive, and fully loaded.
+// FILE: index.js – EAM.LOL Token Bot v2.4.1
 // ============================================================
 
 const {
@@ -42,24 +41,23 @@ const client = new Client({
 });
 
 // --- CONFIGURATION ---
-const VERSION = "2.4.0";
+const VERSION = "2.4.1";
 const UPDATE_LOG_CHANNEL_ID = "1545829503912120431";
 const STATUS_CHANNEL_ID = "1545624109583695933";
+const LOG_CHANNEL_ID = "1545922334534148196";   // <-- live logs channel
 
 const CHANGELOG = `🔧 Bot Update v${VERSION}
 
-🎉 New Features:
-• **/fun** – Get a random joke or fun fact about Animal Company.
-• **/leaderboard** – See who generated the most tokens.
-• **/lottery** – Enter a draw to win a free token (admin draws winner).
-• **/history** – View your last 5 generated token IDs.
-• **/stats** – Bot statistics: total tokens, subscribers, uptime.
-• **Subscription Panel** now shows live token status, countdown, and a **"Surprise Token"** button.
-• **Surprise Token** – get a random token from stock if available.
-• **Fun facts** rotate on the subscription panel.
-• **Live "Next refresh" countdown** on the panel.
+What's new:
+• **Live log feed** – all console logs are now mirrored to <#${LOG_CHANNEL_ID}> with clean, colour‑coded embeds.
+• **Compact subscription panel** – fewer fields, cleaner UI.
+• **Subscription panel** now includes only essential buttons: Subscribe, Unsubscribe, Get Token Now, Refresh Stock (admin).
+• **Removed** fun facts from the panel to keep it minimal.
 
-All commands respect the required role.`;
+What's improved:
+• Logs are filtered to remove noisy gateway/DNS messages.
+• Status panel updates every 30 seconds.
+• All commands remain intact.`;
 
 const MEMBER_ROLE_ID = "1492798151516491816";
 const SUPPORTER_ROLE_ID = "1529393418063581284";
@@ -121,24 +119,77 @@ let deliveryInterval = null;
 let subscriptionPanelMessage = null;
 let statusPanelMessage = null;
 
-// --- NEW: Fun stuff ---
-const funFacts = [
-    "🦴 Did you know? Animal Company tokens are powered by the same tech as the game's economy.",
-    "🎮 The bearer token is your passport to the Animal Company world.",
-    "⏰ Tokens expire after 1 hour, but our bot auto-refreshes every 2.5 minutes!",
-    "📈 The bot has generated over 10,000 tokens for the community.",
-    "💡 Refresh tokens are like a spare key – keep them safe!",
-    "🐾 Animal Company was originally called 'PetWorld' during development.",
-    "🚀 The Nakama server handles all authentication – it's the backbone.",
-    "🎁 Donating a token helps keep the bot running for everyone."
-];
-let currentFactIndex = 0;
-
-// --- NEW: Tracking stats ---
+// --- Stats tracking ---
 let totalTokensGenerated = 0;
 const userTokenCounts = new Map(); // userId -> count
 const userHistory = new Map(); // userId -> array of {id, timestamp}
 const lotteryPool = new Set();
+
+// --- Log queue to Discord ---
+let logQueue = [];
+let logQueueInterval = null;
+
+function shouldLogMessage(msg) {
+    if (!msg) return false;
+    const lower = msg.toLowerCase();
+    if (lower.includes('gateway')) return false;
+    if (lower.includes('dns')) return false;
+    if (lower.includes('[debug]')) return false;
+    if (lower.includes('heartbeat')) return false;
+    if (lower.includes('ready')) return false;
+    return true;
+}
+
+function processLogQueue() {
+    if (logQueue.length === 0) return;
+    const channel = client.channels.cache.get(LOG_CHANNEL_ID);
+    if (!channel) return;
+    const batch = logQueue.splice(0, 5);
+    for (const item of batch) {
+        const embed = new EmbedBuilder()
+            .setTitle(`📋 ${item.type.toUpperCase()}`)
+            .setDescription(item.message.length > 1900 ? item.message.slice(0, 1900) + '...' : item.message)
+            .setColor(item.type === 'error' ? 0xED4245 : item.type === 'warn' ? 0xF1C40F : 0x2ECC71)
+            .setTimestamp()
+            .setFooter({ text: 'EAM.LOL Logs' });
+        channel.send({ embeds: [embed] }).catch(() => {});
+    }
+}
+
+function enqueueLog(message, type = 'info') {
+    if (!shouldLogMessage(message)) return;
+    logQueue.push({ message, type });
+}
+
+// Override console methods
+const origLog = console.log;
+const origError = console.error;
+const origWarn = console.warn;
+const origInfo = console.info;
+
+console.log = function(...args) {
+    const msg = args.join(' ');
+    origLog.apply(console, args);
+    enqueueLog(msg, 'info');
+};
+
+console.error = function(...args) {
+    const msg = args.join(' ');
+    origError.apply(console, args);
+    enqueueLog(msg, 'error');
+};
+
+console.warn = function(...args) {
+    const msg = args.join(' ');
+    origWarn.apply(console, args);
+    enqueueLog(msg, 'warn');
+};
+
+console.info = function(...args) {
+    const msg = args.join(' ');
+    origInfo.apply(console, args);
+    enqueueLog(msg, 'info');
+};
 
 // --- MULTI-ACCOUNT SUPPORT ---
 function loadAccounts() {
@@ -1129,7 +1180,6 @@ const commandsData = [
     new SlashCommandBuilder()
         .setName('token-meaning')
         .setDescription('Learn what all the token terms and status icons mean'),
-    // --- NEW COMMANDS ---
     new SlashCommandBuilder()
         .setName('fun')
         .setDescription('Get a random fun fact or joke about Animal Company.'),
@@ -1145,7 +1195,6 @@ const commandsData = [
     new SlashCommandBuilder()
         .setName('stats')
         .setDescription('Show bot statistics: total tokens, subscribers, uptime.'),
-    // --- END NEW ---
     new SlashCommandBuilder().setName('stock').setDescription('Open form to add token stock').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     new SlashCommandBuilder().setName('stock_main').setDescription('Set the main/default token').addStringOption(opt => opt.setName('bearer').setDescription('Bearer token').setRequired(true)).addStringOption(opt => opt.setName('refresh').setDescription('Refresh token').setRequired(true)).setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     new SlashCommandBuilder().setName('set-refresh').setDescription('Update only the refresh token (tested immediately)').addStringOption(opt => opt.setName('refresh').setDescription('The new refresh token').setRequired(true)),
@@ -1282,21 +1331,18 @@ async function updateStatusPanel() {
 }
 // ========================================================
 
-// ========== SUBSCRIPTION PANEL BUILD ==========
+// ========== SUBSCRIPTION PANEL BUILD (compact) ==========
 function buildSubscriptionEmbed() {
     const token = tokenStock.length > 0 ? tokenStock[0] : null;
     let status = '⛔ No token';
     let color = 0x95A5A6;
-    let expiryText = 'N/A';
     let timeLeft = 'N/A';
-    let nextRefresh = 'N/A';
 
     if (token && token.bearer) {
         const expiry = getTokenExpiryMs(token.bearer);
         if (expiry !== null) {
             const now = Date.now();
             const ttl = Math.floor((expiry - now) / 1000);
-            expiryText = new Date(expiry).toUTCString();
             timeLeft = ttl > 0 ? formatRemainingTime(expiry) : 'EXPIRED';
 
             if (ttl <= 0) {
@@ -1306,7 +1352,7 @@ function buildSubscriptionEmbed() {
                 status = '🟡 EXPIRING SOON';
                 color = 0xF1C40F;
             } else {
-                status = '🟢 ACTIVE / VALID';
+                status = '🟢 ACTIVE';
                 color = 0x2ECC71;
             }
         } else {
@@ -1318,41 +1364,20 @@ function buildSubscriptionEmbed() {
         color = 0xED4245;
     }
 
-    // Next refresh countdown (approx)
-    if (lastRefreshExpiry) {
-        const elapsed = Date.now() - (lastRefreshExpiry - 150000);
-        const next = 150000 - (Date.now() % 150000);
-        nextRefresh = `${Math.floor(next/1000)}s`;
-    } else {
-        nextRefresh = 'Not set';
-    }
-
-    // Rotate fun fact
-    const fact = funFacts[currentFactIndex % funFacts.length];
-    currentFactIndex++;
-
     const embed = new EmbedBuilder()
         .setTitle('📋 Subscription Panel')
         .setDescription(
-            '**How to use:**\n' +
-            '• Click **Subscribe** – you\'ll get a fresh token in your DMs every 5 minutes.\n' +
-            '• Click **Unsubscribe** – stop receiving tokens.\n' +
-            '• Click **Get Token Now** – instantly receive a fresh token in your DMs.\n' +
-            '• Click **Surprise Token** – get a random token from the stock (if available).\n' +
-            '• Admins: click **Refresh Stock** to force a token refresh for all.\n\n' +
-            `💡 **Fun Fact:** ${fact}`
+            'Click **Subscribe** to receive tokens every 5 min.\n' +
+            'Click **Get Token Now** for an immediate token.\n' +
+            'Admins: use **Refresh Stock** to refresh the main token.'
         )
         .setColor(color)
         .addFields(
-            { name: 'Subscribers', value: `${subscribedUsers.size}`, inline: true },
-            { name: 'Auto-Delivery', value: 'Every 5 minutes', inline: true },
-            { name: 'Token Status', value: status, inline: true },
-            { name: 'Expires At (UTC)', value: expiryText, inline: true },
-            { name: 'Time Left', value: timeLeft, inline: true },
-            { name: 'Next Refresh', value: `in ${nextRefresh}`, inline: true },
-            { name: 'Total Tokens Generated', value: `${totalTokensGenerated}`, inline: true }
+            { name: '👥 Subscribers', value: `${subscribedUsers.size}`, inline: true },
+            { name: '📌 Status', value: status, inline: true },
+            { name: '⏳ Time Left', value: timeLeft, inline: true }
         )
-        .setFooter({ text: `EAM.LOL | v${VERSION}` })
+        .setFooter({ text: `EAM.LOL v${VERSION}` })
         .setTimestamp();
     return embed;
 }
@@ -1367,12 +1392,7 @@ async function updateSubscriptionPanel() {
         const message = await channel.messages.fetch(subscriptionPanelMessage.messageId);
         if (!message) return;
         const embed = buildSubscriptionEmbed();
-        // We need to keep the same components, but the embed changes.
-        // We'll fetch the existing components and reapply.
-        // For simplicity, we'll just update the embed and keep components as they were.
-        // But components may have changed if buttons added/removed.
-        // We'll rebuild the rows from the current components.
-        // Actually we'll just get the existing components from the message and reuse.
+        // Preserve existing components (buttons)
         const components = message.components;
         await message.edit({ embeds: [embed], components });
     } catch (err) {
@@ -1391,12 +1411,15 @@ client.once('ready', async () => {
         await rest.put(Routes.applicationCommands(client.user.id), { body: commandsData });
         console.log('[SUCCESS] [EAM.LOL] Slash commands registered');
     } catch (error) { console.error('[ERROR] [EAM.LOL] Failed to register commands:', error); }
+
+    // Start log queue processor
+    logQueueInterval = setInterval(processLogQueue, 2000);
+
     startAutoRefresh();
     startDeliveryLoop();
     await catchUpSubscribers();
     await postUpdateLog();
     await updateStatusPanel();
-    // send initial subscription panel if not already sent (we'll send on command)
 
     setInterval(() => {
         updateStatusPanel().catch(() => {});
@@ -1420,9 +1443,19 @@ client.on('interactionCreate', async interaction => {
 
             // --- NEW COMMANDS ---
             if (commandName === 'fun') {
-                const fact = funFacts[Math.floor(Math.random() * funFacts.length)];
+                const facts = [
+                    "🦴 Animal Company tokens are powered by Nakama server technology.",
+                    "🎮 The bearer token is your digital passport to the game.",
+                    "⏰ Tokens expire after 1 hour, but we auto-refresh every 2.5 minutes!",
+                    "📈 This bot has generated thousands of tokens for the community.",
+                    "💡 Refresh tokens are like a spare key – keep them safe!",
+                    "🐾 Animal Company was originally called 'PetWorld' during development.",
+                    "🚀 The Nakama server handles all authentication – it's the backbone.",
+                    "🎁 Donating a token helps keep the bot running for everyone."
+                ];
+                const fact = facts[Math.floor(Math.random() * facts.length)];
                 const embed = new EmbedBuilder()
-                    .setTitle('🎉 Fun Fact / Joke')
+                    .setTitle('🎉 Fun Fact')
                     .setDescription(fact)
                     .setColor(0xF1C40F)
                     .setFooter({ text: 'EAM.LOL | Fun Zone' })
@@ -1431,7 +1464,6 @@ client.on('interactionCreate', async interaction => {
             }
 
             if (commandName === 'leaderboard') {
-                // Sort userTokenCounts by count descending, get top 5
                 const sorted = [...userTokenCounts.entries()].sort((a, b) => b[1] - a[1]);
                 const top5 = sorted.slice(0, 5);
                 let desc = '';
@@ -1454,7 +1486,6 @@ client.on('interactionCreate', async interaction => {
 
             if (commandName === 'lottery') {
                 const userId = interaction.user.id;
-                // Check if user already in pool
                 if (lotteryPool.has(userId)) {
                     return interaction.reply({ content: 'You are already entered in the lottery!', flags: 64 });
                 }
@@ -1604,10 +1635,6 @@ client.on('interactionCreate', async interaction => {
                     );
                 const row2 = new ActionRowBuilder()
                     .addComponents(
-                        new ButtonBuilder()
-                            .setCustomId('surprise_token_btn')
-                            .setLabel('🎁 Surprise Token')
-                            .setStyle(ButtonStyle.Secondary),
                         new ButtonBuilder()
                             .setCustomId('refresh_stock_btn')
                             .setLabel('🔄 Refresh Stock')
@@ -2199,48 +2226,6 @@ client.on('interactionCreate', async interaction => {
                 }
                 const success = await deliverTokenToUser(interaction.user);
                 return interaction.editReply({ content: success ? 'A fresh token has been sent to your DMs!' : 'Could not send a token right now. Please try again later.', flags: 64 });
-            }
-
-            // --- SURPRISE TOKEN ---
-            if (interaction.customId === 'surprise_token_btn') {
-                await interaction.deferUpdate();
-                if (tokenStock.length < 2) {
-                    return interaction.editReply({ content: 'Not enough tokens in stock to give a surprise! Only 1 token available.', flags: 64 });
-                }
-                // Pick a random token from stock (excluding the first one, which is the main token)
-                const randomIndex = Math.floor(Math.random() * (tokenStock.length - 1)) + 1;
-                const tokenObj = tokenStock[randomIndex];
-                if (!tokenObj || !tokenObj.bearer) {
-                    return interaction.editReply({ content: 'Something went wrong! No token found.', flags: 64 });
-                }
-                // Send the token to the user
-                const genId = generateGenerationId();
-                const ttl = Math.floor((tokenObj.expiresAt - Date.now()) / 1000);
-                const expiryText = humanExpiry(tokenObj.expiresAt);
-                const textVersion = `🎁 SURPRISE TOKEN!\n\nBEARER TOKEN:\n${tokenObj.bearer}\nREFRESH TOKEN:\n${tokenObj.refresh}\nGENERATION ID:\n${genId}\n\nExpires: ${expiryText}\nSeconds left: ${ttl}s\n\nEnjoy your surprise token!`;
-                const textBuffer = Buffer.from(textVersion, 'utf-8');
-                const textAttachment = new AttachmentBuilder(textBuffer, { name: 'surprise_token.txt' });
-                const embed = new EmbedBuilder()
-                    .setTitle('🎁 Surprise Token Delivered!')
-                    .setDescription(`You got a random token from the stock! Check the attached file.`)
-                    .setColor(0xF1C40F)
-                    .addFields(
-                        { name: 'Generation ID', value: genId, inline: true },
-                        { name: 'Expires', value: expiryText, inline: true }
-                    )
-                    .setFooter({ text: 'EAM.LOL | Surprise!' })
-                    .setTimestamp();
-                try {
-                    await interaction.user.send({ embeds: [embed], files: [textAttachment] });
-                    // Remove the token from stock
-                    tokenStock.splice(randomIndex, 1);
-                    await updateStatusPanel();
-                    await updateSubscriptionPanel();
-                    return interaction.editReply({ content: '🎁 Surprise token sent to your DMs!', flags: 64 });
-                } catch (err) {
-                    console.error('[ERROR] Surprise token DM failed:', err);
-                    return interaction.editReply({ content: 'Could not send surprise token. Please open your DMs.', flags: 64 });
-                }
             }
 
             // --- REFRESH STOCK (admin) ---
