@@ -1,6 +1,5 @@
 // ============================================================
-// FILE: index.js (EAM.LOL Token Bot – Fixed /set-refresh)
-// VERSION: 2.3.1
+// FILE: index.js (EAM.LOL Token Bot – Full v2.3.3)
 // ============================================================
 
 const {
@@ -42,12 +41,11 @@ const client = new Client({
 });
 
 // --- CONFIGURATION ---
-const VERSION = "2.3.1";
+const VERSION = "2.3.3";
 const UPDATE_LOG_CHANNEL_ID = "1545829503912120431";
+const STATUS_CHANNEL_ID = "1545624109583695933";   // NEW: status dashboard channel
 
-// ========== UPDATED CHANGELOG ==========
-const CHANGELOG = "🔧 Bot Update v" + VERSION + "\n\nWhat's new:\n• `set-refresh` and `test-refresh` now appear for all users with the required role (admin check still enforced)\n• `/set-refresh` now fully syncs the new bearer token to the internal state and adds an API validation check\n\nWhat's improved:\n• Command visibility – no more hidden admin commands\n• Robustness of the refresh-token update flow\n\nWhat's fixed:\n• Users with the required role can now see the commands (even if they can't use them)\n• `/set-refresh` no longer leaves `DEFAULT_TOKEN.bearer` outdated, preventing fallback failures";
-// ========================================
+const CHANGELOG = "🔧 Bot Update v" + VERSION + "\n\nWhat's new:\n• `/token-meaning` – a glossary command explaining token statuses and terms\n• Live **Token Status Dashboard** in #token-status – updates every 30s and automatically changes colour based on token health:\n  • 🟢 Active (≥5 min left)\n  • 🟡 Expiring soon (<5 min left)\n  • 🔴 Expired / offline\n\nWhat's improved:\n• The status panel updates instantly after a refresh\n• Cleaner UI for the status embed\n\nWhat's fixed:\n• Better fallback when the status panel message is deleted";
 
 const MEMBER_ROLE_ID = "1492798151516491816";
 const SUPPORTER_ROLE_ID = "1529393418063581284";
@@ -107,6 +105,7 @@ let deliveryInterval = null;
 
 // --- Panel message tracking ---
 let subscriptionPanelMessage = null; // { channelId, messageId }
+let statusPanelMessage = null;       // NEW: status panel
 
 // --- MULTI-ACCOUNT SUPPORT ---
 function loadAccounts() {
@@ -526,6 +525,7 @@ async function refreshTokenInStock() {
     if (tokenStock.length === 0) {
         console.log('[INFO] [EAM.LOL] Stock empty - loading from accounts...');
         giveNewTokenFromAccounts();
+        await updateStatusPanel(); // <-- update status
         return;
     }
     
@@ -533,6 +533,7 @@ async function refreshTokenInStock() {
     if (!tokenObj.refresh) {
         console.log('[ERROR] [EAM.LOL] No refresh token in stock - loading new token...');
         giveNewTokenFromAccounts();
+        await updateStatusPanel();
         return;
     }
 
@@ -542,13 +543,16 @@ async function refreshTokenInStock() {
         if (result.success) {
             console.log(`[SUCCESS] [EAM.LOL] Token refreshed! New expiry: ${humanExpiry(result.expiresAt)}`);
             consecutiveFails = 0;
+            await updateStatusPanel(); // <-- update status on success
         } else {
             console.log('[ERROR] [EAM.LOL] Refresh failed - getting new token from accounts...');
             giveNewTokenFromAccounts();
+            await updateStatusPanel();
         }
     } catch (err) {
         console.error('[ERROR] [EAM.LOL] Error during refresh:', err);
         giveNewTokenFromAccounts();
+        await updateStatusPanel();
     }
 }
 
@@ -560,6 +564,7 @@ function checkAndRemoveExpiredStock() {
         console.log(`[INFO] [EAM.LOL] Removing ${expiredTokens.length} expired token(s) from stock.`);
         tokenStock = tokenStock.filter(t => now < t.expiresAt);
         if (tokenStock.length === 0) giveNewTokenFromAccounts();
+        updateStatusPanel(); // update after removal
     }
 }
 
@@ -870,6 +875,7 @@ function forceSetOwnToken(bearer, refresh) {
     lastRefreshExpiry = getTokenExpiryMs(bearer);
     tokenStock = [{ bearer, refresh, addedAt: Date.now(), expiresAt: lastRefreshExpiry }];
     console.log(`[SUCCESS] [EAM.LOL] Token manually set! Expires: ${new Date(lastRefreshExpiry).toUTCString()}`);
+    updateStatusPanel(); // update dashboard
 }
 
 // --- UI HELPERS ---
@@ -1093,9 +1099,12 @@ const commandsData = [
     new SlashCommandBuilder().setName('ping').setDescription('Pong - checks bot latency'),
     new SlashCommandBuilder().setName('serverinfo').setDescription('Get info about this server'),
     new SlashCommandBuilder().setName('token').setDescription('Generate a fresh token directly to your DMs'),
+    // NEW: token-meaning
+    new SlashCommandBuilder()
+        .setName('token-meaning')
+        .setDescription('Learn what all the token terms and status icons mean'),
     new SlashCommandBuilder().setName('stock').setDescription('Open form to add token stock').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     new SlashCommandBuilder().setName('stock_main').setDescription('Set the main/default token').addStringOption(opt => opt.setName('bearer').setDescription('Bearer token').setRequired(true)).addStringOption(opt => opt.setName('refresh').setDescription('Refresh token').setRequired(true)).setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-    // --- FIXED: set-refresh now shows for all with required role, and admin check is inside handler ---
     new SlashCommandBuilder().setName('set-refresh').setDescription('Update only the refresh token (tested immediately)').addStringOption(opt => opt.setName('refresh').setDescription('The new refresh token').setRequired(true)),
     new SlashCommandBuilder().setName('test-refresh').setDescription('Test if the current refresh token works'),
     new SlashCommandBuilder().setName('generator').setDescription('Post generator panel').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
@@ -1146,6 +1155,87 @@ const commandsData = [
         .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
 ].map(cmd => cmd.toJSON());
 
+// ========== NEW: STATUS PANEL UPDATE FUNCTION ==========
+async function updateStatusPanel() {
+    try {
+        const channel = client.channels.cache.get(STATUS_CHANNEL_ID);
+        if (!channel) {
+            console.error(`[ERROR] Status channel ${STATUS_CHANNEL_ID} not found.`);
+            return;
+        }
+
+        const token = tokenStock.length > 0 ? tokenStock[0] : null;
+        let status = '⛔ NO TOKEN';
+        let color = 0x95A5A6; // Grey
+        let expiryText = 'N/A';
+        let timeLeft = 'N/A';
+        let valid = false;
+
+        if (token && token.expiresAt) {
+            const now = Date.now();
+            const ttl = Math.floor((token.expiresAt - now) / 1000);
+            expiryText = new Date(token.expiresAt).toUTCString();
+            timeLeft = ttl > 0 ? formatRemainingTime(token.expiresAt) : 'EXPIRED';
+
+            if (ttl <= 0) {
+                status = '🔴 EXPIRED';
+                color = 0xED4245; // Red
+            } else if (ttl < 300) { // < 5 minutes
+                status = '🟡 EXPIRING SOON';
+                color = 0xF1C40F; // Yellow
+            } else {
+                status = '🟢 ACTIVE / VALID';
+                color = 0x2ECC71; // Green
+            }
+            valid = ttl > 0;
+        } else {
+            status = '🔴 OFFLINE / NO TOKEN';
+            color = 0xED4245;
+        }
+
+        const embed = new EmbedBuilder()
+            .setTitle('📊 Token Status Dashboard')
+            .setDescription(`Live status of the bot's main token.`)
+            .setColor(color)
+            .addFields(
+                { name: 'Status', value: status, inline: true },
+                { name: 'Stock Count', value: `${tokenStock.length} token(s)`, inline: true },
+                { name: 'Expires At (UTC)', value: expiryText, inline: true },
+                { name: 'Time Left', value: timeLeft, inline: true },
+                { name: 'Last Refresh', value: lastRefreshExpiry ? humanExpiry(lastRefreshExpiry) : 'Never', inline: true },
+                { name: 'Auto-Refresh Cycle', value: 'Every 2m 30s', inline: true }
+            )
+            .setFooter({ text: `EAM.LOL Status | v${VERSION}` })
+            .setTimestamp();
+
+        const components = [];
+
+        if (statusPanelMessage) {
+            try {
+                const oldChannel = client.channels.cache.get(statusPanelMessage.channelId);
+                if (oldChannel) {
+                    const oldMsg = await oldChannel.messages.fetch(statusPanelMessage.messageId);
+                    await oldMsg.edit({ embeds: [embed], components });
+                    return;
+                }
+            } catch (err) {
+                console.log('[STATUS] Old panel not found, sending new one.');
+                statusPanelMessage = null;
+            }
+        }
+
+        // Send new panel
+        const msg = await channel.send({ embeds: [embed], components });
+        statusPanelMessage = {
+            channelId: msg.channel.id,
+            messageId: msg.id
+        };
+    } catch (err) {
+        console.error('[ERROR] Updating status panel:', err);
+    }
+}
+// ========================================================
+
 // --- READY ---
 client.once('ready', async () => {
     console.log(`[SYSTEM] [EAM.LOL] ONLINE: ${client.user.tag}`);
@@ -1160,6 +1250,12 @@ client.once('ready', async () => {
     startDeliveryLoop();
     await catchUpSubscribers();
     await postUpdateLog();
+    await updateStatusPanel(); // <-- send initial status panel
+
+    // Auto-update status every 30 seconds
+    setInterval(() => {
+        updateStatusPanel().catch(() => {});
+    }, 30000);
 });
 
 // --- Helper to build subscription panel embed ---
@@ -1398,16 +1494,41 @@ client.on('interactionCreate', async interaction => {
                 }
             }
 
+            // --- NEW: TOKEN-MEANING ---
+            if (commandName === 'token-meaning') {
+                const embed = new EmbedBuilder()
+                    .setTitle('📘 Token Glossary & Status Guide')
+                    .setDescription(
+                        'Here’s what everything means in the EAM.LOL token system.\n\n' +
+                        '**Status Indicators**\n' +
+                        '🟢 **Active / Valid** – Token is alive and ready to use (≥5 min left).\n' +
+                        '🟡 **Expiring Soon** – Less than 5 minutes left; the bot will auto‑refresh shortly.\n' +
+                        '🔴 **Expired** – Token no longer works; the bot will fall back to a new token.\n\n' +
+                        '**Token Types**\n' +
+                        '• **Bearer Token** – The long string you paste into Animal Company. This is your **access key**.\n' +
+                        '• **Refresh Token** – The secret that allows the bot to get a new Bearer without you logging in again.\n' +
+                        '• **Expiry** – The exact time when the Bearer stops working. The bot auto‑refreshes before that.\n\n' +
+                        '**Bot Features**\n' +
+                        '• **Stock** – The pool of available tokens. The bot keeps one active at all times.\n' +
+                        '• **Auto‑Refresh** – Every 2 minutes 30 seconds, the bot renews the Bearer token automatically, so you never run out.\n' +
+                        '• **Delivery** – Subscribers get a fresh token every 5 minutes directly in their DMs.\n\n' +
+                        '**Need more help?** Use `/help` or ask a staff member.'
+                    )
+                    .setColor(0x5865F2)
+                    .setFooter({ text: 'EAM.LOL | Token System v' + VERSION })
+                    .setTimestamp();
+                return interaction.reply({ embeds: [embed], flags: 64 });
+            }
+
             // --- ALL OTHER COMMANDS ---
             await interaction.deferReply({ flags: 64 });
 
-            // ========== FIXED /set-refresh ==========
+            // --- SET REFRESH (fixed) ---
             if (commandName === 'set-refresh') {
                 if (!hasAdminAccess(interaction)) return interaction.editReply({ content: 'Access Denied.', flags: 64 });
                 const newRefresh = options.getString('refresh');
                 await interaction.editReply({ content: '⏳ Testing new refresh token...' });
 
-                // 1. Get a fresh bearer from the refresh token
                 const test = await refreshTokenOnly(newRefresh);
                 if (!test.success) {
                     const embed = new EmbedBuilder()
@@ -1422,7 +1543,6 @@ client.on('interactionCreate', async interaction => {
                     return interaction.editReply({ embeds: [embed] });
                 }
 
-                // 2. Verify the new bearer actually works with the API
                 const validation = await validateTokenDetails(test.bearer, newRefresh);
                 if (!validation.valid) {
                     const embed = new EmbedBuilder()
@@ -1433,9 +1553,8 @@ client.on('interactionCreate', async interaction => {
                     return interaction.editReply({ embeds: [embed] });
                 }
 
-                // 3. Update EVERYTHING (DEFAULT_TOKEN + stock)
-                DEFAULT_TOKEN.bearer = test.bearer;          // <-- FIX: sync the bearer
-                DEFAULT_TOKEN.refresh_token = newRefresh;    // <-- FIX: sync the refresh
+                DEFAULT_TOKEN.bearer = test.bearer;
+                DEFAULT_TOKEN.refresh_token = newRefresh;
 
                 if (tokenStock.length > 0) {
                     tokenStock[0].bearer = test.bearer;
@@ -1454,6 +1573,7 @@ client.on('interactionCreate', async interaction => {
                 }
                 lastRefreshExpiry = test.expiresAt;
                 consecutiveFails = 0;
+                await updateStatusPanel(); // <-- update status
 
                 const embed = new EmbedBuilder()
                     .setTitle('✅ Refresh & Bearer Updated')
@@ -1468,7 +1588,6 @@ client.on('interactionCreate', async interaction => {
                     .setTimestamp();
                 return interaction.editReply({ embeds: [embed] });
             }
-            // ========================================
 
             // --- TEST REFRESH ---
             if (commandName === 'test-refresh') {
@@ -1718,12 +1837,14 @@ client.on('interactionCreate', async interaction => {
                 if (commandName === 'reset-stock') {
                     lastRefreshExpiry = getTokenExpiryMs(DEFAULT_TOKEN.bearer);
                     tokenStock = [{ bearer: DEFAULT_TOKEN.bearer, refresh: DEFAULT_TOKEN.refresh_token, addedAt: Date.now(), expiresAt: lastRefreshExpiry }];
+                    await updateStatusPanel();
                     return interaction.editReply({ content: 'Stock reset to default.', flags: 64 });
                 }
 
                 if (commandName === 'remove-token') {
                     const id = options.getString('id').trim();
                     const result = removeTokenById(id);
+                    await updateStatusPanel();
                     return interaction.editReply({ content: result.success ? `Success: ${result.message}` : `Error: ${result.message}`, flags: 64 });
                 }
 
@@ -1961,6 +2082,7 @@ client.on('interactionCreate', async interaction => {
                         await showRemoveStock(interaction, stockPage);
                     }
                 }
+                await updateStatusPanel();
                 return;
             }
 
@@ -2098,6 +2220,7 @@ client.on('interactionCreate', async interaction => {
                 const refresh = interaction.fields.getTextInputValue('stock_refresh_input').trim();
                 if (!bearer || !refresh) return interaction.editReply({ content: 'Both tokens required.' });
                 tokenStock.push({ bearer, refresh, addedAt: Date.now(), expiresAt: getTokenExpiryMs(bearer) });
+                await updateStatusPanel();
                 return interaction.editReply({ content: `Added token! Total: ${tokenStock.length}` });
             }
 
@@ -2140,6 +2263,7 @@ client.on('interactionCreate', async interaction => {
                     const genId = generateGenerationId();
                     tokenStock.push({ bearer: newBearer, refresh: newRefresh, addedAt: Date.now(), expiresAt: newExpiry, id: genId, userId: interaction.user.id, username: interaction.user.tag });
                     if (!accounts.find(a => a.refresh_token === newRefresh)) accounts.push({ token: newBearer, refresh_token: newRefresh, label: `donated_${Date.now()}` });
+                    await updateStatusPanel();
                     return interaction.editReply({ content: `Token donated and refreshed successfully! New token added to stock (${tokenStock.length} total). ID: \`${genId}\` Expires: ${humanExpiry(newExpiry)}` });
                 } else {
                     const validation = await validateTokenDetails(bearer, refresh);
@@ -2147,6 +2271,7 @@ client.on('interactionCreate', async interaction => {
                     const genId = generateGenerationId();
                     tokenStock.push({ bearer: bearer, refresh: refresh, addedAt: Date.now(), expiresAt: expiry, id: genId, userId: interaction.user.id, username: interaction.user.tag });
                     if (!accounts.find(a => a.refresh_token === refresh)) accounts.push({ token: bearer, refresh_token: refresh, label: `donated_${Date.now()}` });
+                    await updateStatusPanel();
                     return interaction.editReply({ content: `Token donated successfully! Added to stock (${tokenStock.length} total). ID: \`${genId}\` Expires: ${humanExpiry(expiry)}` });
                 }
             }
