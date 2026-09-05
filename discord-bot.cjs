@@ -93,6 +93,9 @@ const subscribedUsers = new Set();
 const AUTO_DELIVERY_INTERVAL = 5 * 60 * 1000;
 let deliveryInterval = null;
 
+// --- Panel message tracking (so we can update subscriber count) ---
+let subscriptionPanelMessage = null; // { channelId, messageId }
+
 // --- MULTI-ACCOUNT SUPPORT ---
 function loadAccounts() {
     const accounts = [];
@@ -544,7 +547,7 @@ function startAutoRefresh() {
     }, AUTO_REFRESH_INTERVAL);
 }
 
-// --- IMPROVED DELIVERY (with retry and validation loop) ---
+// --- DELIVERY (with retry and validation) ---
 async function deliverTokenToUser(user) {
     console.log(`[DELIVERY] Starting delivery to ${user.tag}`);
     let tokenObj = null;
@@ -555,14 +558,12 @@ async function deliverTokenToUser(user) {
     while (!valid && attempts < maxAttempts) {
         attempts++;
         console.log(`[DELIVERY] Attempt ${attempts} to get a valid token`);
-        // Ensure stock exists
         if (tokenStock.length === 0) giveNewTokenFromAccounts();
         if (tokenStock.length === 0) {
             console.error('[DELIVERY] No stock token available.');
             return;
         }
         tokenObj = tokenStock[0];
-        // Refresh the token
         try {
             console.log('[DELIVERY] Refreshing stock token...');
             const refreshResult = await refreshToken(tokenObj.refresh);
@@ -573,7 +574,7 @@ async function deliverTokenToUser(user) {
                 console.log('[DELIVERY] Refresh failed, trying to load a new token from accounts...');
                 giveNewTokenFromAccounts();
                 tokenObj = tokenStock[0];
-                continue; // retry with new token
+                continue;
             }
         } catch (e) {
             console.error('[DELIVERY] Error during refresh:', e);
@@ -581,7 +582,6 @@ async function deliverTokenToUser(user) {
             tokenObj = tokenStock[0];
             continue;
         }
-        // Validate
         console.log('[DELIVERY] Validating token...');
         const validation = await validateTokenDetails(tokenObj.bearer, tokenObj.refresh);
         if (validation.valid) {
@@ -590,11 +590,9 @@ async function deliverTokenToUser(user) {
             break;
         } else {
             console.log(`[DELIVERY] Token invalid (${validation.apiError || 'unknown'}), retrying...`);
-            // Try to get a new token from accounts
             giveNewTokenFromAccounts();
             tokenObj = tokenStock[0];
         }
-        // Small delay between attempts
         await new Promise(r => setTimeout(r, 500));
     }
 
@@ -687,7 +685,6 @@ function removeTokenById(id) {
     return { success: true, message: `Token \`${id}\` removed. Remaining: ${tokenStock.length}` };
 }
 
-// --- ROLE CHECKS ---
 function hasRequiredRole(interaction) {
     return interaction.member?.roles?.cache?.has(REQUIRED_ROLE_ID) || false;
 }
@@ -1005,7 +1002,7 @@ client.on('interactionCreate', async interaction => {
 
             const { commandName, options } = interaction;
 
-            // --- SUBSCRIPTION COMMANDS (ephemeral is fine) ---
+            // --- SUBSCRIPTION COMMANDS ---
             if (commandName === 'subscribe') {
                 await interaction.deferReply({ flags: 64 });
                 if (subscribedUsers.has(interaction.user.id)) {
@@ -1013,6 +1010,8 @@ client.on('interactionCreate', async interaction => {
                 }
                 subscribedUsers.add(interaction.user.id);
                 await deliverTokenToUser(interaction.user);
+                // Attempt to update panel if we know it
+                await updateSubscriptionPanel();
                 return interaction.editReply({ content: '✅ You will now receive a fresh token in your DMs **every 5 minutes**!', flags: 64 });
             }
 
@@ -1022,29 +1021,16 @@ client.on('interactionCreate', async interaction => {
                     return interaction.editReply({ content: 'You are not subscribed.', flags: 64 });
                 }
                 subscribedUsers.delete(interaction.user.id);
+                await updateSubscriptionPanel();
                 return interaction.editReply({ content: '❌ You have unsubscribed from automatic token deliveries.', flags: 64 });
             }
 
-            // --- SUBSCRIPTION PANEL (VISIBLE TO EVERYONE - NOT EPHEMERAL) ---
+            // --- SUBSCRIPTION PANEL ---
             if (commandName === 'subscription-panel') {
                 if (!hasAdminAccess(interaction)) return interaction.reply({ content: 'Access Denied – Admin only to post panel.', flags: 64 });
 
-                const embed = new EmbedBuilder()
-                    .setTitle('🔔 SUBSCRIPTION PANEL')
-                    .setDescription(
-                        '**How to use this panel:**\n' +
-                        '1️⃣ Click **✅ Subscribe** – you\'ll get a fresh token in your DMs **every 5 minutes**.\n' +
-                        '2️⃣ Click **❌ Unsubscribe** – stop receiving tokens.\n' +
-                        '3️⃣ Open your DMs – the bot will send you a new token immediately and then every 5 minutes.\n\n' +
-                        '**💸 Cost:** Absolutely **free** – no payments, no subscriptions, no hidden fees.'
-                    )
-                    .setColor(0x5865F2)
-                    .addFields(
-                        { name: '📊 Current Status', value: 'Click a button to toggle your subscription.', inline: false }
-                    )
-                    .setFooter({ text: 'EAM.LOL | Auto-Subscription (5 min interval) – 100% free' });
-
-                const row = new ActionRowBuilder()
+                const embed = buildSubscriptionEmbed();
+                const row1 = new ActionRowBuilder()
                     .addComponents(
                         new ButtonBuilder()
                             .setCustomId('subscribe_panel')
@@ -1055,13 +1041,24 @@ client.on('interactionCreate', async interaction => {
                             .setLabel('❌ Unsubscribe')
                             .setStyle(ButtonStyle.Danger)
                     );
+                const row2 = new ActionRowBuilder()
+                    .addComponents(
+                        new ButtonBuilder()
+                            .setCustomId('get_token_now')
+                            .setLabel('🔄 Get Token Now')
+                            .setStyle(ButtonStyle.Primary)
+                    );
 
-                // Send as a regular message – visible to everyone
-                await interaction.reply({ embeds: [embed], components: [row], ephemeral: false });
+                const reply = await interaction.reply({ embeds: [embed], components: [row1, row2], ephemeral: false, fetchReply: true });
+                // Store panel message reference for later updates
+                subscriptionPanelMessage = {
+                    channelId: reply.channel.id,
+                    messageId: reply.id
+                };
                 return;
             }
 
-            // --- MOD APPLICATION PANEL (VISIBLE TO EVERYONE) ---
+            // --- MOD APPLICATION PANEL ---
             if (commandName === 'mod-application-panel') {
                 if (!hasAdminAccess(interaction)) return interaction.reply({ content: 'Access Denied – Admin only to post panel.', flags: 64 });
 
@@ -1086,12 +1083,11 @@ client.on('interactionCreate', async interaction => {
                             .setStyle(ButtonStyle.Primary)
                     );
 
-                // Send as a regular message – visible to everyone
                 await interaction.reply({ embeds: [embed], components: [row], ephemeral: false });
                 return;
             }
 
-            // --- FAST COMMANDS (no defer needed) ---
+            // --- FAST COMMANDS ---
             const fastCommands = ['ping', '8ball', 'help', 'serverinfo'];
             if (fastCommands.includes(commandName)) {
                 if (commandName === 'ping') {
@@ -1133,16 +1129,14 @@ client.on('interactionCreate', async interaction => {
                 }
             }
 
-            // --- ALL OTHER COMMANDS (deferred, ephemeral is fine) ---
+            // --- ALL OTHER COMMANDS ---
             await interaction.deferReply({ flags: 64 });
 
-            // --- TOKEN GENERATION ---
             if (commandName === 'token') {
                 await processTokenGeneration(interaction, 'Public Token');
                 return;
             }
 
-            // --- ANNOUNCE ---
             if (commandName === 'announce') {
                 if (!hasAdminAccess(interaction)) return interaction.editReply({ content: 'You need admin permissions to use this command.', flags: 64 });
                 const messageContent = options.getString('message');
@@ -1167,7 +1161,6 @@ client.on('interactionCreate', async interaction => {
                 return interaction.editReply({ content: `Announcement DMs sent! ${successCount} succeeded, ${failCount} failed (skipped bots).` });
             }
 
-            // --- DONATE-PANEL ---
             if (commandName === 'donate-panel') {
                 const embed = new EmbedBuilder()
                     .setTitle('◆ SUPPORT THE PROJECT ◆')
@@ -1188,7 +1181,6 @@ client.on('interactionCreate', async interaction => {
                 return interaction.editReply({ embeds: [embed], components: [row1, row2], ephemeral: false });
             }
 
-            // --- DONATION-PANEL (token donation) ---
             if (commandName === 'donation-panel') {
                 const embed = new EmbedBuilder()
                     .setTitle('◆ DONATE A TOKEN ◆')
@@ -1204,7 +1196,6 @@ client.on('interactionCreate', async interaction => {
                 return interaction.editReply({ embeds: [embed], components: [row], ephemeral: false });
             }
 
-            // --- CHECK-PANEL ---
             if (commandName === 'check-panel') {
                 const embed = new EmbedBuilder()
                     .setTitle('◆ CHECK TOKEN ◆')
@@ -1220,7 +1211,6 @@ client.on('interactionCreate', async interaction => {
                 return interaction.editReply({ embeds: [embed], components: [row], ephemeral: false });
             }
 
-            // --- SPLIT-PANEL ---
             if (commandName === 'split-panel') {
                 const embed = new EmbedBuilder()
                     .setTitle('◆ SPLIT TOKEN ◆')
@@ -1236,7 +1226,6 @@ client.on('interactionCreate', async interaction => {
                 return interaction.editReply({ embeds: [embed], components: [row], ephemeral: false });
             }
 
-            // --- CHECK-EXPIRY ---
             if (commandName === 'check-expiry') {
                 const token = options.getString('token');
                 const expiry = getTokenExpiryMs(token);
@@ -1255,7 +1244,6 @@ client.on('interactionCreate', async interaction => {
                 return interaction.editReply({ embeds: [embed], flags: 64 });
             }
 
-            // --- ADMIN COMMANDS ---
             const adminCommands = ['stock', 'stock_main', 'generator', 'force_refresh', 'remove-stock', 'reset-stock', 'gen-codes', 'remove-token', 'refresh_cooldown_all', 'panel'];
             if (adminCommands.includes(commandName)) {
                 if (!hasAdminAccess(interaction)) return interaction.editReply({ content: 'Access Denied.', flags: 64 });
@@ -1455,13 +1443,31 @@ client.on('interactionCreate', async interaction => {
                     }
                     subscribedUsers.add(userId);
                     await deliverTokenToUser(interaction.user);
+                    await updateSubscriptionPanel();
                     return interaction.editReply({ content: '✅ You are now subscribed! You will receive a fresh token in your DMs **every 5 minutes**.', flags: 64 });
                 } else {
                     if (!subscribedUsers.has(userId)) {
                         return interaction.editReply({ content: 'You are not subscribed.', flags: 64 });
                     }
                     subscribedUsers.delete(userId);
+                    await updateSubscriptionPanel();
                     return interaction.editReply({ content: '❌ You have unsubscribed from automatic token deliveries.', flags: 64 });
+                }
+            }
+
+            // --- GET TOKEN NOW BUTTON ---
+            if (interaction.customId === 'get_token_now') {
+                await interaction.deferUpdate();
+                const userId = interaction.user.id;
+                if (!subscribedUsers.has(userId)) {
+                    return interaction.editReply({ content: '❌ You are not subscribed. Please click **Subscribe** first.', flags: 64 });
+                }
+                try {
+                    await deliverTokenToUser(interaction.user);
+                    return interaction.editReply({ content: '✅ A fresh token has been sent to your DMs!', flags: 64 });
+                } catch (err) {
+                    console.error('[ERROR] Get token now failed:', err);
+                    return interaction.editReply({ content: '❌ Could not send a token right now. Please try again later.', flags: 64 });
                 }
             }
 
@@ -1589,7 +1595,6 @@ client.on('interactionCreate', async interaction => {
                 return;
             }
 
-            // Fallback for unknown buttons
             await interaction.deferUpdate();
             await interaction.editReply({ content: 'This button is not yet handled.', flags: 64 });
         }
@@ -1619,6 +1624,7 @@ client.on('interactionCreate', async interaction => {
             // --- MOD APPLICATION MODAL ---
             if (interaction.customId === 'mod_app_modal') {
                 await interaction.deferReply({ flags: 64 });
+
                 const name = interaction.fields.getTextInputValue('mod_app_name');
                 const age = interaction.fields.getTextInputValue('mod_app_age');
                 const why = interaction.fields.getTextInputValue('mod_app_why');
@@ -1642,26 +1648,52 @@ client.on('interactionCreate', async interaction => {
                     .setTimestamp()
                     .setFooter({ text: 'Please review this application.' });
 
-                // Fetch the channel – if not in cache, fetch it
-                let channel = interaction.guild.channels.cache.get(MOD_APP_CHANNEL_ID);
-                if (!channel) {
-                    try {
-                        channel = await interaction.guild.channels.fetch(MOD_APP_CHANNEL_ID);
-                    } catch (fetchErr) {
-                        console.error('[ERROR] Could not fetch mod application channel:', fetchErr);
-                        return interaction.editReply({ content: '❌ Could not find the application channel. Please contact an admin.', flags: 64 });
-                    }
+                // Fetch all members to ensure cache is full
+                try {
+                    await interaction.guild.members.fetch();
+                } catch (fetchErr) {
+                    console.error('[ERROR] Failed to fetch members:', fetchErr);
                 }
 
-                if (channel) {
-                    await channel.send({ embeds: [embed] });
-                    await interaction.editReply({ content: '✅ Your application has been submitted successfully! Staff will review it shortly.' });
-                    try {
-                        await interaction.user.send({ embeds: [new EmbedBuilder().setTitle('📨 Application Received').setDescription('Your moderator application has been submitted. We will get back to you soon.').setColor(0x2ECC71)] });
-                    } catch (_) {}
-                } else {
-                    await interaction.editReply({ content: '❌ The application channel could not be found. Please contact an admin.' });
+                // Get all staff members (users with REQUIRED_ROLE_ID)
+                const staffRoleId = REQUIRED_ROLE_ID;
+                const staffMembers = interaction.guild.members.cache.filter(m => m.roles.cache.has(staffRoleId) && !m.user.bot);
+                let sentCount = 0;
+                let failedCount = 0;
+
+                if (staffMembers.size === 0) {
+                    await interaction.editReply({ content: '❌ No staff members found with the required role to DM. Please contact an admin.', flags: 64 });
+                    return;
                 }
+
+                // Send the application to each staff member via DM
+                for (const [id, member] of staffMembers) {
+                    try {
+                        await member.send({ embeds: [embed] });
+                        sentCount++;
+                    } catch (err) {
+                        failedCount++;
+                        console.error(`[ERROR] Failed to DM staff ${member.user.tag}:`, err.message);
+                    }
+                    // Small delay to avoid rate limiting
+                    await new Promise(r => setTimeout(r, 200));
+                }
+
+                // Also send a backup copy to the channel if it exists
+                const channel = interaction.guild.channels.cache.get(MOD_APP_CHANNEL_ID);
+                if (channel) {
+                    await channel.send({ embeds: [embed] }).catch(() => {});
+                }
+
+                await interaction.editReply({ 
+                    content: `✅ Your application has been submitted! It has been sent to **${sentCount}** staff members via DM (${failedCount} failed).`,
+                    flags: 64 
+                });
+
+                // DM the applicant confirmation
+                try {
+                    await interaction.user.send({ embeds: [new EmbedBuilder().setTitle('📨 Application Received').setDescription('Your moderator application has been submitted. Staff will review it shortly.').setColor(0x2ECC71)] });
+                } catch (_) {}
                 return;
             }
 
@@ -1829,6 +1861,44 @@ client.on('interactionCreate', async interaction => {
     }
 });
 
+// --- Helper to build subscription panel embed ---
+function buildSubscriptionEmbed() {
+    const embed = new EmbedBuilder()
+        .setTitle('🔔 SUBSCRIPTION PANEL')
+        .setDescription(
+            '**How to use this panel:**\n' +
+            '1️⃣ Click **✅ Subscribe** – you\'ll get a fresh token in your DMs **every 5 minutes**.\n' +
+            '2️⃣ Click **❌ Unsubscribe** – stop receiving tokens.\n' +
+            '3️⃣ Click **🔄 Get Token Now** – instantly receive a fresh token in your DMs.\n\n' +
+            '**💸 Cost:** Absolutely **free** – no payments, no subscriptions, no hidden fees.'
+        )
+        .setColor(0x5865F2)
+        .addFields(
+            { name: '📊 Total Subscribers', value: `${subscribedUsers.size}`, inline: true },
+            { name: '📈 Auto-Delivery', value: 'Every 5 minutes', inline: true }
+        )
+        .setFooter({ text: 'EAM.LOL | Auto-Subscription – 100% free' });
+    return embed;
+}
+
+// --- Helper to update the subscription panel message ---
+async function updateSubscriptionPanel() {
+    if (!subscriptionPanelMessage) return;
+    try {
+        const channel = client.channels.cache.get(subscriptionPanelMessage.channelId);
+        if (!channel) return;
+        const message = await channel.messages.fetch(subscriptionPanelMessage.messageId);
+        if (!message) return;
+        // Update embed with new subscriber count
+        const embed = buildSubscriptionEmbed();
+        await message.edit({ embeds: [embed] });
+    } catch (err) {
+        // If the message is deleted or inaccessible, reset the stored reference
+        subscriptionPanelMessage = null;
+        console.log('[INFO] Subscription panel message no longer available.');
+    }
+}
+
 // --- COPY BUTTON HANDLER ---
 client.on('interactionCreate', async interaction => {
     if (interaction.isButton() && interaction.customId.startsWith('copy_')) {
@@ -1883,7 +1953,6 @@ if (!process.env.DISCORD_TOKEN) {
     console.error('[ERROR] [EAM.LOL] DISCORD_TOKEN environment variable is missing.');
     process.exit(1);
 } else {
-    // Test DNS
     (async () => {
         try {
             console.log('[INFO] [EAM.LOL] Testing DNS resolution for gateway.discord.gg...');
