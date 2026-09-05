@@ -47,7 +47,23 @@ const VERSION = "2.3.4";
 const UPDATE_LOG_CHANNEL_ID = "1545829503912120431";
 const STATUS_CHANNEL_ID = "1545624109583695933";
 
-const CHANGELOG = "🔧 Bot Update v" + VERSION + "\n\nWhat's new:\n• **Game‑compatible validation** – tokens are now tested against the **same endpoint** the game uses (`/v2/account/me`) with the correct `User-Agent`.\n• **`/test-game-token`** – admin command to verify if the current token works in the game.\n• Status panel now shows **🔴 EXPIRED** if the token fails the game‑style check, even if JWT says valid.\n• Auto‑refresh now **re‑validates** against the game API before accepting a new token.\n• Delivery now **forces a refresh** if the token has less than **15 minutes** left and re‑validates with the game endpoint.\n\nWhat's fixed:\n• **"Valid but expired"** – no longer happens; we now check the actual game endpoint.\n• **"FetchAccountFailed"** – tokens are now verified exactly as the game does, so they will work.\n\nWhat's improved:\n• More robust error handling and logging.";
+// ===== FIXED CHANGELOG (template literal) =====
+const CHANGELOG = `🔧 Bot Update v${VERSION}
+
+What's new:
+• **Game‑compatible validation** – tokens are now tested against the **same endpoint** the game uses (\`/v2/account/me\`) with the correct \`User-Agent\`.
+• **\`/test-game-token\`** – admin command to verify if the current token works in the game.
+• Status panel now shows **🔴 EXPIRED** if the token fails the game‑style check, even if JWT says valid.
+• Auto‑refresh now **re‑validates** against the game API before accepting a new token.
+• Delivery now **forces a refresh** if the token has less than **15 minutes** left and re‑validates with the game endpoint.
+
+What's fixed:
+• **"Valid but expired"** – no longer happens; we now check the actual game endpoint.
+• **"FetchAccountFailed"** – tokens are now verified exactly as the game does, so they will work.
+
+What's improved:
+• More robust error handling and logging.`;
+// =============================================
 
 const MEMBER_ROLE_ID = "1492798151516491816";
 const SUPPORTER_ROLE_ID = "1529393418063581284";
