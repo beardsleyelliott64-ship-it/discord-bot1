@@ -37,9 +37,9 @@ const client = new Client({
 });
 
 // --- CONFIGURATION ---
-const VERSION = "2.3.0";
+const VERSION = "2.3.1";
 const UPDATE_LOG_CHANNEL_ID = "1545829503912120431";
-const CHANGELOG = "🔧 Bot Update v" + VERSION + "\n\nWhat's new:\n• Added TTL threshold – tokens with <15 min left are refreshed again before sending\n• Even better validation – you'll never get a token that's about to expire\n\nWhat's improved:\n• Delivery now guarantees at least 15 minutes of validity\n• More detailed logs for each refresh attempt\n\nWhat's fixed:\n• No more 'FetchAccountFailed' – the bot only sends tokens that pass API validation";
+const CHANGELOG = "🔧 Bot Update v" + VERSION + "\n\nWhat's new:\n• `set-refresh` and `test-refresh` now appear for all users with the required role (admin check still enforced)\n\nWhat's improved:\n• Command visibility – no more hidden admin commands\n\nWhat's fixed:\n• Users with the required role can now see the commands (even if they can't use them)";
 
 const MEMBER_ROLE_ID = "1492798151516491816";
 const SUPPORTER_ROLE_ID = "1529393418063581284";
@@ -1087,8 +1087,10 @@ const commandsData = [
     new SlashCommandBuilder().setName('token').setDescription('Generate a fresh token directly to your DMs'),
     new SlashCommandBuilder().setName('stock').setDescription('Open form to add token stock').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     new SlashCommandBuilder().setName('stock_main').setDescription('Set the main/default token').addStringOption(opt => opt.setName('bearer').setDescription('Bearer token').setRequired(true)).addStringOption(opt => opt.setName('refresh').setDescription('Refresh token').setRequired(true)).setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-    new SlashCommandBuilder().setName('set-refresh').setDescription('Update only the refresh token (tested immediately)').addStringOption(opt => opt.setName('refresh').setDescription('The new refresh token').setRequired(true)).setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-    new SlashCommandBuilder().setName('test-refresh').setDescription('Test if the current refresh token works').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    new SlashCommandBuilder().setName('set-refresh').setDescription('Update only the refresh token (tested immediately)').addStringOption(opt => opt.setName('refresh').setDescription('The new refresh token').setRequired(true)),
+    // Removed default permission so it shows for all with required role
+    new SlashCommandBuilder().setName('test-refresh').setDescription('Test if the current refresh token works'),
+    // Removed default permission
     new SlashCommandBuilder().setName('generator').setDescription('Post generator panel').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     new SlashCommandBuilder().setName('force_refresh').setDescription('Force refresh the current token').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     new SlashCommandBuilder().setName('remove-stock').setDescription('Remove a token by selection').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
