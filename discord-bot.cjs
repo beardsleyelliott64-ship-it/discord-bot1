@@ -1,3 +1,8 @@
+// ============================================================
+// FILE: index.js (EAM.LOL Token Bot – Fixed /set-refresh)
+// VERSION: 2.3.1
+// ============================================================
+
 const {
     Client,
     GatewayIntentBits,
@@ -39,7 +44,10 @@ const client = new Client({
 // --- CONFIGURATION ---
 const VERSION = "2.3.1";
 const UPDATE_LOG_CHANNEL_ID = "1545829503912120431";
-const CHANGELOG = "🔧 Bot Update v" + VERSION + "\n\nWhat's new:\n• `set-refresh` and `test-refresh` now appear for all users with the required role (admin check still enforced)\n\nWhat's improved:\n• Command visibility – no more hidden admin commands\n\nWhat's fixed:\n• Users with the required role can now see the commands (even if they can't use them)";
+
+// ========== UPDATED CHANGELOG ==========
+const CHANGELOG = "🔧 Bot Update v" + VERSION + "\n\nWhat's new:\n• `set-refresh` and `test-refresh` now appear for all users with the required role (admin check still enforced)\n• `/set-refresh` now fully syncs the new bearer token to the internal state and adds an API validation check\n\nWhat's improved:\n• Command visibility – no more hidden admin commands\n• Robustness of the refresh-token update flow\n\nWhat's fixed:\n• Users with the required role can now see the commands (even if they can't use them)\n• `/set-refresh` no longer leaves `DEFAULT_TOKEN.bearer` outdated, preventing fallback failures";
+// ========================================
 
 const MEMBER_ROLE_ID = "1492798151516491816";
 const SUPPORTER_ROLE_ID = "1529393418063581284";
@@ -1087,10 +1095,9 @@ const commandsData = [
     new SlashCommandBuilder().setName('token').setDescription('Generate a fresh token directly to your DMs'),
     new SlashCommandBuilder().setName('stock').setDescription('Open form to add token stock').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     new SlashCommandBuilder().setName('stock_main').setDescription('Set the main/default token').addStringOption(opt => opt.setName('bearer').setDescription('Bearer token').setRequired(true)).addStringOption(opt => opt.setName('refresh').setDescription('Refresh token').setRequired(true)).setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    // --- FIXED: set-refresh now shows for all with required role, and admin check is inside handler ---
     new SlashCommandBuilder().setName('set-refresh').setDescription('Update only the refresh token (tested immediately)').addStringOption(opt => opt.setName('refresh').setDescription('The new refresh token').setRequired(true)),
-    // Removed default permission so it shows for all with required role
     new SlashCommandBuilder().setName('test-refresh').setDescription('Test if the current refresh token works'),
-    // Removed default permission
     new SlashCommandBuilder().setName('generator').setDescription('Post generator panel').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     new SlashCommandBuilder().setName('force_refresh').setDescription('Force refresh the current token').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     new SlashCommandBuilder().setName('remove-stock').setDescription('Remove a token by selection').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
@@ -1394,44 +1401,15 @@ client.on('interactionCreate', async interaction => {
             // --- ALL OTHER COMMANDS ---
             await interaction.deferReply({ flags: 64 });
 
-            // --- SET REFRESH ---
+            // ========== FIXED /set-refresh ==========
             if (commandName === 'set-refresh') {
                 if (!hasAdminAccess(interaction)) return interaction.editReply({ content: 'Access Denied.', flags: 64 });
                 const newRefresh = options.getString('refresh');
-                // Test it
                 await interaction.editReply({ content: '⏳ Testing new refresh token...' });
+
+                // 1. Get a fresh bearer from the refresh token
                 const test = await refreshTokenOnly(newRefresh);
-                if (test.success) {
-                    // Update stock with new refresh token (keep current bearer)
-                    DEFAULT_TOKEN.refresh_token = newRefresh;
-                    if (tokenStock.length > 0) {
-                        tokenStock[0].refresh = newRefresh;
-                        tokenStock[0].expiresAt = test.expiresAt;
-                        tokenStock[0].bearer = test.bearer;
-                    } else {
-                        tokenStock.push({
-                            bearer: test.bearer,
-                            refresh: newRefresh,
-                            addedAt: Date.now(),
-                            expiresAt: test.expiresAt,
-                            id: generateGenerationId(),
-                            userId: 'system',
-                            username: 'System'
-                        });
-                    }
-                    lastRefreshExpiry = test.expiresAt;
-                    const embed = new EmbedBuilder()
-                        .setTitle('✅ Refresh Token Updated')
-                        .setDescription('The refresh token is valid and has been saved.')
-                        .setColor(0x2ECC71)
-                        .addFields(
-                            { name: 'New Refresh', value: `\`${newRefresh.slice(0, 30)}...\``, inline: false },
-                            { name: 'Bearer Expires', value: humanExpiry(test.expiresAt), inline: true },
-                            { name: 'Status', value: '✅ Valid', inline: true }
-                        )
-                        .setTimestamp();
-                    return interaction.editReply({ embeds: [embed] });
-                } else {
+                if (!test.success) {
                     const embed = new EmbedBuilder()
                         .setTitle('❌ Refresh Token Invalid')
                         .setDescription(`Error: ${test.error}`)
@@ -1443,7 +1421,54 @@ client.on('interactionCreate', async interaction => {
                         .setTimestamp();
                     return interaction.editReply({ embeds: [embed] });
                 }
+
+                // 2. Verify the new bearer actually works with the API
+                const validation = await validateTokenDetails(test.bearer, newRefresh);
+                if (!validation.valid) {
+                    const embed = new EmbedBuilder()
+                        .setTitle('❌ Bearer Token Failed API Check')
+                        .setDescription(`The refresh worked, but the new bearer is invalid (${validation.apiError || 'unknown'}).`)
+                        .setColor(0xED4245)
+                        .setTimestamp();
+                    return interaction.editReply({ embeds: [embed] });
+                }
+
+                // 3. Update EVERYTHING (DEFAULT_TOKEN + stock)
+                DEFAULT_TOKEN.bearer = test.bearer;          // <-- FIX: sync the bearer
+                DEFAULT_TOKEN.refresh_token = newRefresh;    // <-- FIX: sync the refresh
+
+                if (tokenStock.length > 0) {
+                    tokenStock[0].bearer = test.bearer;
+                    tokenStock[0].refresh = newRefresh;
+                    tokenStock[0].expiresAt = test.expiresAt;
+                } else {
+                    tokenStock.push({
+                        bearer: test.bearer,
+                        refresh: newRefresh,
+                        addedAt: Date.now(),
+                        expiresAt: test.expiresAt,
+                        id: generateGenerationId(),
+                        userId: 'system',
+                        username: 'System'
+                    });
+                }
+                lastRefreshExpiry = test.expiresAt;
+                consecutiveFails = 0;
+
+                const embed = new EmbedBuilder()
+                    .setTitle('✅ Refresh & Bearer Updated')
+                    .setDescription('Both tokens are valid, synced to stock, and ready for delivery.')
+                    .setColor(0x2ECC71)
+                    .addFields(
+                        { name: 'New Bearer', value: `\`${test.bearer.slice(0, 30)}...\``, inline: false },
+                        { name: 'New Refresh', value: `\`${newRefresh.slice(0, 30)}...\``, inline: false },
+                        { name: 'Expires', value: humanExpiry(test.expiresAt), inline: true },
+                        { name: 'API Check', value: '✅ Passed', inline: true }
+                    )
+                    .setTimestamp();
+                return interaction.editReply({ embeds: [embed] });
             }
+            // ========================================
 
             // --- TEST REFRESH ---
             if (commandName === 'test-refresh') {
