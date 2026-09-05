@@ -1,7 +1,6 @@
 // ============================================================
-// FILE: index.js – EAM.LOL Token Bot v2.3.4
-// Fully fixed: game‑compatible validation, expiry detection,
-// and live status panel.
+// FILE: index.js – EAM.LOL Token Bot v2.3.5
+// JWT‑only validation, improved status panel.
 // ============================================================
 
 const {
@@ -43,27 +42,20 @@ const client = new Client({
 });
 
 // --- CONFIGURATION ---
-const VERSION = "2.3.4";
+const VERSION = "2.3.5";
 const UPDATE_LOG_CHANNEL_ID = "1545829503912120431";
 const STATUS_CHANNEL_ID = "1545624109583695933";
 
-// ===== FIXED CHANGELOG (template literal) =====
 const CHANGELOG = `🔧 Bot Update v${VERSION}
 
 What's new:
-• **Game‑compatible validation** – tokens are now tested against the **same endpoint** the game uses (\`/v2/account/me\`) with the correct \`User-Agent\`.
-• **\`/test-game-token\`** – admin command to verify if the current token works in the game.
-• Status panel now shows **🔴 EXPIRED** if the token fails the game‑style check, even if JWT says valid.
-• Auto‑refresh now **re‑validates** against the game API before accepting a new token.
-• Delivery now **forces a refresh** if the token has less than **15 minutes** left and re‑validates with the game endpoint.
+• **Reverted to JWT‑only validation** – the bot now checks only the token's JWT expiry, no more game API calls. This eliminates false "invalid" errors when the API is unreachable.
+• **Improved status panel** – now shows a live countdown, colour‑coded status (🟢 valid, 🟡 expiring soon, 🔴 expired), and updates every 30 seconds.
+• **Better refresh logic** – the bot auto‑refreshes tokens every 2m30s to keep them alive.
 
 What's fixed:
-• **"Valid but expired"** – no longer happens; we now check the actual game endpoint.
-• **"FetchAccountFailed"** – tokens are now verified exactly as the game does, so they will work.
-
-What's improved:
-• More robust error handling and logging.`;
-// =============================================
+• Tokens that work in the game but failed the API check are now accepted.
+• The status panel now accurately reflects JWT expiry, not API reachability.`;
 
 const MEMBER_ROLE_ID = "1492798151516491816";
 const SUPPORTER_ROLE_ID = "1529393418063581284";
@@ -220,68 +212,17 @@ function humanExpiry(expiresAt) {
     return `expires in ${formatRemainingTime(expiresAt)} (${new Date(expiresAt).toUTCString()})`;
 }
 
-// --- GAME‑COMPATIBLE VALIDATION (uses same endpoint and headers as the game) ---
-async function validateTokenForGame(bearerToken, refreshToken = null) {
-    // First check JWT expiry
+// --- JWT‑ONLY VALIDATION (no API call) ---
+function validateTokenJWT(bearerToken, refreshToken = null) {
     const expiry = getTokenExpiryMs(bearerToken);
     const hasExpiry = expiry !== null;
     const expired = hasExpiry && Date.now() >= expiry;
-
-    // If JWT expired, no need to call API
-    if (expired) {
-        return {
-            valid: false,
-            expired: true,
-            expiry,
-            hasExpiry,
-            apiValid: false,
-            apiError: 'JWT expired',
-            secondsRemaining: 0,
-            refreshExpiry: refreshToken ? getTokenExpiryMs(refreshToken) : null,
-            refreshExpired: refreshToken ? (getTokenExpiryMs(refreshToken) !== null && Date.now() >= getTokenExpiryMs(refreshToken)) : false,
-            refreshHasExpiry: refreshToken ? (getTokenExpiryMs(refreshToken) !== null) : false,
-            refreshSecondsRemaining: refreshToken ? (getTokenExpiryMs(refreshToken) !== null ? Math.floor((getTokenExpiryMs(refreshToken) - Date.now()) / 1000) : null) : null
-        };
-    }
-
-    // Now call the game's account endpoint with the correct User-Agent
-    let apiValid = false;
-    let apiError = null;
-    try {
-        const url = `${ACTIVE_API_URL}/v2/account/me`;
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 8000);
-        const response = await fetch(url, {
-            method: 'GET',
-            headers: {
-                'Authorization': `Bearer ${bearerToken}`,
-                'Content-Type': 'application/json',
-                'User-Agent': 'SteamVR 1.88.1.3421_a3df6ce5' // same as game client
-            },
-            signal: controller.signal
-        });
-        clearTimeout(timeoutId);
-        if (response.status === 200) {
-            apiValid = true;
-        } else if (response.status === 401 || response.status === 403) {
-            apiValid = false;
-            apiError = `Unauthorized (${response.status})`;
-        } else {
-            apiValid = false;
-            apiError = `HTTP ${response.status}`;
-        }
-    } catch (err) {
-        apiValid = false;
-        apiError = err.message;
-    }
-
-    // Final valid if JWT not expired AND API returned 200
-    const valid = hasExpiry && !expired && apiValid;
 
     let refreshExpiry = null;
     let refreshExpired = false;
     let refreshHasExpiry = false;
     let refreshSecondsRemaining = null;
+
     if (refreshToken) {
         refreshExpiry = getTokenExpiryMs(refreshToken);
         refreshHasExpiry = refreshExpiry !== null;
@@ -290,12 +231,12 @@ async function validateTokenForGame(bearerToken, refreshToken = null) {
     }
 
     return {
-        valid,
+        valid: hasExpiry && !expired,
         expired,
         expiry,
         hasExpiry,
-        apiValid,
-        apiError,
+        apiValid: true, // no API call, so always true
+        apiError: null,
         secondsRemaining: hasExpiry ? Math.floor((expiry - Date.now()) / 1000) : null,
         refreshExpiry,
         refreshExpired,
@@ -344,10 +285,10 @@ async function refreshTokenOnly(refreshTk, retries = 3) {
             const newExpiry = getTokenExpiryMs(newBearer);
             if (newExpiry === null || newExpiry <= Date.now()) throw new Error('Refreshed token already expired or invalid');
 
-            // Validate the new bearer against the game API
-            const gameCheck = await validateTokenForGame(newBearer, newRefresh);
-            if (!gameCheck.valid) {
-                throw new Error(`New token failed game API check: ${gameCheck.apiError || 'unknown'}`);
+            // Validate the new bearer using JWT only (no API call)
+            const jwtCheck = validateTokenJWT(newBearer, newRefresh);
+            if (!jwtCheck.valid) {
+                throw new Error('New token JWT is invalid or expired');
             }
 
             return { success: true, bearer: newBearer, refresh: newRefresh, expiresAt: newExpiry };
@@ -402,10 +343,10 @@ async function doRefresh(tokens, retries = 3) {
             const newExpiry = getTokenExpiryMs(newBearer);
             if (newExpiry === null || newExpiry <= Date.now()) throw new Error('Refreshed token already expired or invalid');
 
-            // Validate against game API
-            const gameCheck = await validateTokenForGame(newBearer, newRefresh);
-            if (!gameCheck.valid) {
-                throw new Error(`New token failed game API check: ${gameCheck.apiError || 'unknown'}`);
+            // Validate JWT
+            const jwtCheck = validateTokenJWT(newBearer, newRefresh);
+            if (!jwtCheck.valid) {
+                throw new Error('New token JWT is invalid or expired');
             }
 
             tokens.bearer = newBearer;
@@ -666,14 +607,14 @@ async function deliverTokenToUser(user) {
         const currentTtl = tokenObj.expiresAt ? Math.floor((tokenObj.expiresAt - Date.now()) / 1000) : 0;
         if (currentTtl > MIN_TTL) {
             console.log(`[DELIVERY] Current token has ${currentTtl}s left (>${MIN_TTL}s), using it.`);
-            // Validate it against game API
-            const validation = await validateTokenForGame(tokenObj.bearer, tokenObj.refresh);
+            // Validate using JWT only
+            const validation = validateTokenJWT(tokenObj.bearer, tokenObj.refresh);
             if (validation.valid) {
                 valid = true;
-                console.log('[DELIVERY] Current token passed game validation.');
+                console.log('[DELIVERY] Current token passed JWT validation.');
                 break;
             } else {
-                console.log(`[DELIVERY] Current token failed game validation (${validation.apiError || 'unknown'}), refreshing.`);
+                console.log(`[DELIVERY] Current token failed JWT validation, refreshing.`);
             }
         } else {
             console.log(`[DELIVERY] Current token has only ${currentTtl}s left (<${MIN_TTL}s), refreshing.`);
@@ -686,36 +627,36 @@ async function deliverTokenToUser(user) {
             if (refreshResult.success) {
                 tokenObj = tokenStock[0];
                 console.log(`[DELIVERY] Refresh succeeded. New expiry: ${humanExpiry(tokenObj.expiresAt)}`);
-                const validation = await validateTokenForGame(tokenObj.bearer, tokenObj.refresh);
+                const validation = validateTokenJWT(tokenObj.bearer, tokenObj.refresh);
                 if (validation.valid) {
                     const newTtl = Math.floor((tokenObj.expiresAt - Date.now()) / 1000);
                     if (newTtl > MIN_TTL) {
                         valid = true;
-                        console.log('[DELIVERY] Refreshed token passed game validation and has enough TTL.');
+                        console.log('[DELIVERY] Refreshed token passed JWT and has enough TTL.');
                         break;
                     } else {
                         console.log(`[DELIVERY] Refreshed token TTL (${newTtl}s) still below threshold, retrying...`);
                     }
                 } else {
-                    console.log(`[DELIVERY] Refreshed token invalid (${validation.apiError || 'unknown'}), retrying...`);
+                    console.log('[DELIVERY] Refreshed token JWT invalid, retrying...');
                 }
             } else {
                 console.log(`[DELIVERY] Refresh failed: ${refreshResult.error || 'unknown'}`);
                 giveNewTokenFromAccounts();
                 tokenObj = tokenStock[0];
                 if (tokenObj) {
-                    const validation = await validateTokenForGame(tokenObj.bearer, tokenObj.refresh);
+                    const validation = validateTokenJWT(tokenObj.bearer, tokenObj.refresh);
                     if (validation.valid) {
                         const fallbackTtl = Math.floor((tokenObj.expiresAt - Date.now()) / 1000);
                         if (fallbackTtl > MIN_TTL) {
                             valid = true;
-                            console.log('[DELIVERY] Fallback token passed game validation and has enough TTL.');
+                            console.log('[DELIVERY] Fallback token passed JWT and has enough TTL.');
                             break;
                         } else {
                             console.log(`[DELIVERY] Fallback token TTL (${fallbackTtl}s) too low, retrying...`);
                         }
                     } else {
-                        console.log(`[DELIVERY] Fallback token invalid (${validation.apiError || 'unknown'})`);
+                        console.log('[DELIVERY] Fallback token JWT invalid.');
                     }
                 }
             }
@@ -734,13 +675,13 @@ async function deliverTokenToUser(user) {
             const timeLeft = (current.expiresAt - Date.now()) / 1000;
             if (timeLeft > 60) { // at least 1 minute left
                 console.log(`[DELIVERY] Final fallback: using current token (${Math.floor(timeLeft/60)} min left).`);
-                const validation = await validateTokenForGame(current.bearer, current.refresh);
+                const validation = validateTokenJWT(current.bearer, current.refresh);
                 if (validation.valid) {
                     tokenObj = current;
                     valid = true;
-                    console.log('[DELIVERY] Final fallback passed game validation.');
+                    console.log('[DELIVERY] Final fallback passed JWT.');
                 } else {
-                    console.log(`[DELIVERY] Final fallback game validation failed (${validation.apiError || 'unknown'}).`);
+                    console.log('[DELIVERY] Final fallback JWT validation failed.');
                 }
             } else {
                 console.log(`[DELIVERY] Final fallback token has only ${Math.floor(timeLeft)} seconds left – not using.`);
@@ -1048,12 +989,12 @@ async function processTokenGeneration(interaction, tierName) {
         return interaction.editReply({ content: 'Token expires too soon, try again.', components: [] });
     }
 
-    // Validate against game API
-    const validation = await validateTokenForGame(tokenObj.bearer, tokenObj.refresh);
+    // Validate using JWT only
+    const validation = validateTokenJWT(tokenObj.bearer, tokenObj.refresh);
     if (!validation.valid) {
         isGenerating = false;
         activeGenerations.delete(userId);
-        return interaction.editReply({ content: `Token validation failed (game API): ${validation.apiError || 'unknown error'}`, components: [] });
+        return interaction.editReply({ content: `Token JWT validation failed.`, components: [] });
     }
 
     await updateGenerationEmbed(interaction, 3, `Finalizing (${ttl}s left)...`, ttl);
@@ -1157,10 +1098,6 @@ const commandsData = [
     new SlashCommandBuilder()
         .setName('token-meaning')
         .setDescription('Learn what all the token terms and status icons mean'),
-    new SlashCommandBuilder()
-        .setName('test-game-token')
-        .setDescription('Test the current stock token against the game API (admin only)')
-        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     new SlashCommandBuilder().setName('stock').setDescription('Open form to add token stock').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     new SlashCommandBuilder().setName('stock_main').setDescription('Set the main/default token').addStringOption(opt => opt.setName('bearer').setDescription('Bearer token').setRequired(true)).addStringOption(opt => opt.setName('refresh').setDescription('Refresh token').setRequired(true)).setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     new SlashCommandBuilder().setName('set-refresh').setDescription('Update only the refresh token (tested immediately)').addStringOption(opt => opt.setName('refresh').setDescription('The new refresh token').setRequired(true)),
@@ -1227,10 +1164,8 @@ async function updateStatusPanel() {
         let color = 0x95A5A6;
         let expiryText = 'N/A';
         let timeLeft = 'N/A';
-        let valid = false;
 
         if (token && token.bearer) {
-            // First check JWT expiry
             const expiry = getTokenExpiryMs(token.bearer);
             if (expiry !== null) {
                 const now = Date.now();
@@ -1239,31 +1174,18 @@ async function updateStatusPanel() {
                 timeLeft = ttl > 0 ? formatRemainingTime(expiry) : 'EXPIRED';
 
                 if (ttl <= 0) {
-                    status = '🔴 EXPIRED (JWT)';
+                    status = '🔴 EXPIRED';
                     color = 0xED4245;
-                    valid = false;
+                } else if (ttl < 300) { // < 5 minutes
+                    status = '🟡 EXPIRING SOON';
+                    color = 0xF1C40F;
                 } else {
-                    // Now test against game API
-                    const gameCheck = await validateTokenForGame(token.bearer, token.refresh);
-                    if (gameCheck.valid) {
-                        if (ttl < 300) {
-                            status = '🟡 EXPIRING SOON';
-                            color = 0xF1C40F;
-                        } else {
-                            status = '🟢 ACTIVE / VALID';
-                            color = 0x2ECC71;
-                        }
-                        valid = true;
-                    } else {
-                        status = '🔴 EXPIRED (game API)';
-                        color = 0xED4245;
-                        valid = false;
-                    }
+                    status = '🟢 ACTIVE / VALID';
+                    color = 0x2ECC71;
                 }
             } else {
                 status = '⚠️ UNKNOWN (no expiry)';
                 color = 0xFEE75C;
-                valid = false;
             }
         } else {
             status = '🔴 OFFLINE / NO TOKEN';
@@ -1546,7 +1468,7 @@ client.on('interactionCreate', async interaction => {
                             { name: 'Token Generation', value: '/token - Generate a fresh token\n/generator - Post the generator panel', inline: true },
                             { name: 'Subscription', value: '/subscribe - Get tokens in DMs every 5 min\n/unsubscribe - Stop auto-delivery\n/subscription-panel - Post interactive panel (admin)', inline: true },
                             { name: 'Moderation', value: '/mod-application-panel - Post the mod application panel (admin)', inline: true },
-                            { name: 'Admin Tools', value: '/sub-all - Subscribe all members\n/un-suball - Unsubscribe all\n/send-all-token - Send to all subscribers\n/refresh-status - Check refresh health\n/set-refresh - Update only refresh token\n/test-refresh - Test current refresh token\n/test-game-token - Test token against game API', inline: true },
+                            { name: 'Admin Tools', value: '/sub-all - Subscribe all members\n/un-suball - Unsubscribe all\n/send-all-token - Send to all subscribers\n/refresh-status - Check refresh health\n/set-refresh - Update only refresh token\n/test-refresh - Test current refresh token', inline: true },
                             { name: 'Utilities', value: '/check-expiry - Check expiry of a raw token\n/check-panel - Check/validate a token from JSON', inline: true },
                             { name: 'Extras', value: '/donation-panel - Donate a token\n/split-panel - Split a token JSON', inline: true },
                             { name: 'Admin Only', value: '/stock - Add token stock\n/force_refresh - Force refresh\n/announce - DM all members', inline: true }
@@ -1594,65 +1516,6 @@ client.on('interactionCreate', async interaction => {
                 return interaction.reply({ embeds: [embed], flags: 64 });
             }
 
-            // --- TEST-GAME-TOKEN ---
-            if (commandName === 'test-game-token') {
-                if (!hasAdminAccess(interaction)) return interaction.reply({ content: 'Access Denied.', flags: 64 });
-                if (tokenStock.length === 0) return interaction.reply({ content: 'No token in stock.', flags: 64 });
-                const tokenObj = tokenStock[0];
-                if (!tokenObj.bearer) return interaction.reply({ content: 'No bearer token in stock.', flags: 64 });
-
-                await interaction.deferReply({ flags: 64 });
-                await interaction.editReply({ content: '⏳ Testing token against game API...' });
-
-                const url = `${ACTIVE_API_URL}/v2/account/me`;
-                try {
-                    const controller = new AbortController();
-                    const timeoutId = setTimeout(() => controller.abort(), 10000);
-                    const response = await fetch(url, {
-                        method: 'GET',
-                        headers: {
-                            'Authorization': `Bearer ${tokenObj.bearer}`,
-                            'Content-Type': 'application/json',
-                            'User-Agent': 'SteamVR 1.88.1.3421_a3df6ce5'
-                        },
-                        signal: controller.signal
-                    });
-                    clearTimeout(timeoutId);
-
-                    const status = response.status;
-                    let bodyText = '';
-                    try { bodyText = await response.text(); } catch (_) {}
-                    const isJson = bodyText.startsWith('{');
-                    const parsed = isJson ? JSON.parse(bodyText) : null;
-
-                    if (status === 200) {
-                        const embed = new EmbedBuilder()
-                            .setTitle('✅ Token Works on Game API')
-                            .setDescription(`HTTP ${status} – account data retrieved successfully.`)
-                            .setColor(0x2ECC71)
-                            .addFields(
-                                { name: 'Account', value: parsed?.username || parsed?.id || 'N/A', inline: true },
-                                { name: 'Status', value: '✅ Valid', inline: true }
-                            )
-                            .setTimestamp();
-                        return interaction.editReply({ embeds: [embed] });
-                    } else {
-                        const embed = new EmbedBuilder()
-                            .setTitle('❌ Token Failed on Game API')
-                            .setDescription(`HTTP ${status} – ${bodyText.slice(0, 200)}`)
-                            .setColor(0xED4245)
-                            .addFields(
-                                { name: 'Bearer (first 30 chars)', value: `\`${tokenObj.bearer.slice(0, 30)}...\``, inline: false },
-                                { name: 'Status', value: '❌ Invalid', inline: true }
-                            )
-                            .setTimestamp();
-                        return interaction.editReply({ embeds: [embed] });
-                    }
-                } catch (err) {
-                    return interaction.editReply({ content: `Request failed: ${err.message}` });
-                }
-            }
-
             // --- ALL OTHER COMMANDS ---
             await interaction.deferReply({ flags: 64 });
 
@@ -1676,12 +1539,12 @@ client.on('interactionCreate', async interaction => {
                     return interaction.editReply({ embeds: [embed] });
                 }
 
-                // validate the new bearer against game API
-                const gameCheck = await validateTokenForGame(test.bearer, newRefresh);
-                if (!gameCheck.valid) {
+                // Validate JWT
+                const jwtCheck = validateTokenJWT(test.bearer, newRefresh);
+                if (!jwtCheck.valid) {
                     const embed = new EmbedBuilder()
-                        .setTitle('❌ Bearer Token Failed Game API Check')
-                        .setDescription(`The refresh worked, but the new bearer is invalid for the game: ${gameCheck.apiError || 'unknown'}.`)
+                        .setTitle('❌ Bearer Token JWT Invalid')
+                        .setDescription(`The refresh worked, but the new bearer has an invalid JWT expiry.`)
                         .setColor(0xED4245)
                         .setTimestamp();
                     return interaction.editReply({ embeds: [embed] });
@@ -1710,14 +1573,13 @@ client.on('interactionCreate', async interaction => {
                 await updateStatusPanel();
 
                 const embed = new EmbedBuilder()
-                    .setTitle('✅ Refresh & Bearer Updated (Game‑Valid)')
-                    .setDescription('Both tokens are valid, synced to stock, and confirmed working with the game API.')
+                    .setTitle('✅ Refresh & Bearer Updated')
+                    .setDescription('Both tokens are valid and synced to stock.')
                     .setColor(0x2ECC71)
                     .addFields(
                         { name: 'New Bearer', value: `\`${test.bearer.slice(0, 30)}...\``, inline: false },
                         { name: 'New Refresh', value: `\`${newRefresh.slice(0, 30)}...\``, inline: false },
-                        { name: 'Expires', value: humanExpiry(test.expiresAt), inline: true },
-                        { name: 'Game API Check', value: '✅ Passed', inline: true }
+                        { name: 'Expires', value: humanExpiry(test.expiresAt), inline: true }
                     )
                     .setTimestamp();
                 return interaction.editReply({ embeds: [embed] });
@@ -1735,7 +1597,7 @@ client.on('interactionCreate', async interaction => {
                 if (result.success) {
                     const embed = new EmbedBuilder()
                         .setTitle('✅ Refresh Token Works')
-                        .setDescription('The refresh token is valid and can produce a new bearer that passes the game API check.')
+                        .setDescription('The refresh token is valid and can produce a new bearer.')
                         .setColor(0x2ECC71)
                         .addFields(
                             { name: 'New Bearer', value: `\`${result.bearer.slice(0, 30)}...\``, inline: false },
@@ -1825,11 +1687,11 @@ client.on('interactionCreate', async interaction => {
             if (commandName === 'check-panel') {
                 const embed = new EmbedBuilder()
                     .setTitle('Check Token')
-                    .setDescription('Paste a JSON containing `token` (or bearer) and `refresh_token`. The bot will extract and validate them against the game API.')
+                    .setDescription('Paste a JSON containing `token` (or bearer) and `refresh_token`. The bot will extract and validate them.')
                     .addFields(
                         { name: 'Step 1', value: 'Paste JSON', inline: true },
                         { name: 'Step 2', value: 'Click Check', inline: true },
-                        { name: 'Result', value: 'JWT & Game API Validation', inline: true }
+                        { name: 'Result', value: 'JWT Validation', inline: true }
                     )
                     .setColor(0x3498DB)
                     .setFooter({ text: getLiveUIStats(interaction) });
@@ -1884,27 +1746,26 @@ client.on('interactionCreate', async interaction => {
                     await interaction.editReply({ content: '⏳ Testing refresh token...' });
                     const test = await refreshTokenOnly(refresh);
                     if (test.success) {
-                        // validate against game API
-                        const gameCheck = await validateTokenForGame(test.bearer, test.refresh);
-                        if (!gameCheck.valid) {
+                        // JWT check
+                        const jwtCheck = validateTokenJWT(test.bearer, test.refresh);
+                        if (!jwtCheck.valid) {
                             const embed = new EmbedBuilder()
-                                .setTitle('❌ Token Failed Game API Check')
-                                .setDescription(`The token does not work on the game API: ${gameCheck.apiError || 'unknown'}.`)
+                                .setTitle('❌ Token JWT Invalid')
+                                .setDescription(`The token has an invalid JWT expiry.`)
                                 .setColor(0xED4245)
                                 .setTimestamp();
                             return interaction.editReply({ embeds: [embed] });
                         }
                         forceSetOwnToken(test.bearer, test.refresh);
                         const embed = new EmbedBuilder()
-                            .setTitle('✅ Token Updated (Game‑Valid)')
-                            .setDescription('Main token successfully set and confirmed working with the game API.')
+                            .setTitle('✅ Token Updated')
+                            .setDescription('Main token successfully set.')
                             .setColor(0x2ECC71)
                             .addFields(
                                 { name: 'Bearer', value: `\`${test.bearer.slice(0, 30)}...\``, inline: false },
                                 { name: 'Refresh', value: `\`${test.refresh.slice(0, 30)}...\``, inline: false },
                                 { name: 'Expires', value: humanExpiry(test.expiresAt), inline: true },
-                                { name: 'Stock Count', value: `${tokenStock.length} token(s)`, inline: true },
-                                { name: 'Game API Check', value: '✅ Passed', inline: true }
+                                { name: 'Stock Count', value: `${tokenStock.length} token(s)`, inline: true }
                             )
                             .setTimestamp();
                         return interaction.editReply({ embeds: [embed] });
@@ -1930,7 +1791,7 @@ client.on('interactionCreate', async interaction => {
                     const createGenEmbed = () => {
                         return new EmbedBuilder()
                             .setTitle('EAM.LOL Token Generator')
-                            .setDescription('Secure, one‑click generation with live status. Tokens are auto‑refreshed and game‑validated.')
+                            .setDescription('Secure, one‑click generation with live status. Tokens are auto‑refreshed.')
                             .addFields(
                                 { name: 'System Status', value: '● Operational', inline: true },
                                 { name: 'Stock', value: `${tokenStock.length} tokens`, inline: true },
@@ -2363,10 +2224,10 @@ client.on('interactionCreate', async interaction => {
                 const bearer = interaction.fields.getTextInputValue('stock_bearer_input').trim();
                 const refresh = interaction.fields.getTextInputValue('stock_refresh_input').trim();
                 if (!bearer || !refresh) return interaction.editReply({ content: 'Both tokens required.' });
-                // Validate against game API
-                const gameCheck = await validateTokenForGame(bearer, refresh);
-                if (!gameCheck.valid) {
-                    return interaction.editReply({ content: `Token failed game API check: ${gameCheck.apiError || 'unknown'}` });
+                // JWT check
+                const jwtCheck = validateTokenJWT(bearer, refresh);
+                if (!jwtCheck.valid) {
+                    return interaction.editReply({ content: 'Token JWT is invalid or expired.' });
                 }
                 tokenStock.push({ bearer, refresh, addedAt: Date.now(), expiresAt: getTokenExpiryMs(bearer) });
                 await updateStatusPanel();
@@ -2407,16 +2268,16 @@ client.on('interactionCreate', async interaction => {
                     const newBearer = refreshResult.bearer;
                     const newRefresh = refreshResult.refresh;
                     const newExpiry = refreshResult.expiresAt;
-                    const gameCheck = await validateTokenForGame(newBearer, newRefresh);
-                    if (!gameCheck.valid) return interaction.editReply({ content: `Refreshed token still invalid according to game API.` });
+                    const jwtCheck = validateTokenJWT(newBearer, newRefresh);
+                    if (!jwtCheck.valid) return interaction.editReply({ content: `Refreshed token JWT is invalid.` });
                     const genId = generateGenerationId();
                     tokenStock.push({ bearer: newBearer, refresh: newRefresh, addedAt: Date.now(), expiresAt: newExpiry, id: genId, userId: interaction.user.id, username: interaction.user.tag });
                     if (!accounts.find(a => a.refresh_token === newRefresh)) accounts.push({ token: newBearer, refresh_token: newRefresh, label: `donated_${Date.now()}` });
                     await updateStatusPanel();
                     return interaction.editReply({ content: `Token donated and refreshed successfully! New token added to stock (${tokenStock.length} total). ID: \`${genId}\` Expires: ${humanExpiry(newExpiry)}` });
                 } else {
-                    const gameCheck = await validateTokenForGame(bearer, refresh);
-                    if (!gameCheck.valid) return interaction.editReply({ content: `Token validation failed against game API.` });
+                    const jwtCheck = validateTokenJWT(bearer, refresh);
+                    if (!jwtCheck.valid) return interaction.editReply({ content: `Token JWT is invalid.` });
                     const genId = generateGenerationId();
                     tokenStock.push({ bearer: bearer, refresh: refresh, addedAt: Date.now(), expiresAt: expiry, id: genId, userId: interaction.user.id, username: interaction.user.tag });
                     if (!accounts.find(a => a.refresh_token === refresh)) accounts.push({ token: bearer, refresh_token: refresh, label: `donated_${Date.now()}` });
@@ -2440,9 +2301,9 @@ client.on('interactionCreate', async interaction => {
                     refresh = parsed.refresh_token;
                 }
                 if (!bearer || !refresh) return interaction.editReply({ content: 'Missing `token` (or bearer) and/or `refresh_token` in the JSON.' });
-                const validation = await validateTokenForGame(bearer, refresh);
+                const validation = validateTokenJWT(bearer, refresh);
                 let embed = new EmbedBuilder()
-                    .setTitle('Token Check Result (Game API)')
+                    .setTitle('Token Check Result')
                     .setColor(validation.valid ? 0x2ECC71 : 0xED4245)
                     .addFields(
                         { name: 'Bearer', value: `\`${bearer.slice(0, 30)}...\` (${bearer.length} chars)`, inline: false },
@@ -2452,14 +2313,13 @@ client.on('interactionCreate', async interaction => {
                         { name: 'Bearer Expires', value: validation.hasExpiry ? new Date(validation.expiry).toUTCString() : 'UNKNOWN', inline: true },
                         { name: 'Bearer Remaining', value: validation.hasExpiry ? (validation.secondsRemaining > 0 ? `${validation.secondsRemaining}s` : 'Expired') : 'UNKNOWN', inline: true },
                         { name: 'Refresh Expires', value: validation.refreshHasExpiry ? new Date(validation.refreshExpiry).toUTCString() : 'UNKNOWN', inline: true },
-                        { name: 'Refresh Remaining', value: validation.refreshHasExpiry ? (validation.refreshSecondsRemaining > 0 ? `${validation.refreshSecondsRemaining}s` : 'Expired') : 'UNKNOWN', inline: true },
-                        { name: 'Game API Validation', value: validation.apiValid ? '✔ Passed' : `✕ ${validation.apiError || 'Failed'}`, inline: false }
+                        { name: 'Refresh Remaining', value: validation.refreshHasExpiry ? (validation.refreshSecondsRemaining > 0 ? `${validation.refreshSecondsRemaining}s` : 'Expired') : 'UNKNOWN', inline: true }
                     )
                     .setFooter({ text: getLiveUIStats(interaction) });
 
                 if (!validation.hasExpiry || !validation.refreshHasExpiry) embed.setDescription('This token does not have a valid expiry claim. It is likely malformed or invalid.');
                 else if (!validation.valid) embed.setDescription('This token is invalid – it may be expired, revoked, or the refresh token is dead.');
-                else embed.setDescription('Token is valid and ready for use in the game.');
+                else embed.setDescription('Token is valid and ready for use.');
 
                 embed.addFields(
                     { name: 'Full Bearer', value: `\`\`\`\n${bearer}\n\`\`\``, inline: false },
