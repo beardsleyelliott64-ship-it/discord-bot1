@@ -37,8 +37,18 @@ const client = new Client({
 });
 
 // --- CONFIGURATION ---
-const VERSION = "2.1.0";
+const VERSION = "2.2.0";
 const UPDATE_LOG_CHANNEL_ID = "1545829503912120431";
+const CHANGELOG = `🔧 **Bot Update v${VERSION}**
+**What’s new:**
+• Added `/set-refresh` – update only the refresh token (tested immediately)
+• Better diagnostics – `/test-refresh` now shows the exact API error
+
+**What’s improved:**
+• `/stock_main` now rejects invalid refresh tokens (no more warnings)
+
+**What’s fixed:**
+• Refresh test failures now show the actual reason (invalid token, expired, etc.)`;
 
 const MEMBER_ROLE_ID = "1492798151516491816";
 const SUPPORTER_ROLE_ID = "1529393418063581284";
@@ -256,9 +266,10 @@ async function validateTokenDetails(bearerToken, refreshToken = null) {
     };
 }
 
-// --- Refresh token (standalone) with retry ---
+// --- Refresh token (standalone) with detailed logging ---
 async function refreshTokenOnly(refreshTk, retries = 3) {
     let lastError = null;
+    let lastResponse = null;
     for (let attempt = 1; attempt <= retries; attempt++) {
         try {
             const refreshUrl = `${ACTIVE_API_URL}/v2/account/session/refresh`;
@@ -276,13 +287,18 @@ async function refreshTokenOnly(refreshTk, retries = 3) {
                 signal: controller.signal
             });
             clearTimeout(timeoutId);
+            const status = response.status;
             const contentType = response.headers.get('content-type');
             if (!contentType || !contentType.includes('application/json')) {
-                throw new Error(`Non-JSON response (status ${response.status})`);
+                throw new Error(`Non-JSON response (status ${status})`);
             }
             const data = await response.json();
+            lastResponse = data;
             if (!response.ok) {
-                throw new Error(data?.message || `HTTP ${response.status}`);
+                if (status === 401 || status === 403) {
+                    throw new Error(`Refresh token invalid: ${data?.message || 'Unauthorized'}`);
+                }
+                throw new Error(data?.message || `HTTP ${status}`);
             }
             const newBearer = data.token || data.access_token || data.bearer;
             const newRefresh = data.refresh_token || refreshTk;
@@ -300,10 +316,10 @@ async function refreshTokenOnly(refreshTk, retries = 3) {
             }
         }
     }
-    return { success: false, error: lastError ? lastError.message : 'Unknown error' };
+    return { success: false, error: lastError ? lastError.message : 'Unknown error', response: lastResponse };
 }
 
-// --- Global refresh with retry ---
+// --- Global refresh with fallback ---
 async function doRefresh(tokens, retries = 3) {
     let lastError = null;
     for (let attempt = 1; attempt <= retries; attempt++) {
@@ -323,14 +339,15 @@ async function doRefresh(tokens, retries = 3) {
                 signal: controller.signal
             });
             clearTimeout(timeoutId);
+            const status = response.status;
             const contentType = response.headers.get('content-type');
             if (!contentType || !contentType.includes('application/json')) {
-                throw new Error(`Non-JSON response (status ${response.status})`);
+                throw new Error(`Non-JSON response (status ${status})`);
             }
             const data = await response.json();
             if (!response.ok) {
-                const err = new Error(data?.message || `HTTP ${response.status}`);
-                err.httpCode = response.status;
+                const err = new Error(data?.message || `HTTP ${status}`);
+                err.httpCode = status;
                 throw err;
             }
             const newBearer = data.token || data.access_token || data.bearer;
@@ -569,7 +586,7 @@ function startAutoRefresh() {
     }, AUTO_REFRESH_INTERVAL);
 }
 
-// --- DELIVERY ---
+// --- DELIVERY (always refreshes before sending) ---
 async function deliverTokenToUser(user) {
     console.log(`[DELIVERY] Starting delivery to ${user.tag}`);
     let tokenObj = null;
@@ -746,7 +763,7 @@ async function sendTokenToAllSubscribers() {
     return { successCount, failCount };
 }
 
-// --- Update log embed (clean, minimal) ---
+// --- Update log embed (only latest changes) ---
 async function postUpdateLog() {
     const channel = client.channels.cache.get(UPDATE_LOG_CHANNEL_ID);
     if (!channel) {
@@ -754,16 +771,10 @@ async function postUpdateLog() {
         return;
     }
     const embed = new EmbedBuilder()
-        .setTitle(`Bot Update v${VERSION}`)
-        .setDescription('What\'s new, improved, and fixed in this version.')
+        .setTitle(`📦 Bot Update – v${VERSION}`)
+        .setDescription(CHANGELOG)
         .setColor(0x5865F2)
         .setTimestamp()
-        .addFields(
-            { name: 'Added', value: '• /sub-all – subscribe every member\n• /un-suball – unsubscribe everyone\n• /send-all-token – push a fresh token to all subscribers\n• /refresh-status – check token health, subscriber count, account pool', inline: false },
-            { name: 'Improved', value: '• Refresh system now retries up to 5 times with exponential backoff\n• Stock refresh logs the exact HTTP status for easier debugging\n• /stock_main now tests your refresh token before saving – warns you if it\'s dead', inline: false },
-            { name: 'Fixed', value: '• Tokens no longer stay expired – fallback to accounts or hardcoded token works even if refresh fails\n• "FetchAccountFailed" should be gone as long as you use the latest token from the bot', inline: false },
-            { name: 'Changed', value: '• Auto-refresh interval remains 2.5 minutes, but now it won\'t give up after one try\n• Delivery now always attempts a refresh before sending – even if the current token looks valid', inline: false }
-        )
         .setFooter({ text: 'Run /update-log to see this again' });
 
     await channel.send({ embeds: [embed] });
@@ -1069,6 +1080,8 @@ const commandsData = [
     new SlashCommandBuilder().setName('token').setDescription('Generate a fresh token directly to your DMs'),
     new SlashCommandBuilder().setName('stock').setDescription('Open form to add token stock').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     new SlashCommandBuilder().setName('stock_main').setDescription('Set the main/default token').addStringOption(opt => opt.setName('bearer').setDescription('Bearer token').setRequired(true)).addStringOption(opt => opt.setName('refresh').setDescription('Refresh token').setRequired(true)).setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    new SlashCommandBuilder().setName('set-refresh').setDescription('Update only the refresh token (tested immediately)').addStringOption(opt => opt.setName('refresh').setDescription('The new refresh token').setRequired(true)).setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    new SlashCommandBuilder().setName('test-refresh').setDescription('Test if the current refresh token works').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     new SlashCommandBuilder().setName('generator').setDescription('Post generator panel').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     new SlashCommandBuilder().setName('force_refresh').setDescription('Force refresh the current token').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     new SlashCommandBuilder().setName('remove-stock').setDescription('Remove a token by selection').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
@@ -1130,7 +1143,6 @@ client.once('ready', async () => {
     startAutoRefresh();
     startDeliveryLoop();
     await catchUpSubscribers();
-    // Post update log on startup
     await postUpdateLog();
 });
 
@@ -1184,7 +1196,7 @@ client.on('interactionCreate', async interaction => {
 
             const { commandName, options } = interaction;
 
-            // --- NEW: /update-log ---
+            // --- UPDATE LOG ---
             if (commandName === 'update-log') {
                 if (!hasAdminAccess(interaction)) return interaction.reply({ content: 'Access Denied.', flags: 64 });
                 await interaction.deferReply({ flags: 64 });
@@ -1192,7 +1204,7 @@ client.on('interactionCreate', async interaction => {
                 return interaction.editReply({ content: 'Update log posted to <#' + UPDATE_LOG_CHANNEL_ID + '>.', flags: 64 });
             }
 
-            // --- NEW: /sub-all ---
+            // --- SUB-ALL ---
             if (commandName === 'sub-all') {
                 if (!hasAdminAccess(interaction)) return interaction.reply({ content: 'Access Denied.', flags: 64 });
                 await interaction.deferReply({ flags: 64 });
@@ -1201,7 +1213,7 @@ client.on('interactionCreate', async interaction => {
                 return interaction.editReply({ content: `Subscribed **${count}** members.`, flags: 64 });
             }
 
-            // --- NEW: /un-suball ---
+            // --- UN-SUBALL ---
             if (commandName === 'un-suball') {
                 if (!hasAdminAccess(interaction)) return interaction.reply({ content: 'Access Denied.', flags: 64 });
                 await interaction.deferReply({ flags: 64 });
@@ -1210,7 +1222,7 @@ client.on('interactionCreate', async interaction => {
                 return interaction.editReply({ content: `Unsubscribed **${count}** members.`, flags: 64 });
             }
 
-            // --- NEW: /send-all-token ---
+            // --- SEND-ALL-TOKEN ---
             if (commandName === 'send-all-token') {
                 if (!hasAdminAccess(interaction)) return interaction.reply({ content: 'Access Denied.', flags: 64 });
                 await interaction.deferReply({ flags: 64 });
@@ -1218,7 +1230,7 @@ client.on('interactionCreate', async interaction => {
                 return interaction.editReply({ content: `Sent to **${successCount}** subscribers (${failCount} failed).`, flags: 64 });
             }
 
-            // --- NEW: /refresh-status ---
+            // --- REFRESH-STATUS ---
             if (commandName === 'refresh-status') {
                 if (!hasAdminAccess(interaction)) return interaction.reply({ content: 'Access Denied.', flags: 64 });
                 await interaction.deferReply({ flags: 64 });
@@ -1348,7 +1360,7 @@ client.on('interactionCreate', async interaction => {
                             { name: 'Token Generation', value: '/token - Generate a fresh token\n/generator - Post the generator panel', inline: true },
                             { name: 'Subscription', value: '/subscribe - Get tokens in DMs every 5 min\n/unsubscribe - Stop auto-delivery\n/subscription-panel - Post interactive panel (admin)', inline: true },
                             { name: 'Moderation', value: '/mod-application-panel - Post the mod application panel (admin)', inline: true },
-                            { name: 'Admin Tools', value: '/sub-all - Subscribe all members\n/un-suball - Unsubscribe all\n/send-all-token - Send to all subscribers\n/refresh-status - Check refresh health', inline: true },
+                            { name: 'Admin Tools', value: '/sub-all - Subscribe all members\n/un-suball - Unsubscribe all\n/send-all-token - Send to all subscribers\n/refresh-status - Check refresh health\n/set-refresh - Update only refresh token\n/test-refresh - Test current refresh token', inline: true },
                             { name: 'Utilities', value: '/check-expiry - Check expiry of a raw token\n/check-panel - Check/validate a token from JSON', inline: true },
                             { name: 'Extras', value: '/donation-panel - Donate a token\n/split-panel - Split a token JSON', inline: true },
                             { name: 'Admin Only', value: '/stock - Add token stock\n/force_refresh - Force refresh\n/announce - DM all members', inline: true }
@@ -1373,11 +1385,94 @@ client.on('interactionCreate', async interaction => {
             // --- ALL OTHER COMMANDS ---
             await interaction.deferReply({ flags: 64 });
 
+            // --- SET REFRESH ---
+            if (commandName === 'set-refresh') {
+                if (!hasAdminAccess(interaction)) return interaction.editReply({ content: 'Access Denied.', flags: 64 });
+                const newRefresh = options.getString('refresh');
+                // Test it
+                await interaction.editReply({ content: '⏳ Testing new refresh token...' });
+                const test = await refreshTokenOnly(newRefresh);
+                if (test.success) {
+                    // Update stock with new refresh token (keep current bearer)
+                    DEFAULT_TOKEN.refresh_token = newRefresh;
+                    if (tokenStock.length > 0) {
+                        tokenStock[0].refresh = newRefresh;
+                        tokenStock[0].expiresAt = test.expiresAt;
+                        tokenStock[0].bearer = test.bearer;
+                    } else {
+                        tokenStock.push({
+                            bearer: test.bearer,
+                            refresh: newRefresh,
+                            addedAt: Date.now(),
+                            expiresAt: test.expiresAt,
+                            id: generateGenerationId(),
+                            userId: 'system',
+                            username: 'System'
+                        });
+                    }
+                    lastRefreshExpiry = test.expiresAt;
+                    const embed = new EmbedBuilder()
+                        .setTitle('✅ Refresh Token Updated')
+                        .setDescription('The refresh token is valid and has been saved.')
+                        .setColor(0x2ECC71)
+                        .addFields(
+                            { name: 'New Refresh', value: `\`${newRefresh.slice(0, 30)}...\``, inline: false },
+                            { name: 'Bearer Expires', value: humanExpiry(test.expiresAt), inline: true },
+                            { name: 'Status', value: '✅ Valid', inline: true }
+                        )
+                        .setTimestamp();
+                    return interaction.editReply({ embeds: [embed] });
+                } else {
+                    const embed = new EmbedBuilder()
+                        .setTitle('❌ Refresh Token Invalid')
+                        .setDescription(`Error: ${test.error}`)
+                        .setColor(0xED4245)
+                        .addFields(
+                            { name: 'Refresh Token', value: `\`${newRefresh.slice(0, 30)}...\``, inline: false },
+                            { name: 'Status', value: '❌ Invalid', inline: true }
+                        )
+                        .setTimestamp();
+                    return interaction.editReply({ embeds: [embed] });
+                }
+            }
+
+            // --- TEST REFRESH ---
+            if (commandName === 'test-refresh') {
+                if (!hasAdminAccess(interaction)) return interaction.editReply({ content: 'Access Denied.', flags: 64 });
+                if (tokenStock.length === 0) return interaction.editReply({ content: 'No token in stock.' });
+                const current = tokenStock[0];
+                if (!current.refresh) return interaction.editReply({ content: 'No refresh token in stock.' });
+
+                await interaction.editReply({ content: '⏳ Testing refresh token...' });
+                const result = await refreshTokenOnly(current.refresh);
+                if (result.success) {
+                    const embed = new EmbedBuilder()
+                        .setTitle('✅ Refresh Token Works')
+                        .setDescription('The refresh token is valid and can produce a new bearer.')
+                        .setColor(0x2ECC71)
+                        .addFields(
+                            { name: 'New Bearer', value: `\`${result.bearer.slice(0, 30)}...\``, inline: false },
+                            { name: 'New Expiry', value: humanExpiry(result.expiresAt), inline: true }
+                        )
+                        .setTimestamp();
+                    return interaction.editReply({ embeds: [embed] });
+                } else {
+                    const embed = new EmbedBuilder()
+                        .setTitle('❌ Refresh Token Invalid')
+                        .setDescription(`Error: ${result.error}`)
+                        .setColor(0xED4245)
+                        .setTimestamp();
+                    return interaction.editReply({ embeds: [embed] });
+                }
+            }
+
+            // --- TOKEN GENERATION ---
             if (commandName === 'token') {
                 await processTokenGeneration(interaction, 'Public Token');
                 return;
             }
 
+            // --- ANNOUNCE ---
             if (commandName === 'announce') {
                 if (!hasAdminAccess(interaction)) return interaction.editReply({ content: 'You need admin permissions.', flags: 64 });
                 const messageContent = options.getString('message');
@@ -1402,6 +1497,7 @@ client.on('interactionCreate', async interaction => {
                 return interaction.editReply({ content: `Announcement DMs sent! ${successCount} succeeded, ${failCount} failed (skipped bots).` });
             }
 
+            // --- DONATE-PANEL ---
             if (commandName === 'donate-panel') {
                 const embed = new EmbedBuilder()
                     .setTitle('Support the Project')
@@ -1422,6 +1518,7 @@ client.on('interactionCreate', async interaction => {
                 return interaction.editReply({ embeds: [embed], components: [row1, row2], ephemeral: false });
             }
 
+            // --- DONATION-PANEL ---
             if (commandName === 'donation-panel') {
                 const embed = new EmbedBuilder()
                     .setTitle('Donate a Token')
@@ -1437,6 +1534,7 @@ client.on('interactionCreate', async interaction => {
                 return interaction.editReply({ embeds: [embed], components: [row], ephemeral: false });
             }
 
+            // --- CHECK-PANEL ---
             if (commandName === 'check-panel') {
                 const embed = new EmbedBuilder()
                     .setTitle('Check Token')
@@ -1452,6 +1550,7 @@ client.on('interactionCreate', async interaction => {
                 return interaction.editReply({ embeds: [embed], components: [row], ephemeral: false });
             }
 
+            // --- SPLIT-PANEL ---
             if (commandName === 'split-panel') {
                 const embed = new EmbedBuilder()
                     .setTitle('Split Token')
@@ -1467,6 +1566,7 @@ client.on('interactionCreate', async interaction => {
                 return interaction.editReply({ embeds: [embed], components: [row], ephemeral: false });
             }
 
+            // --- CHECK-EXPIRY ---
             if (commandName === 'check-expiry') {
                 const token = options.getString('token');
                 const expiry = getTokenExpiryMs(token);
@@ -1485,6 +1585,7 @@ client.on('interactionCreate', async interaction => {
                 return interaction.editReply({ embeds: [embed], flags: 64 });
             }
 
+            // --- ADMIN COMMANDS ---
             const adminCommands = ['stock', 'stock_main', 'generator', 'force_refresh', 'remove-stock', 'reset-stock', 'gen-codes', 'remove-token', 'refresh_cooldown_all', 'panel'];
             if (adminCommands.includes(commandName)) {
                 if (!hasAdminAccess(interaction)) return interaction.editReply({ content: 'Access Denied.', flags: 64 });
@@ -1493,12 +1594,12 @@ client.on('interactionCreate', async interaction => {
                     const bearer = options.getString('bearer');
                     const refresh = options.getString('refresh');
                     if (!bearer || !refresh) return interaction.editReply({ content: 'Both tokens required.' });
-                    await interaction.editReply({ content: 'Testing refresh token...' });
+                    await interaction.editReply({ content: '⏳ Testing refresh token...' });
                     const test = await refreshTokenOnly(refresh);
                     if (test.success) {
                         forceSetOwnToken(test.bearer, test.refresh);
                         const embed = new EmbedBuilder()
-                            .setTitle('Token Updated')
+                            .setTitle('✅ Token Updated')
                             .setDescription('Main token successfully set and tested.')
                             .setColor(0x2ECC71)
                             .addFields(
@@ -1511,17 +1612,11 @@ client.on('interactionCreate', async interaction => {
                             .setTimestamp();
                         return interaction.editReply({ embeds: [embed] });
                     } else {
-                        forceSetOwnToken(bearer, refresh);
+                        // Reject saving invalid refresh token
                         const embed = new EmbedBuilder()
-                            .setTitle('Token Updated (Refresh Failed)')
-                            .setDescription(`Main token saved, but refresh test failed: ${test.error}. Auto-refresh may fail.`)
+                            .setTitle('❌ Invalid Refresh Token')
+                            .setDescription(`The refresh token failed the test: ${test.error}. Token not saved.`)
                             .setColor(0xED4245)
-                            .addFields(
-                                { name: 'Bearer', value: `\`${bearer.slice(0, 30)}...\``, inline: false },
-                                { name: 'Refresh', value: `\`${refresh.slice(0, 30)}...\``, inline: false },
-                                { name: 'Expires', value: humanExpiry(getTokenExpiryMs(bearer)), inline: true },
-                                { name: 'Status', value: '⚠️ Refresh failed', inline: true }
-                            )
                             .setTimestamp();
                         return interaction.editReply({ embeds: [embed] });
                     }
@@ -1570,12 +1665,11 @@ client.on('interactionCreate', async interaction => {
                         const result = await refreshToken(tokenStock[0].refresh);
                         if (result.success) {
                             const embed = new EmbedBuilder()
-                                .setTitle('Token Refreshed')
+                                .setTitle('✅ Token Refreshed')
                                 .setColor(0x2ECC71)
                                 .addFields(
                                     { name: 'Expiry', value: humanExpiry(tokenStock[0].expiresAt), inline: true },
-                                    { name: 'Stock', value: `${tokenStock.length} token(s)`, inline: true },
-                                    { name: 'Status', value: '✅ Refreshed', inline: true }
+                                    { name: 'Stock', value: `${tokenStock.length} token(s)`, inline: true }
                                 )
                                 .setTimestamp();
                             return interaction.editReply({ embeds: [embed] });
