@@ -547,7 +547,7 @@ function startAutoRefresh() {
     }, AUTO_REFRESH_INTERVAL);
 }
 
-// --- DELIVERY (returns true if token was sent, false otherwise) ---
+// --- IMPROVED DELIVERY (with fallback to valid bearer even if refresh fails) ---
 async function deliverTokenToUser(user) {
     console.log(`[DELIVERY] Starting delivery to ${user.tag}`);
     let tokenObj = null;
@@ -555,49 +555,93 @@ async function deliverTokenToUser(user) {
     let attempts = 0;
     const maxAttempts = 3;
 
-    while (!valid && attempts < maxAttempts) {
-        attempts++;
-        console.log(`[DELIVERY] Attempt ${attempts} to get a valid token`);
-        if (tokenStock.length === 0) giveNewTokenFromAccounts();
-        if (tokenStock.length === 0) {
-            console.error('[DELIVERY] No stock token available.');
-            return false;
-        }
-        tokenObj = tokenStock[0];
-        try {
-            console.log('[DELIVERY] Refreshing stock token...');
-            const refreshResult = await refreshToken(tokenObj.refresh);
-            if (refreshResult.success) {
-                tokenObj = tokenStock[0];
-                console.log(`[DELIVERY] Refresh successful. New expiry: ${humanExpiry(tokenObj.expiresAt)}`);
+    // First, check if the current stock token is still valid by expiry
+    if (tokenStock.length > 0) {
+        const current = tokenStock[0];
+        if (current && current.expiresAt && Date.now() < current.expiresAt) {
+            console.log('[DELIVERY] Current stock token is still valid (based on JWT expiry).');
+            // We'll try to use it directly, but still validate with API.
+            tokenObj = current;
+            const validation = await validateTokenDetails(tokenObj.bearer, tokenObj.refresh);
+            if (validation.valid) {
+                valid = true;
+                console.log('[DELIVERY] Stock token passed API validation.');
             } else {
-                console.log('[DELIVERY] Refresh failed, trying to load a new token from accounts...');
+                console.log(`[DELIVERY] Stock token failed API validation (${validation.apiError || 'unknown'}), will try refresh.`);
+                // If validation fails, we'll proceed to refresh attempts.
+                valid = false;
+            }
+        }
+    }
+
+    if (!valid) {
+        // Try to refresh up to maxAttempts
+        while (!valid && attempts < maxAttempts) {
+            attempts++;
+            console.log(`[DELIVERY] Attempt ${attempts} to get a valid token (refresh mode)`);
+            if (tokenStock.length === 0) giveNewTokenFromAccounts();
+            if (tokenStock.length === 0) {
+                console.error('[DELIVERY] No stock token available.');
+                break;
+            }
+            tokenObj = tokenStock[0];
+            try {
+                console.log('[DELIVERY] Refreshing stock token...');
+                const refreshResult = await refreshToken(tokenObj.refresh);
+                if (refreshResult.success) {
+                    tokenObj = tokenStock[0];
+                    console.log(`[DELIVERY] Refresh successful. New expiry: ${humanExpiry(tokenObj.expiresAt)}`);
+                    const validation = await validateTokenDetails(tokenObj.bearer, tokenObj.refresh);
+                    if (validation.valid) {
+                        valid = true;
+                        console.log('[DELIVERY] Refreshed token passed validation.');
+                        break;
+                    } else {
+                        console.log(`[DELIVERY] Refreshed token invalid (${validation.apiError || 'unknown'}), retrying...`);
+                    }
+                } else {
+                    console.log('[DELIVERY] Refresh failed, trying to load a new token from accounts...');
+                    giveNewTokenFromAccounts();
+                    tokenObj = tokenStock[0];
+                    // After fallback, check if the fallback token is valid by expiry
+                    if (tokenObj && tokenObj.expiresAt && Date.now() < tokenObj.expiresAt) {
+                        console.log('[DELIVERY] Fallback token is valid by expiry. Trying validation...');
+                        const validation = await validateTokenDetails(tokenObj.bearer, tokenObj.refresh);
+                        if (validation.valid) {
+                            valid = true;
+                            console.log('[DELIVERY] Fallback token passed validation.');
+                            break;
+                        }
+                    }
+                    // else continue loop
+                }
+            } catch (e) {
+                console.error('[DELIVERY] Error during refresh:', e);
                 giveNewTokenFromAccounts();
                 tokenObj = tokenStock[0];
-                continue;
             }
-        } catch (e) {
-            console.error('[DELIVERY] Error during refresh:', e);
-            giveNewTokenFromAccounts();
-            tokenObj = tokenStock[0];
-            continue;
+            await new Promise(r => setTimeout(r, 500));
         }
-        console.log('[DELIVERY] Validating token...');
-        const validation = await validateTokenDetails(tokenObj.bearer, tokenObj.refresh);
-        if (validation.valid) {
-            valid = true;
-            console.log('[DELIVERY] Token is valid.');
-            break;
-        } else {
-            console.log(`[DELIVERY] Token invalid (${validation.apiError || 'unknown'}), retrying...`);
-            giveNewTokenFromAccounts();
-            tokenObj = tokenStock[0];
+    }
+
+    // If still not valid, try one last time with the current bearer (if not expired)
+    if (!valid && tokenStock.length > 0) {
+        const current = tokenStock[0];
+        if (current && current.expiresAt && Date.now() < current.expiresAt) {
+            console.log('[DELIVERY] Final fallback: using current bearer (valid by expiry).');
+            const validation = await validateTokenDetails(current.bearer, current.refresh);
+            if (validation.valid) {
+                tokenObj = current;
+                valid = true;
+                console.log('[DELIVERY] Final fallback passed validation.');
+            } else {
+                console.log(`[DELIVERY] Final fallback failed validation (${validation.apiError || 'unknown'}).`);
+            }
         }
-        await new Promise(r => setTimeout(r, 500));
     }
 
     if (!valid || !tokenObj) {
-        console.error('[DELIVERY] Could not obtain a valid token after attempts.');
+        console.error('[DELIVERY] Could not obtain a valid token after all attempts.');
         return false;
     }
 
