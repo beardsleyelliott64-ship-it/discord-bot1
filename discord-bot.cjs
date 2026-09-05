@@ -39,16 +39,7 @@ const client = new Client({
 // --- CONFIGURATION ---
 const VERSION = "2.2.0";
 const UPDATE_LOG_CHANNEL_ID = "1545829503912120431";
-const CHANGELOG = `🔧 **Bot Update v${VERSION}**
-**What’s new:**
-• Added `/set-refresh` – update only the refresh token (tested immediately)
-• Better diagnostics – `/test-refresh` now shows the exact API error
-
-**What’s improved:**
-• `/stock_main` now rejects invalid refresh tokens (no more warnings)
-
-**What’s fixed:**
-• Refresh test failures now show the actual reason (invalid token, expired, etc.)`;
+const CHANGELOG = "🔧 Bot Update v" + VERSION + "\n\nWhat's new:\n• Added `/set-refresh` – update only the refresh token (tested immediately)\n• Better diagnostics – `/test-refresh` now shows the exact API error\n\nWhat's improved:\n• `/stock_main` now rejects invalid refresh tokens (no more warnings)\n\nWhat's fixed:\n• Refresh test failures now show the actual reason (invalid token, expired, etc.)";
 
 const MEMBER_ROLE_ID = "1492798151516491816";
 const SUPPORTER_ROLE_ID = "1529393418063581284";
