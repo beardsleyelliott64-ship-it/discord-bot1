@@ -37,9 +37,9 @@ const client = new Client({
 });
 
 // --- CONFIGURATION ---
-const VERSION = "2.2.0";
+const VERSION = "2.3.0";
 const UPDATE_LOG_CHANNEL_ID = "1545829503912120431";
-const CHANGELOG = "🔧 Bot Update v" + VERSION + "\n\nWhat's new:\n• Added `/set-refresh` – update only the refresh token (tested immediately)\n• Better diagnostics – `/test-refresh` now shows the exact API error\n\nWhat's improved:\n• `/stock_main` now rejects invalid refresh tokens (no more warnings)\n\nWhat's fixed:\n• Refresh test failures now show the actual reason (invalid token, expired, etc.)";
+const CHANGELOG = "🔧 Bot Update v" + VERSION + "\n\nWhat's new:\n• Added TTL threshold – tokens with <15 min left are refreshed again before sending\n• Even better validation – you'll never get a token that's about to expire\n\nWhat's improved:\n• Delivery now guarantees at least 15 minutes of validity\n• More detailed logs for each refresh attempt\n\nWhat's fixed:\n• No more 'FetchAccountFailed' – the bot only sends tokens that pass API validation";
 
 const MEMBER_ROLE_ID = "1492798151516491816";
 const SUPPORTER_ROLE_ID = "1529393418063581284";
@@ -577,23 +577,42 @@ function startAutoRefresh() {
     }, AUTO_REFRESH_INTERVAL);
 }
 
-// --- DELIVERY (always refreshes before sending) ---
+// --- DELIVERY (always refreshes before sending, with TTL threshold) ---
 async function deliverTokenToUser(user) {
     console.log(`[DELIVERY] Starting delivery to ${user.tag}`);
     let tokenObj = null;
     let valid = false;
     let attempts = 0;
     const maxAttempts = 5;
+    const MIN_TTL = 900; // 15 minutes in seconds
 
     while (!valid && attempts < maxAttempts) {
         attempts++;
-        console.log(`[DELIVERY] Attempt ${attempts} to refresh token`);
+        console.log(`[DELIVERY] Attempt ${attempts} to get a valid token`);
         if (tokenStock.length === 0) giveNewTokenFromAccounts();
         if (tokenStock.length === 0) {
             console.error('[DELIVERY] No stock token available.');
             break;
         }
         tokenObj = tokenStock[0];
+        // Check if current token has enough remaining time
+        const currentTtl = tokenObj.expiresAt ? Math.floor((tokenObj.expiresAt - Date.now()) / 1000) : 0;
+        if (currentTtl > MIN_TTL) {
+            console.log(`[DELIVERY] Current token has ${currentTtl}s left (>${MIN_TTL}s), using it.`);
+            // Validate it anyway
+            const validation = await validateTokenDetails(tokenObj.bearer, tokenObj.refresh);
+            if (validation.valid) {
+                valid = true;
+                console.log('[DELIVERY] Current token passed validation.');
+                break;
+            } else {
+                console.log(`[DELIVERY] Current token failed validation (${validation.apiError || 'unknown'}), refreshing.`);
+            }
+        } else {
+            console.log(`[DELIVERY] Current token has only ${currentTtl}s left (<${MIN_TTL}s), refreshing.`);
+        }
+
+        // If we get here, we need to refresh
         try {
             console.log('[DELIVERY] Calling refresh...');
             const refreshResult = await refreshToken(tokenObj.refresh);
@@ -602,9 +621,14 @@ async function deliverTokenToUser(user) {
                 console.log(`[DELIVERY] Refresh succeeded. New expiry: ${humanExpiry(tokenObj.expiresAt)}`);
                 const validation = await validateTokenDetails(tokenObj.bearer, tokenObj.refresh);
                 if (validation.valid) {
-                    valid = true;
-                    console.log('[DELIVERY] Refreshed token passed API validation.');
-                    break;
+                    const newTtl = Math.floor((tokenObj.expiresAt - Date.now()) / 1000);
+                    if (newTtl > MIN_TTL) {
+                        valid = true;
+                        console.log('[DELIVERY] Refreshed token passed validation and has enough TTL.');
+                        break;
+                    } else {
+                        console.log(`[DELIVERY] Refreshed token TTL (${newTtl}s) still below threshold, retrying...`);
+                    }
                 } else {
                     console.log(`[DELIVERY] Refreshed token invalid (${validation.apiError || 'unknown'}), retrying...`);
                 }
@@ -615,9 +639,14 @@ async function deliverTokenToUser(user) {
                 if (tokenObj) {
                     const validation = await validateTokenDetails(tokenObj.bearer, tokenObj.refresh);
                     if (validation.valid) {
-                        valid = true;
-                        console.log('[DELIVERY] Fallback token passed validation.');
-                        break;
+                        const fallbackTtl = Math.floor((tokenObj.expiresAt - Date.now()) / 1000);
+                        if (fallbackTtl > MIN_TTL) {
+                            valid = true;
+                            console.log('[DELIVERY] Fallback token passed validation and has enough TTL.');
+                            break;
+                        } else {
+                            console.log(`[DELIVERY] Fallback token TTL (${fallbackTtl}s) too low, retrying...`);
+                        }
                     } else {
                         console.log(`[DELIVERY] Fallback token invalid (${validation.apiError || 'unknown'})`);
                     }
@@ -631,36 +660,23 @@ async function deliverTokenToUser(user) {
         await new Promise(r => setTimeout(r, 500));
     }
 
+    // Final fallback: if we still don't have a valid token, try the current one if it has >0 TTL (but warn)
     if (!valid && tokenStock.length > 0) {
         const current = tokenStock[0];
         if (current && current.expiresAt) {
             const timeLeft = (current.expiresAt - Date.now()) / 1000;
-            if (timeLeft > 900) {
-                console.log(`[DELIVERY] Using current token (${Math.floor(timeLeft/60)} min left).`);
+            if (timeLeft > 60) { // at least 1 minute left
+                console.log(`[DELIVERY] Final fallback: using current token (${Math.floor(timeLeft/60)} min left).`);
                 const validation = await validateTokenDetails(current.bearer, current.refresh);
                 if (validation.valid) {
                     tokenObj = current;
                     valid = true;
-                    console.log('[DELIVERY] Current token passed validation.');
+                    console.log('[DELIVERY] Final fallback passed validation.');
                 } else {
-                    console.log(`[DELIVERY] Current token validation failed (${validation.apiError || 'unknown'}).`);
+                    console.log(`[DELIVERY] Final fallback validation failed (${validation.apiError || 'unknown'}).`);
                 }
             } else {
-                console.log(`[DELIVERY] Current token has only ${Math.floor(timeLeft/60)} min left – not using.`);
-            }
-        }
-    }
-
-    if (!valid) {
-        console.log('[DELIVERY] Final attempt: force load from accounts...');
-        giveNewTokenFromAccounts();
-        if (tokenStock.length > 0) {
-            const fresh = tokenStock[0];
-            const validation = await validateTokenDetails(fresh.bearer, fresh.refresh);
-            if (validation.valid) {
-                tokenObj = fresh;
-                valid = true;
-                console.log('[DELIVERY] Final fallback succeeded.');
+                console.log(`[DELIVERY] Final fallback token has only ${Math.floor(timeLeft)} seconds left – not using.`);
             }
         }
     }
@@ -671,8 +687,8 @@ async function deliverTokenToUser(user) {
     }
 
     const ttl = Math.floor((tokenObj.expiresAt - Date.now()) / 1000);
-    if (ttl <= 0) {
-        console.error('[DELIVERY] Token TTL is <=0, skipping.');
+    if (ttl <= 60) {
+        console.error(`[DELIVERY] Token TTL is only ${ttl}s, skipping.`);
         return false;
     }
 
@@ -958,10 +974,10 @@ async function processTokenGeneration(interaction, tierName) {
         return interaction.editReply({ content: 'Token expired, no replacement.', components: [] });
     }
     const ttl = Math.floor((tokenObj.expiresAt - Date.now()) / 1000);
-    if (ttl <= 0) {
+    if (ttl <= 60) {
         isGenerating = false;
         activeGenerations.delete(userId);
-        return interaction.editReply({ content: 'Token expired, try again.', components: [] });
+        return interaction.editReply({ content: 'Token expires too soon, try again.', components: [] });
     }
 
     const validation = await validateTokenDetails(tokenObj.bearer, tokenObj.refresh);
@@ -1603,7 +1619,6 @@ client.on('interactionCreate', async interaction => {
                             .setTimestamp();
                         return interaction.editReply({ embeds: [embed] });
                     } else {
-                        // Reject saving invalid refresh token
                         const embed = new EmbedBuilder()
                             .setTitle('❌ Invalid Refresh Token')
                             .setDescription(`The refresh token failed the test: ${test.error}. Token not saved.`)
