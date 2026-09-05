@@ -48,8 +48,8 @@ const VIP_ROLE_ID = "1542337978016469093";
 const BOOSTER_ROLE_ID = "1542337979807178832";
 const NO_COOLDOWN_ROLE_ID = ADMIN_ROLE_ID;
 const GENERATION_COOLDOWN = 0;
-const REQUIRED_ROLE_ID = "1544637223058542642"; // Only this role can see applications
-const MOD_ROLE_ID = "1544645742373765151"; // Role given when accepted
+const REQUIRED_ROLE_ID = "1544637223058542642";
+const MOD_ROLE_ID = "1544645742373765151";
 const MOD_APP_CHANNEL_ID = "1545515386328326256";
 
 const DONATION_LINKS = {
@@ -544,63 +544,63 @@ function startAutoRefresh() {
     }, AUTO_REFRESH_INTERVAL);
 }
 
-// --- DELIVERY ---
+// --- IMPROVED DELIVERY (with retry and validation loop) ---
 async function deliverTokenToUser(user) {
     console.log(`[DELIVERY] Starting delivery to ${user.tag}`);
+    let tokenObj = null;
+    let valid = false;
+    let attempts = 0;
+    const maxAttempts = 3;
 
-    if (tokenStock.length === 0) {
-        console.log('[DELIVERY] Stock empty, loading from accounts...');
-        giveNewTokenFromAccounts();
-    }
-    if (tokenStock.length === 0) {
-        console.error('[DELIVERY] No stock token available after loading.');
-        return;
-    }
-
-    let tokenObj = tokenStock[0];
-    try {
-        console.log('[DELIVERY] Refreshing stock token...');
-        const refreshResult = await refreshToken(tokenObj.refresh);
-        if (refreshResult.success) {
+    while (!valid && attempts < maxAttempts) {
+        attempts++;
+        console.log(`[DELIVERY] Attempt ${attempts} to get a valid token`);
+        // Ensure stock exists
+        if (tokenStock.length === 0) giveNewTokenFromAccounts();
+        if (tokenStock.length === 0) {
+            console.error('[DELIVERY] No stock token available.');
+            return;
+        }
+        tokenObj = tokenStock[0];
+        // Refresh the token
+        try {
+            console.log('[DELIVERY] Refreshing stock token...');
+            const refreshResult = await refreshToken(tokenObj.refresh);
+            if (refreshResult.success) {
+                tokenObj = tokenStock[0];
+                console.log(`[DELIVERY] Refresh successful. New expiry: ${humanExpiry(tokenObj.expiresAt)}`);
+            } else {
+                console.log('[DELIVERY] Refresh failed, trying to load a new token from accounts...');
+                giveNewTokenFromAccounts();
+                tokenObj = tokenStock[0];
+                continue; // retry with new token
+            }
+        } catch (e) {
+            console.error('[DELIVERY] Error during refresh:', e);
+            giveNewTokenFromAccounts();
             tokenObj = tokenStock[0];
-            console.log(`[DELIVERY] Refresh successful. New expiry: ${humanExpiry(tokenObj.expiresAt)}`);
+            continue;
+        }
+        // Validate
+        console.log('[DELIVERY] Validating token...');
+        const validation = await validateTokenDetails(tokenObj.bearer, tokenObj.refresh);
+        if (validation.valid) {
+            valid = true;
+            console.log('[DELIVERY] Token is valid.');
+            break;
         } else {
-            console.log('[DELIVERY] Refresh failed, trying to load a new token from accounts...');
+            console.log(`[DELIVERY] Token invalid (${validation.apiError || 'unknown'}), retrying...`);
+            // Try to get a new token from accounts
             giveNewTokenFromAccounts();
             tokenObj = tokenStock[0];
         }
-    } catch (e) {
-        console.error('[DELIVERY] Error during refresh:', e);
-        giveNewTokenFromAccounts();
-        tokenObj = tokenStock[0];
+        // Small delay between attempts
+        await new Promise(r => setTimeout(r, 500));
     }
 
-    if (!tokenObj) {
-        console.error('[DELIVERY] No token object after refresh/loading.');
+    if (!valid || !tokenObj) {
+        console.error('[DELIVERY] Could not obtain a valid token after attempts.');
         return;
-    }
-
-    console.log('[DELIVERY] Validating token...');
-    let validation = await validateTokenDetails(tokenObj.bearer, tokenObj.refresh);
-    if (!validation.valid) {
-        console.log(`[DELIVERY] Token invalid (${validation.apiError || 'unknown'}), trying one more refresh...`);
-        try {
-            const retryResult = await refreshToken(tokenObj.refresh);
-            if (retryResult.success) {
-                tokenObj = tokenStock[0];
-                validation = await validateTokenDetails(tokenObj.bearer, tokenObj.refresh);
-                if (!validation.valid) {
-                    console.error('[DELIVERY] Retry validation still failed. Skipping delivery.');
-                    return;
-                }
-            } else {
-                console.error('[DELIVERY] Retry refresh failed. Skipping delivery.');
-                return;
-            }
-        } catch (e) {
-            console.error('[DELIVERY] Error during retry refresh:', e);
-            return;
-        }
     }
 
     const ttl = Math.floor((tokenObj.expiresAt - Date.now()) / 1000);
@@ -938,9 +938,6 @@ async function showRemoveStock(interaction, page = 0) {
     await interaction.reply({ embeds: [embed], components, flags: 64 });
 }
 
-// --- APPLICATION DATA STORE ---
-const modApplications = new Map();
-
 // --- SLASH COMMANDS ---
 const commandsData = [
     new SlashCommandBuilder().setName('8ball').setDescription('Ask the magic 8ball a question').addStringOption(opt => opt.setName('question').setDescription('Your question').setRequired(true)),
@@ -1094,80 +1091,6 @@ client.on('interactionCreate', async interaction => {
                 return;
             }
 
-            // --- PUBLIC PANELS (POSTED TO CHANNEL) ---
-            if (commandName === 'donate-panel' || commandName === 'donation-panel' || commandName === 'check-panel' || commandName === 'split-panel') {
-                if (!hasAdminAccess(interaction)) return interaction.reply({ content: 'Access Denied – Admin only to post panel.', flags: 64 });
-                
-                // DONATE PANEL
-                if (commandName === 'donate-panel') {
-                    const embed = new EmbedBuilder()
-                        .setTitle('◆ SUPPORT THE PROJECT ◆')
-                        .setDescription('> Your contributions keep this bot alive and the tokens flowing.\n> Choose a platform below to send a donation.')
-                        .addFields(
-                            { name: 'PayPal', value: `[Click to donate](${DONATION_LINKS.paypal})`, inline: true },
-                            { name: 'CashApp', value: `[Click to donate](${DONATION_LINKS.cashapp})`, inline: true },
-                            { name: 'Crypto', value: `[Click to donate](${DONATION_LINKS.crypto})`, inline: true }
-                        )
-                        .setColor(0xF1C40F)
-                        .setFooter({ text: getLiveUIStats(interaction) });
-                    const row1 = new ActionRowBuilder().addComponents(
-                        new ButtonBuilder().setLabel('PayPal').setStyle(ButtonStyle.Link).setURL(DONATION_LINKS.paypal),
-                        new ButtonBuilder().setLabel('CashApp').setStyle(ButtonStyle.Link).setURL(DONATION_LINKS.cashapp),
-                        new ButtonBuilder().setLabel('Crypto').setStyle(ButtonStyle.Link).setURL(DONATION_LINKS.crypto)
-                    );
-                    const row2 = new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('donate_info').setLabel('More Info').setStyle(ButtonStyle.Secondary));
-                    return interaction.reply({ embeds: [embed], components: [row1, row2] });
-                }
-
-                // DONATION PANEL
-                if (commandName === 'donation-panel') {
-                    const embed = new EmbedBuilder()
-                        .setTitle('◆ DONATE A TOKEN ◆')
-                        .setDescription('> Paste a valid JSON containing `token` (bearer) and `refresh_token`.\n> The bot will validate and add it to the stock.')
-                        .addFields(
-                            { name: 'STEP 1', value: 'Copy the token JSON from your client', inline: true },
-                            { name: 'STEP 2', value: 'Paste it into the modal', inline: true },
-                            { name: 'STEP 3', value: 'Hit Donate - it gets added to stock!', inline: true }
-                        )
-                        .setColor(0x5865F2)
-                        .setFooter({ text: getLiveUIStats(interaction) });
-                    const row = new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('donate_token_btn').setLabel('Donate Token').setStyle(ButtonStyle.Success));
-                    return interaction.reply({ embeds: [embed], components: [row] });
-                }
-
-                // CHECK PANEL
-                if (commandName === 'check-panel') {
-                    const embed = new EmbedBuilder()
-                        .setTitle('◆ CHECK TOKEN ◆')
-                        .setDescription('> Paste a JSON containing `token` (or bearer) and `refresh_token`.\n> The bot will extract and validate them.')
-                        .addFields(
-                            { name: 'STEP 1', value: 'Paste JSON', inline: true },
-                            { name: 'STEP 2', value: 'Click Check', inline: true },
-                            { name: 'RESULT', value: 'JWT & API Validation', inline: true }
-                        )
-                        .setColor(0x3498DB)
-                        .setFooter({ text: getLiveUIStats(interaction) });
-                    const row = new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('check_token_btn').setLabel('Check Token').setStyle(ButtonStyle.Primary));
-                    return interaction.reply({ embeds: [embed], components: [row] });
-                }
-
-                // SPLIT PANEL
-                if (commandName === 'split-panel') {
-                    const embed = new EmbedBuilder()
-                        .setTitle('◆ SPLIT TOKEN ◆')
-                        .setDescription('> Paste a JSON containing `token` (or bearer) and `refresh_token`.\n> The bot will extract and return them separately.')
-                        .addFields(
-                            { name: 'STEP 1', value: 'Paste JSON', inline: true },
-                            { name: 'STEP 2', value: 'Click Split', inline: true },
-                            { name: 'OUTPUT', value: 'Separate Bearer & Refresh', inline: true }
-                        )
-                        .setColor(0x2ECC71)
-                        .setFooter({ text: getLiveUIStats(interaction) });
-                    const row = new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('split_token_btn').setLabel('Split Token').setStyle(ButtonStyle.Success));
-                    return interaction.reply({ embeds: [embed], components: [row] });
-                }
-            }
-
             // --- FAST COMMANDS (no defer needed) ---
             const fastCommands = ['ping', '8ball', 'help', 'serverinfo'];
             if (fastCommands.includes(commandName)) {
@@ -1242,6 +1165,75 @@ client.on('interactionCreate', async interaction => {
                     await new Promise(resolve => setTimeout(resolve, 1000));
                 }
                 return interaction.editReply({ content: `Announcement DMs sent! ${successCount} succeeded, ${failCount} failed (skipped bots).` });
+            }
+
+            // --- DONATE-PANEL ---
+            if (commandName === 'donate-panel') {
+                const embed = new EmbedBuilder()
+                    .setTitle('◆ SUPPORT THE PROJECT ◆')
+                    .setDescription('> Your contributions keep this bot alive and the tokens flowing.\n> Choose a platform below to send a donation.')
+                    .addFields(
+                        { name: 'PayPal', value: `[Click to donate](${DONATION_LINKS.paypal})`, inline: true },
+                        { name: 'CashApp', value: `[Click to donate](${DONATION_LINKS.cashapp})`, inline: true },
+                        { name: 'Crypto', value: `[Click to donate](${DONATION_LINKS.crypto})`, inline: true }
+                    )
+                    .setColor(0xF1C40F)
+                    .setFooter({ text: getLiveUIStats(interaction) });
+                const row1 = new ActionRowBuilder().addComponents(
+                    new ButtonBuilder().setLabel('PayPal').setStyle(ButtonStyle.Link).setURL(DONATION_LINKS.paypal),
+                    new ButtonBuilder().setLabel('CashApp').setStyle(ButtonStyle.Link).setURL(DONATION_LINKS.cashapp),
+                    new ButtonBuilder().setLabel('Crypto').setStyle(ButtonStyle.Link).setURL(DONATION_LINKS.crypto)
+                );
+                const row2 = new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('donate_info').setLabel('More Info').setStyle(ButtonStyle.Secondary));
+                return interaction.editReply({ embeds: [embed], components: [row1, row2], ephemeral: false });
+            }
+
+            // --- DONATION-PANEL (token donation) ---
+            if (commandName === 'donation-panel') {
+                const embed = new EmbedBuilder()
+                    .setTitle('◆ DONATE A TOKEN ◆')
+                    .setDescription('> Paste a valid JSON containing `token` (bearer) and `refresh_token`.\n> The bot will validate and add it to the stock.')
+                    .addFields(
+                        { name: 'STEP 1', value: 'Copy the token JSON from your client', inline: true },
+                        { name: 'STEP 2', value: 'Paste it into the modal', inline: true },
+                        { name: 'STEP 3', value: 'Hit Donate - it gets added to stock!', inline: true }
+                    )
+                    .setColor(0x5865F2)
+                    .setFooter({ text: getLiveUIStats(interaction) });
+                const row = new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('donate_token_btn').setLabel('Donate Token').setStyle(ButtonStyle.Success));
+                return interaction.editReply({ embeds: [embed], components: [row], ephemeral: false });
+            }
+
+            // --- CHECK-PANEL ---
+            if (commandName === 'check-panel') {
+                const embed = new EmbedBuilder()
+                    .setTitle('◆ CHECK TOKEN ◆')
+                    .setDescription('> Paste a JSON containing `token` (or bearer) and `refresh_token`.\n> The bot will extract and validate them.')
+                    .addFields(
+                        { name: 'STEP 1', value: 'Paste JSON', inline: true },
+                        { name: 'STEP 2', value: 'Click Check', inline: true },
+                        { name: 'RESULT', value: 'JWT & API Validation', inline: true }
+                    )
+                    .setColor(0x3498DB)
+                    .setFooter({ text: getLiveUIStats(interaction) });
+                const row = new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('check_token_btn').setLabel('Check Token').setStyle(ButtonStyle.Primary));
+                return interaction.editReply({ embeds: [embed], components: [row], ephemeral: false });
+            }
+
+            // --- SPLIT-PANEL ---
+            if (commandName === 'split-panel') {
+                const embed = new EmbedBuilder()
+                    .setTitle('◆ SPLIT TOKEN ◆')
+                    .setDescription('> Paste a JSON containing `token` (or bearer) and `refresh_token`.\n> The bot will extract and return them separately.')
+                    .addFields(
+                        { name: 'STEP 1', value: 'Paste JSON', inline: true },
+                        { name: 'STEP 2', value: 'Click Split', inline: true },
+                        { name: 'OUTPUT', value: 'Separate Bearer & Refresh', inline: true }
+                    )
+                    .setColor(0x2ECC71)
+                    .setFooter({ text: getLiveUIStats(interaction) });
+                const row = new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('split_token_btn').setLabel('Split Token').setStyle(ButtonStyle.Success));
+                return interaction.editReply({ embeds: [embed], components: [row], ephemeral: false });
             }
 
             // --- CHECK-EXPIRY ---
@@ -1415,6 +1407,14 @@ client.on('interactionCreate', async interaction => {
                     .setRequired(true)
                     .setMaxLength(1000);
 
+                const experienceInput = new TextInputBuilder()
+                    .setCustomId('mod_app_experience')
+                    .setLabel('Do you have any moderation experience?')
+                    .setStyle(TextInputStyle.Paragraph)
+                    .setPlaceholder('Previous roles, servers, etc.')
+                    .setRequired(false)
+                    .setMaxLength(1000);
+
                 const availabilityInput = new TextInputBuilder()
                     .setCustomId('mod_app_availability')
                     .setLabel('Availability (timezone & hours)')
@@ -1423,71 +1423,24 @@ client.on('interactionCreate', async interaction => {
                     .setRequired(true)
                     .setMaxLength(200);
 
-                const experienceInput = new TextInputBuilder()
-                    .setCustomId('mod_app_experience')
-                    .setLabel('Experience & Anything Else')
+                const extraInput = new TextInputBuilder()
+                    .setCustomId('mod_app_extra')
+                    .setLabel('Anything else you want to add?')
                     .setStyle(TextInputStyle.Paragraph)
-                    .setPlaceholder('Previous roles, servers, or anything else we should know...')
+                    .setPlaceholder('Optional extra info')
                     .setRequired(false)
                     .setMaxLength(1000);
 
-                // IMPORTANT: Only 5 rows allowed!
                 modal.addComponents(
                     new ActionRowBuilder().addComponents(nameInput),
                     new ActionRowBuilder().addComponents(ageInput),
                     new ActionRowBuilder().addComponents(whyInput),
+                    new ActionRowBuilder().addComponents(experienceInput),
                     new ActionRowBuilder().addComponents(availabilityInput),
-                    new ActionRowBuilder().addComponents(experienceInput)
+                    new ActionRowBuilder().addComponents(extraInput)
                 );
 
                 return await interaction.showModal(modal);
-            }
-
-            // --- ACCEPT / DECLINE APPLICATION ---
-            if (interaction.customId === 'accept_mod_app' || interaction.customId === 'decline_mod_app') {
-                if (!hasRequiredRole(interaction) && !hasAdminAccess(interaction)) {
-                    return interaction.reply({ content: 'You do not have permission to handle applications.', flags: 64 });
-                }
-
-                const msgId = interaction.message.id;
-                const appData = modApplications.get(msgId);
-                if (!appData) {
-                    return interaction.reply({ content: 'Application data not found or expired.', flags: 64 });
-                }
-
-                const applicantId = appData.userId;
-                const applicant = await client.users.fetch(applicantId).catch(() => null);
-
-                if (interaction.customId === 'accept_mod_app') {
-                    // Add MOD_ROLE_ID to the applicant
-                    try {
-                        const guild = interaction.guild;
-                        const member = await guild.members.fetch(applicantId);
-                        const role = guild.roles.cache.get(MOD_ROLE_ID);
-                        if (role) {
-                            await member.roles.add(role);
-                        }
-                        
-                        await interaction.reply({ content: 'Application accepted!', flags: 64 });
-                        await interaction.message.edit({ components: [] }); // Disable buttons
-
-                        if (applicant) {
-                            await applicant.send({ embeds: [new EmbedBuilder().setTitle('✅ Application Accepted').setDescription('Congratulations! You have been accepted as a Moderator. Welcome to the team!').setColor(0x2ECC71)] });
-                        }
-                    } catch (err) {
-                        console.error('[ERROR] Could not accept application:', err);
-                        await interaction.reply({ content: 'Failed to accept application (check bot permissions).', flags: 64 });
-                    }
-                } else {
-                    await interaction.reply({ content: 'Application declined.', flags: 64 });
-                    await interaction.message.edit({ components: [] }); // Disable buttons
-
-                    if (applicant) {
-                        await applicant.send({ embeds: [new EmbedBuilder().setTitle('❌ Application Declined').setDescription('We are sorry, but your application was not accepted at this time.').setColor(0xED4245)] });
-                    }
-                }
-                modApplications.delete(msgId);
-                return;
             }
 
             // --- SUBSCRIPTION PANEL BUTTONS ---
@@ -1669,8 +1622,9 @@ client.on('interactionCreate', async interaction => {
                 const name = interaction.fields.getTextInputValue('mod_app_name');
                 const age = interaction.fields.getTextInputValue('mod_app_age');
                 const why = interaction.fields.getTextInputValue('mod_app_why');
+                const experience = interaction.fields.getTextInputValue('mod_app_experience') || 'None provided';
                 const availability = interaction.fields.getTextInputValue('mod_app_availability');
-                const extra = interaction.fields.getTextInputValue('mod_app_experience') || 'None'; // Combined field
+                const extra = interaction.fields.getTextInputValue('mod_app_extra') || 'None';
 
                 const embed = new EmbedBuilder()
                     .setTitle('📩 New Moderator Application')
@@ -1681,6 +1635,7 @@ client.on('interactionCreate', async interaction => {
                         { name: '📛 Full Name', value: name, inline: true },
                         { name: '🎂 Age', value: age, inline: true },
                         { name: '❓ Why do you want to be a mod?', value: why, inline: false },
+                        { name: '📋 Experience', value: experience, inline: false },
                         { name: '🕒 Availability', value: availability, inline: false },
                         { name: '📝 Additional Info', value: extra, inline: false }
                     )
@@ -1699,44 +1654,11 @@ client.on('interactionCreate', async interaction => {
                 }
 
                 if (channel) {
+                    await channel.send({ embeds: [embed] });
+                    await interaction.editReply({ content: '✅ Your application has been submitted successfully! Staff will review it shortly.' });
                     try {
-                        // Configure permissions: Only REQUIRED_ROLE_ID can view
-                        const requiredRole = interaction.guild.roles.cache.get(REQUIRED_ROLE_ID);
-                        if (requiredRole) {
-                            await channel.permissionOverwrites.edit(requiredRole, {
-                                ViewChannel: true,
-                                SendMessages: true,
-                                ReadMessageHistory: true
-                            });
-                            await channel.permissionOverwrites.edit(interaction.guild.id, {
-                                ViewChannel: false
-                            });
-                        }
-
-                        // Add Accept/Decline buttons
-                        const buttons = new ActionRowBuilder()
-                            .addComponents(
-                                new ButtonBuilder().setCustomId('accept_mod_app').setLabel('✅ Accept').setStyle(ButtonStyle.Success),
-                                new ButtonBuilder().setCustomId('decline_mod_app').setLabel('❌ Decline').setStyle(ButtonStyle.Danger)
-                            );
-
-                        const sentMsg = await channel.send({ embeds: [embed], components: [buttons] });
-                        
-                        // Store application data for the buttons
-                        modApplications.set(sentMsg.id, {
-                            userId: interaction.user.id,
-                            username: interaction.user.tag
-                        });
-
-                        await interaction.editReply({ content: '✅ Your application has been submitted successfully! Staff will review it shortly.' });
-                        try {
-                            await interaction.user.send({ embeds: [new EmbedBuilder().setTitle('📨 Application Received').setDescription('Your moderator application has been submitted. We will get back to you soon.').setColor(0x2ECC71)] });
-                        } catch (_) {}
-                    } catch (sendErr) {
-                        // Specific error handling for send permissions
-                        console.error('[ERROR] Could not send to mod application channel:', sendErr);
-                        await interaction.editReply({ content: '❌ I could not submit your application to the staff channel. The bot is missing the **Send Messages** permission there, or the channel ID is incorrect. Please contact an admin.', flags: 64 });
-                    }
+                        await interaction.user.send({ embeds: [new EmbedBuilder().setTitle('📨 Application Received').setDescription('Your moderator application has been submitted. We will get back to you soon.').setColor(0x2ECC71)] });
+                    } catch (_) {}
                 } else {
                     await interaction.editReply({ content: '❌ The application channel could not be found. Please contact an admin.' });
                 }
