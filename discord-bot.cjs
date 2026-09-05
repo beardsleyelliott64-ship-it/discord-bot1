@@ -1,5 +1,6 @@
 // ============================================================
-// FILE: index.js – EAM.LOL Token Bot v2.4.1
+// FILE: index.js – EAM.LOL Token Bot v2.4.2
+// Fixed refresher, enhanced logging, all features intact.
 // ============================================================
 
 const {
@@ -41,23 +42,26 @@ const client = new Client({
 });
 
 // --- CONFIGURATION ---
-const VERSION = "2.4.1";
+const VERSION = "2.4.2";
 const UPDATE_LOG_CHANNEL_ID = "1545829503912120431";
 const STATUS_CHANNEL_ID = "1545624109583695933";
-const LOG_CHANNEL_ID = "1545922334534148196";   // <-- live logs channel
+const LOG_CHANNEL_ID = "1545922334534148196";
 
 const CHANGELOG = `🔧 Bot Update v${VERSION}
 
 What's new:
-• **Live log feed** – all console logs are now mirrored to <#${LOG_CHANNEL_ID}> with clean, colour‑coded embeds.
-• **Compact subscription panel** – fewer fields, cleaner UI.
-• **Subscription panel** now includes only essential buttons: Subscribe, Unsubscribe, Get Token Now, Refresh Stock (admin).
-• **Removed** fun facts from the panel to keep it minimal.
+• **Fixed the refresher** – \`/set-refresh\` now updates the fallback accounts list, eliminating the "All accounts exhausted" error.
+• **Added \`addOrUpdateAccount()\` helper** – ensures new refresh tokens are saved for auto‑refresh fallback.
+• **Enhanced logging** – more detailed logs are now sent to <#${LOG_CHANNEL_ID}>:
+  • Refresh attempts (success/failure, expiry, account used)
+  • Account switching
+  • Token validation results
+  • Delivery attempts
+  • Stock changes
 
 What's improved:
-• Logs are filtered to remove noisy gateway/DNS messages.
-• Status panel updates every 30 seconds.
-• All commands remain intact.`;
+• Auto‑refresh is now more reliable – it will always have a valid account to fall back to.
+• Logs are more informative, helping you debug issues faster.`;
 
 const MEMBER_ROLE_ID = "1492798151516491816";
 const SUPPORTER_ROLE_ID = "1529393418063581284";
@@ -121,8 +125,8 @@ let statusPanelMessage = null;
 
 // --- Stats tracking ---
 let totalTokensGenerated = 0;
-const userTokenCounts = new Map(); // userId -> count
-const userHistory = new Map(); // userId -> array of {id, timestamp}
+const userTokenCounts = new Map();
+const userHistory = new Map();
 const lotteryPool = new Set();
 
 // --- Log queue to Discord ---
@@ -137,6 +141,7 @@ function shouldLogMessage(msg) {
     if (lower.includes('[debug]')) return false;
     if (lower.includes('heartbeat')) return false;
     if (lower.includes('ready')) return false;
+    // Keep all important logs: refresh, delivery, validation, stock, account, error, warn
     return true;
 }
 
@@ -325,6 +330,7 @@ async function refreshTokenOnly(refreshTk, retries = 3) {
     let lastResponse = null;
     for (let attempt = 1; attempt <= retries; attempt++) {
         try {
+            console.log(`[REFRESH] Attempt ${attempt} to refresh token...`);
             const refreshUrl = `${ACTIVE_API_URL}/v2/account/session/refresh`;
             const controller = new AbortController();
             const timeoutId = setTimeout(() => controller.abort(), 15000);
@@ -364,10 +370,11 @@ async function refreshTokenOnly(refreshTk, retries = 3) {
                 throw new Error('New token JWT is invalid or expired');
             }
 
+            console.log(`[REFRESH] Successfully refreshed token. New expiry: ${new Date(newExpiry).toUTCString()}`);
             return { success: true, bearer: newBearer, refresh: newRefresh, expiresAt: newExpiry };
         } catch (err) {
             lastError = err;
-            console.error(`[REFRESH] Attempt ${attempt} failed:`, err.message);
+            console.error(`[REFRESH] Attempt ${attempt} failed: ${err.message}`);
             if (attempt < retries) {
                 const delay = Math.pow(2, attempt - 1) * 1000;
                 console.log(`[REFRESH] Retrying in ${delay/1000}s...`);
@@ -375,6 +382,7 @@ async function refreshTokenOnly(refreshTk, retries = 3) {
             }
         }
     }
+    console.error(`[REFRESH] All ${retries} attempts failed. Last error: ${lastError?.message || 'Unknown'}`);
     return { success: false, error: lastError ? lastError.message : 'Unknown error', response: lastResponse };
 }
 
@@ -383,6 +391,7 @@ async function doRefresh(tokens, retries = 3) {
     let lastError = null;
     for (let attempt = 1; attempt <= retries; attempt++) {
         try {
+            console.log(`[DO_REFRESH] Attempt ${attempt}...`);
             const refreshUrl = `${ACTIVE_API_URL}/v2/account/session/refresh`;
             const controller = new AbortController();
             const timeoutId = setTimeout(() => controller.abort(), 15000);
@@ -427,14 +436,15 @@ async function doRefresh(tokens, retries = 3) {
             return tokens;
         } catch (err) {
             lastError = err;
-            console.error(`[REFRESH] Attempt ${attempt} failed:`, err.message);
+            console.error(`[DO_REFRESH] Attempt ${attempt} failed: ${err.message}`);
             if (attempt < retries) {
                 const delay = Math.pow(2, attempt - 1) * 1000;
-                console.log(`[REFRESH] Retrying in ${delay/1000}s...`);
+                console.log(`[DO_REFRESH] Retrying in ${delay/1000}s...`);
                 await new Promise(r => setTimeout(r, delay));
             }
         }
     }
+    console.error(`[DO_REFRESH] All attempts failed. Last error: ${lastError?.message || 'Unknown'}`);
     throw lastError || new Error('Refresh failed after retries');
 }
 
@@ -508,7 +518,7 @@ async function refreshToken(refreshTk) {
                 console.log(`[SUCCESS] [EAM.LOL] Switched to ${nextAcc.label} - new token ready`);
                 return { success: true, bearer: nextAcc.token, refresh: nextAcc.refresh_token, expiresAt: newExpiry };
             }
-            console.log('[ERROR] [EAM.LOL] All accounts exhausted');
+            console.error('[ERROR] [EAM.LOL] All accounts exhausted');
         }
         return { success: false, error: err.message };
     }
@@ -524,6 +534,21 @@ function updateAccountTokens(oldRefresh, newBearer, newRefresh) {
         }
     }
     accounts.push({ token: newBearer, refresh_token: newRefresh, label: `account_${accounts.length + 1} (refreshed)` });
+    console.log(`[INFO] Added new account: account_${accounts.length}`);
+}
+
+// --- NEW: add or update account helper for /set-refresh ---
+function addOrUpdateAccount(bearer, refresh) {
+    const existing = accounts.find(a => a.refresh_token === refresh);
+    if (existing) {
+        existing.token = bearer;
+        existing.refresh_token = refresh;
+        console.log(`[INFO] Updated existing account: ${existing.label}`);
+        return;
+    }
+    const label = `account_${accounts.length + 1}`;
+    accounts.push({ token: bearer, refresh_token: refresh, label });
+    console.log(`[INFO] Added new account: ${label}`);
 }
 
 function giveNewTokenFromAccounts() {
@@ -589,6 +614,7 @@ function giveNewTokenFromAccounts() {
 
 // --- REFRESHER (called every 2:30) ---
 async function refreshTokenInStock() {
+    console.log('[REFRESHER] Starting refresh cycle...');
     if (tokenStock.length === 0) {
         console.log('[INFO] [EAM.LOL] Stock empty - loading from accounts...');
         giveNewTokenFromAccounts();
@@ -607,6 +633,7 @@ async function refreshTokenInStock() {
     }
 
     console.log('[REFRESH] [EAM.LOL] 2:30 interval reached - Refreshing token...');
+    console.log(`[REFRESH] Current token expires at ${new Date(tokenObj.expiresAt).toUTCString()}`);
     try {
         const result = await refreshToken(tokenObj.refresh);
         if (result.success) {
@@ -682,6 +709,7 @@ async function deliverTokenToUser(user) {
         }
         tokenObj = tokenStock[0];
         const currentTtl = tokenObj.expiresAt ? Math.floor((tokenObj.expiresAt - Date.now()) / 1000) : 0;
+        console.log(`[DELIVERY] Current TTL: ${currentTtl}s`);
         if (currentTtl > MIN_TTL) {
             console.log(`[DELIVERY] Current token has ${currentTtl}s left (>${MIN_TTL}s), using it.`);
             const validation = validateTokenJWT(tokenObj.bearer, tokenObj.refresh);
@@ -811,6 +839,7 @@ async function deliverTokenToUser(user) {
     try {
         await user.send({ embeds: [embed], files: [attachment, textAttachment] });
         console.log(`[DELIVERY] ✅ Valid token sent to ${user.tag}`);
+        // Update stats (optional: track deliveries)
         return true;
     } catch (err) {
         console.error(`[ERROR] Could not DM subscribed user ${user.id}:`, err);
@@ -829,12 +858,14 @@ async function subscribeAllMembers(guild) {
             count++;
         }
     }
+    console.log(`[SUBSCRIBE] Subscribed ${count} members.`);
     return count;
 }
 
 async function unsubscribeAllMembers() {
     const count = subscribedUsers.size;
     subscribedUsers.clear();
+    console.log(`[UNSUBSCRIBE] Unsubscribed ${count} members.`);
     return count;
 }
 
@@ -849,6 +880,7 @@ async function sendTokenToAllSubscribers() {
             await new Promise(r => setTimeout(r, 200));
         }
     }
+    console.log(`[DELIVERY] Sent to ${successCount} subscribers, ${failCount} failed.`);
     return { successCount, failCount };
 }
 
@@ -907,6 +939,7 @@ function removeTokenById(id) {
     const idx = tokenStock.findIndex(t => t.id === id);
     if (idx === -1) return { success: false, message: 'No token found with that ID.' };
     tokenStock.splice(idx, 1);
+    console.log(`[STOCK] Removed token ${id}. Remaining: ${tokenStock.length}`);
     return { success: true, message: `Token \`${id}\` removed. Remaining: ${tokenStock.length}` };
 }
 
@@ -930,11 +963,13 @@ async function findWorkingApiUrl() {
             if (response.status < 500) {
                 ACTIVE_API_URL = url;
                 apiWorking = true;
+                console.log(`[API] Working API URL: ${url}`);
                 return url;
             }
         } catch (e) {}
     }
     apiWorking = false;
+    console.warn('[API] No working API URL found, using default.');
     return API_URLS[0];
 }
 
@@ -1017,6 +1052,7 @@ async function processTokenGeneration(interaction, tierName) {
                 const remaining = cooldownEnd - Date.now();
                 const minutes = Math.floor(remaining / 60000);
                 const seconds = Math.floor((remaining % 60000) / 1000);
+                console.log(`[COOLDOWN] ${interaction.user.tag} is on cooldown (${minutes}m ${seconds}s)`);
                 return interaction.editReply({ content: `Please wait ${minutes}m ${seconds}s.`, components: [] });
             }
         }
@@ -1024,18 +1060,22 @@ async function processTokenGeneration(interaction, tierName) {
     if (activeGenerations.has(userId)) {
         const gen = activeGenerations.get(userId);
         if (Date.now() - gen.startTime < 60000) {
+            console.log(`[GENERATION] ${interaction.user.tag} already has an active generation.`);
             return interaction.editReply({ content: 'Generation already in progress.', components: [] });
         } else activeGenerations.delete(userId);
     }
     const genContext = { startTime: Date.now(), interaction, cancelFlag: false };
     activeGenerations.set(userId, genContext);
+    console.log(`[GENERATION] ${interaction.user.tag} started a token generation.`);
 
     await updateGenerationEmbed(interaction, 1, 'Verifying DM connection...');
     try {
         const testDM = await interaction.user.send({ content: 'EAM.LOL — DM verified.' });
         await testDM.delete();
+        console.log(`[GENERATION] DM verified for ${interaction.user.tag}.`);
     } catch (dmError) {
         activeGenerations.delete(userId);
+        console.warn(`[GENERATION] DM failed for ${interaction.user.tag}: ${dmError.message}`);
         return interaction.editReply({ content: 'DM Error: Please enable DMs.', components: [] });
     }
 
@@ -1043,6 +1083,7 @@ async function processTokenGeneration(interaction, tierName) {
     if (tokenStock.length === 0) giveNewTokenFromAccounts();
     if (tokenStock.length === 0) {
         activeGenerations.delete(userId);
+        console.error(`[GENERATION] No tokens available for ${interaction.user.tag}.`);
         return interaction.editReply({ content: 'No tokens available.', components: [] });
     }
     isGenerating = true;
@@ -1055,12 +1096,14 @@ async function processTokenGeneration(interaction, tierName) {
     if (!tokenObj || Date.now() >= tokenObj.expiresAt) {
         isGenerating = false;
         activeGenerations.delete(userId);
+        console.error(`[GENERATION] Token expired for ${interaction.user.tag}.`);
         return interaction.editReply({ content: 'Token expired, no replacement.', components: [] });
     }
     const ttl = Math.floor((tokenObj.expiresAt - Date.now()) / 1000);
     if (ttl <= 60) {
         isGenerating = false;
         activeGenerations.delete(userId);
+        console.warn(`[GENERATION] Token TTL too low (${ttl}s) for ${interaction.user.tag}.`);
         return interaction.editReply({ content: 'Token expires too soon, try again.', components: [] });
     }
 
@@ -1068,6 +1111,7 @@ async function processTokenGeneration(interaction, tierName) {
     if (!validation.valid) {
         isGenerating = false;
         activeGenerations.delete(userId);
+        console.error(`[GENERATION] JWT validation failed for ${interaction.user.tag}.`);
         return interaction.editReply({ content: `Token JWT validation failed.`, components: [] });
     }
 
@@ -1134,6 +1178,7 @@ async function processTokenGeneration(interaction, tierName) {
         await interaction.user.send({ embeds: [successEmbed], files: [attachment, textAttachment] });
         isGenerating = false;
         activeGenerations.delete(userId);
+        console.log(`[GENERATION] Token sent to ${interaction.user.tag} (ID: ${genId})`);
         return interaction.editReply({
             content: `Token sent to DMs | ID: \`${genId}\` | ${expiryText}`,
             components: []
@@ -1750,7 +1795,7 @@ client.on('interactionCreate', async interaction => {
             // --- ALL OTHER COMMANDS ---
             await interaction.deferReply({ flags: 64 });
 
-            // --- SET REFRESH (fixed) ---
+            // ========== FIXED SET-REFRESH ==========
             if (commandName === 'set-refresh') {
                 if (!hasAdminAccess(interaction)) return interaction.editReply({ content: 'Access Denied.', flags: 64 });
                 const newRefresh = options.getString('refresh');
@@ -1780,6 +1825,7 @@ client.on('interactionCreate', async interaction => {
                     return interaction.editReply({ embeds: [embed] });
                 }
 
+                // --- UPDATE EVERYTHING ---
                 DEFAULT_TOKEN.bearer = test.bearer;
                 DEFAULT_TOKEN.refresh_token = newRefresh;
 
@@ -1800,12 +1846,16 @@ client.on('interactionCreate', async interaction => {
                 }
                 lastRefreshExpiry = test.expiresAt;
                 consecutiveFails = 0;
+
+                // --- CRITICAL: add/update the accounts array ---
+                addOrUpdateAccount(test.bearer, newRefresh);
+
                 await updateStatusPanel();
                 await updateSubscriptionPanel();
 
                 const embed = new EmbedBuilder()
                     .setTitle('✅ Refresh & Bearer Updated')
-                    .setDescription('Both tokens are valid and synced to stock.')
+                    .setDescription('Both tokens are valid, synced to stock, and added to fallback accounts.')
                     .setColor(0x2ECC71)
                     .addFields(
                         { name: 'New Bearer', value: `\`${test.bearer.slice(0, 30)}...\``, inline: false },
@@ -1815,6 +1865,7 @@ client.on('interactionCreate', async interaction => {
                     .setTimestamp();
                 return interaction.editReply({ embeds: [embed] });
             }
+            // ========================================
 
             // --- TEST REFRESH ---
             if (commandName === 'test-refresh') {
