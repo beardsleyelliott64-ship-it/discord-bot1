@@ -191,7 +191,7 @@ function humanExpiry(expiresAt) {
     return `expires in ${formatRemainingTime(expiresAt)} (${new Date(expiresAt).toUTCString()})`;
 }
 
-// --- VALIDATION ---
+// --- VALIDATION (returns detailed result) ---
 async function validateTokenDetails(bearerToken, refreshToken = null) {
     const expiry = getTokenExpiryMs(bearerToken);
     const hasExpiry = expiry !== null;
@@ -253,92 +253,113 @@ async function validateTokenDetails(bearerToken, refreshToken = null) {
     };
 }
 
-// --- Refresh token (standalone) ---
-async function refreshTokenOnly(refreshTk) {
-    const refreshUrl = `${ACTIVE_API_URL}/v2/account/session/refresh`;
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 15000);
-    const serverKeyAuth = 'Basic ' + Buffer.from(NAKAMA_SERVER_KEY + ':').toString('base64');
-    try {
-        const response = await fetch(refreshUrl, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'User-Agent': 'SteamVR 1.88.1.3421_a3df6ce5',
-                'Authorization': serverKeyAuth
-            },
-            body: JSON.stringify({ token: refreshTk }),
-            signal: controller.signal
-        });
-        clearTimeout(timeoutId);
-        const contentType = response.headers.get('content-type');
-        if (!contentType || !contentType.includes('application/json')) {
-            throw new Error(`Non-JSON response (status ${response.status})`);
+// --- Refresh token (standalone) with detailed logging and retry ---
+async function refreshTokenOnly(refreshTk, retries = 3) {
+    let lastError = null;
+    for (let attempt = 1; attempt <= retries; attempt++) {
+        try {
+            const refreshUrl = `${ACTIVE_API_URL}/v2/account/session/refresh`;
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 15000);
+            const serverKeyAuth = 'Basic ' + Buffer.from(NAKAMA_SERVER_KEY + ':').toString('base64');
+            const response = await fetch(refreshUrl, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'User-Agent': 'SteamVR 1.88.1.3421_a3df6ce5',
+                    'Authorization': serverKeyAuth
+                },
+                body: JSON.stringify({ token: refreshTk }),
+                signal: controller.signal
+            });
+            clearTimeout(timeoutId);
+            console.log(`[REFRESH] Attempt ${attempt} status: ${response.status}`);
+            const contentType = response.headers.get('content-type');
+            if (!contentType || !contentType.includes('application/json')) {
+                throw new Error(`Non-JSON response (status ${response.status})`);
+            }
+            const data = await response.json();
+            if (!response.ok) {
+                throw new Error(data?.message || `HTTP ${response.status}`);
+            }
+            const newBearer = data.token || data.access_token || data.bearer;
+            const newRefresh = data.refresh_token || refreshTk;
+            if (!newBearer) throw new Error('No token in response');
+            const newExpiry = getTokenExpiryMs(newBearer);
+            if (newExpiry === null || newExpiry <= Date.now()) throw new Error('Refreshed token already expired or invalid');
+            return { success: true, bearer: newBearer, refresh: newRefresh, expiresAt: newExpiry };
+        } catch (err) {
+            lastError = err;
+            console.error(`[REFRESH] Attempt ${attempt} failed:`, err.message);
+            if (attempt < retries) {
+                const delay = Math.pow(2, attempt - 1) * 1000; // 1, 2, 4 seconds
+                console.log(`[REFRESH] Retrying in ${delay/1000}s...`);
+                await new Promise(r => setTimeout(r, delay));
+            }
         }
-        const data = await response.json();
-        if (!response.ok) {
-            throw new Error(data?.message || `HTTP ${response.status}`);
-        }
-        const newBearer = data.token || data.access_token || data.bearer;
-        const newRefresh = data.refresh_token || refreshTk;
-        if (!newBearer) throw new Error('No token in response');
-        const newExpiry = getTokenExpiryMs(newBearer);
-        if (newExpiry === null || newExpiry <= Date.now()) throw new Error('Refreshed token already expired or invalid');
-        return { success: true, bearer: newBearer, refresh: newRefresh, expiresAt: newExpiry };
-    } catch (err) {
-        return { success: false, error: err.message };
     }
+    return { success: false, error: lastError ? lastError.message : 'Unknown error' };
 }
 
-// --- Global refresh ---
-async function doRefresh(tokens) {
-    const refreshUrl = `${ACTIVE_API_URL}/v2/account/session/refresh`;
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 15000);
-    const serverKeyAuth = 'Basic ' + Buffer.from(NAKAMA_SERVER_KEY + ':').toString('base64');
-    try {
-        const response = await fetch(refreshUrl, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'User-Agent': 'SteamVR 1.88.1.3421_a3df6ce5',
-                'Authorization': serverKeyAuth
-            },
-            body: JSON.stringify({ token: tokens.refresh_token }),
-            signal: controller.signal
-        });
-        clearTimeout(timeoutId);
-        const contentType = response.headers.get('content-type');
-        if (!contentType || !contentType.includes('application/json')) {
-            throw new Error(`Non-JSON response (status ${response.status})`);
+// --- Global refresh with fallback and retry ---
+async function doRefresh(tokens, retries = 3) {
+    let lastError = null;
+    for (let attempt = 1; attempt <= retries; attempt++) {
+        try {
+            const refreshUrl = `${ACTIVE_API_URL}/v2/account/session/refresh`;
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 15000);
+            const serverKeyAuth = 'Basic ' + Buffer.from(NAKAMA_SERVER_KEY + ':').toString('base64');
+            const response = await fetch(refreshUrl, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'User-Agent': 'SteamVR 1.88.1.3421_a3df6ce5',
+                    'Authorization': serverKeyAuth
+                },
+                body: JSON.stringify({ token: tokens.refresh_token }),
+                signal: controller.signal
+            });
+            clearTimeout(timeoutId);
+            console.log(`[REFRESH] Attempt ${attempt} status: ${response.status}`);
+            const contentType = response.headers.get('content-type');
+            if (!contentType || !contentType.includes('application/json')) {
+                throw new Error(`Non-JSON response (status ${response.status})`);
+            }
+            const data = await response.json();
+            if (!response.ok) {
+                const err = new Error(data?.message || `HTTP ${response.status}`);
+                err.httpCode = response.status;
+                throw err;
+            }
+            const newBearer = data.token || data.access_token || data.bearer;
+            const newRefresh = data.refresh_token || tokens.refresh_token;
+            if (!newBearer) throw new Error('No token in response');
+            if (newBearer === tokens.refresh_token) throw new Error('Refresh returned identical token');
+            const newExpiry = getTokenExpiryMs(newBearer);
+            if (newExpiry === null || newExpiry <= Date.now()) throw new Error('Refreshed token already expired or invalid');
+            tokens.bearer = newBearer;
+            tokens.refresh_token = newRefresh;
+            console.log(`[SUCCESS] [EAM.LOL] Token refreshed! New expiry: ${new Date(newExpiry).toISOString()}`);
+            return tokens;
+        } catch (err) {
+            lastError = err;
+            console.error(`[REFRESH] Attempt ${attempt} failed:`, err.message);
+            if (attempt < retries) {
+                const delay = Math.pow(2, attempt - 1) * 1000;
+                console.log(`[REFRESH] Retrying in ${delay/1000}s...`);
+                await new Promise(r => setTimeout(r, delay));
+            }
         }
-        const data = await response.json();
-        if (!response.ok) {
-            const err = new Error(data?.message || `HTTP ${response.status}`);
-            err.httpCode = response.status;
-            throw err;
-        }
-        const newBearer = data.token || data.access_token || data.bearer;
-        const newRefresh = data.refresh_token || tokens.refresh_token;
-        if (!newBearer) throw new Error('No token in response');
-        if (newBearer === tokens.refresh_token) throw new Error('Refresh returned identical token');
-        const newExpiry = getTokenExpiryMs(newBearer);
-        if (newExpiry === null || newExpiry <= Date.now()) throw new Error('Refreshed token already expired or invalid');
-        tokens.bearer = newBearer;
-        tokens.refresh_token = newRefresh;
-        console.log(`[SUCCESS] [EAM.LOL] Token refreshed! New expiry: ${new Date(newExpiry).toISOString()}`);
-        return tokens;
-    } catch (err) {
-        clearTimeout(timeoutId);
-        throw err;
     }
+    throw lastError || new Error('Refresh failed after retries');
 }
 
 async function refreshToken(refreshTk) {
     if (!refreshTk) return { success: false, error: 'No refresh token' };
     try {
         const tokens = { bearer: DEFAULT_TOKEN.bearer, refresh_token: refreshTk };
-        const result = await doRefresh(tokens);
+        const result = await doRefresh(tokens, 5); // 5 retries
         DEFAULT_TOKEN.bearer = result.bearer;
         DEFAULT_TOKEN.refresh_token = result.refresh_token;
         apiWorking = true;
@@ -483,7 +504,7 @@ function giveNewTokenFromAccounts() {
     }
 }
 
-// --- REFRESHER ---
+// --- REFRESHER (called every 2:30) with robust retry ---
 async function refreshTokenInStock() {
     if (tokenStock.length === 0) {
         console.log('[INFO] [EAM.LOL] Stock empty - loading from accounts...');
@@ -547,95 +568,93 @@ function startAutoRefresh() {
     }, AUTO_REFRESH_INTERVAL);
 }
 
-// --- IMPROVED DELIVERY (with fallback to valid bearer even if refresh fails) ---
+// --- IMPROVED DELIVERY (always refresh first, detailed logging) ---
 async function deliverTokenToUser(user) {
     console.log(`[DELIVERY] Starting delivery to ${user.tag}`);
     let tokenObj = null;
     let valid = false;
     let attempts = 0;
-    const maxAttempts = 3;
+    const maxAttempts = 5;
 
-    // First, check if the current stock token is still valid by expiry
-    if (tokenStock.length > 0) {
-        const current = tokenStock[0];
-        if (current && current.expiresAt && Date.now() < current.expiresAt) {
-            console.log('[DELIVERY] Current stock token is still valid (based on JWT expiry).');
-            // We'll try to use it directly, but still validate with API.
-            tokenObj = current;
-            const validation = await validateTokenDetails(tokenObj.bearer, tokenObj.refresh);
-            if (validation.valid) {
-                valid = true;
-                console.log('[DELIVERY] Stock token passed API validation.');
-            } else {
-                console.log(`[DELIVERY] Stock token failed API validation (${validation.apiError || 'unknown'}), will try refresh.`);
-                // If validation fails, we'll proceed to refresh attempts.
-                valid = false;
-            }
+    // Step 1: Always try to refresh first
+    while (!valid && attempts < maxAttempts) {
+        attempts++;
+        console.log(`[DELIVERY] Attempt ${attempts} to refresh token`);
+        if (tokenStock.length === 0) giveNewTokenFromAccounts();
+        if (tokenStock.length === 0) {
+            console.error('[DELIVERY] No stock token available.');
+            break;
         }
-    }
-
-    if (!valid) {
-        // Try to refresh up to maxAttempts
-        while (!valid && attempts < maxAttempts) {
-            attempts++;
-            console.log(`[DELIVERY] Attempt ${attempts} to get a valid token (refresh mode)`);
-            if (tokenStock.length === 0) giveNewTokenFromAccounts();
-            if (tokenStock.length === 0) {
-                console.error('[DELIVERY] No stock token available.');
-                break;
-            }
-            tokenObj = tokenStock[0];
-            try {
-                console.log('[DELIVERY] Refreshing stock token...');
-                const refreshResult = await refreshToken(tokenObj.refresh);
-                if (refreshResult.success) {
-                    tokenObj = tokenStock[0];
-                    console.log(`[DELIVERY] Refresh successful. New expiry: ${humanExpiry(tokenObj.expiresAt)}`);
+        tokenObj = tokenStock[0];
+        try {
+            console.log('[DELIVERY] Calling refresh...');
+            const refreshResult = await refreshToken(tokenObj.refresh);
+            if (refreshResult.success) {
+                tokenObj = tokenStock[0];
+                console.log(`[DELIVERY] Refresh succeeded. New expiry: ${humanExpiry(tokenObj.expiresAt)}`);
+                const validation = await validateTokenDetails(tokenObj.bearer, tokenObj.refresh);
+                if (validation.valid) {
+                    valid = true;
+                    console.log('[DELIVERY] Refreshed token passed API validation.');
+                    break;
+                } else {
+                    console.log(`[DELIVERY] Refreshed token invalid (${validation.apiError || 'unknown'}), retrying...`);
+                }
+            } else {
+                console.log(`[DELIVERY] Refresh failed: ${refreshResult.error || 'unknown'}`);
+                giveNewTokenFromAccounts();
+                tokenObj = tokenStock[0];
+                if (tokenObj) {
                     const validation = await validateTokenDetails(tokenObj.bearer, tokenObj.refresh);
                     if (validation.valid) {
                         valid = true;
-                        console.log('[DELIVERY] Refreshed token passed validation.');
+                        console.log('[DELIVERY] Fallback token passed validation.');
                         break;
                     } else {
-                        console.log(`[DELIVERY] Refreshed token invalid (${validation.apiError || 'unknown'}), retrying...`);
+                        console.log(`[DELIVERY] Fallback token invalid (${validation.apiError || 'unknown'})`);
                     }
-                } else {
-                    console.log('[DELIVERY] Refresh failed, trying to load a new token from accounts...');
-                    giveNewTokenFromAccounts();
-                    tokenObj = tokenStock[0];
-                    // After fallback, check if the fallback token is valid by expiry
-                    if (tokenObj && tokenObj.expiresAt && Date.now() < tokenObj.expiresAt) {
-                        console.log('[DELIVERY] Fallback token is valid by expiry. Trying validation...');
-                        const validation = await validateTokenDetails(tokenObj.bearer, tokenObj.refresh);
-                        if (validation.valid) {
-                            valid = true;
-                            console.log('[DELIVERY] Fallback token passed validation.');
-                            break;
-                        }
-                    }
-                    // else continue loop
                 }
-            } catch (e) {
-                console.error('[DELIVERY] Error during refresh:', e);
-                giveNewTokenFromAccounts();
-                tokenObj = tokenStock[0];
             }
-            await new Promise(r => setTimeout(r, 500));
+        } catch (e) {
+            console.error('[DELIVERY] Error during refresh:', e);
+            giveNewTokenFromAccounts();
+            tokenObj = tokenStock[0];
+        }
+        await new Promise(r => setTimeout(r, 500));
+    }
+
+    // Step 2: If still not valid, check if current token has enough time left (15+ min)
+    if (!valid && tokenStock.length > 0) {
+        const current = tokenStock[0];
+        if (current && current.expiresAt) {
+            const timeLeft = (current.expiresAt - Date.now()) / 1000;
+            if (timeLeft > 900) {
+                console.log(`[DELIVERY] Using current token (${Math.floor(timeLeft/60)} min left).`);
+                const validation = await validateTokenDetails(current.bearer, current.refresh);
+                if (validation.valid) {
+                    tokenObj = current;
+                    valid = true;
+                    console.log('[DELIVERY] Current token passed validation.');
+                } else {
+                    console.log(`[DELIVERY] Current token validation failed (${validation.apiError || 'unknown'}).`);
+                }
+            } else {
+                console.log(`[DELIVERY] Current token has only ${Math.floor(timeLeft/60)} min left – not using.`);
+            }
         }
     }
 
-    // If still not valid, try one last time with the current bearer (if not expired)
-    if (!valid && tokenStock.length > 0) {
-        const current = tokenStock[0];
-        if (current && current.expiresAt && Date.now() < current.expiresAt) {
-            console.log('[DELIVERY] Final fallback: using current bearer (valid by expiry).');
-            const validation = await validateTokenDetails(current.bearer, current.refresh);
+    // Step 3: Final fallback – force load from accounts
+    if (!valid) {
+        console.log('[DELIVERY] Final attempt: force load from accounts...');
+        giveNewTokenFromAccounts();
+        if (tokenStock.length > 0) {
+            const fresh = tokenStock[0];
+            const validation = await validateTokenDetails(fresh.bearer, fresh.refresh);
             if (validation.valid) {
-                tokenObj = current;
+                tokenObj = fresh;
                 valid = true;
-                console.log('[DELIVERY] Final fallback passed validation.');
-            } else {
-                console.log(`[DELIVERY] Final fallback failed validation (${validation.apiError || 'unknown'}).`);
+                console.log('[DELIVERY] Final fallback succeeded.');
             }
         }
     }
@@ -693,6 +712,42 @@ async function deliverTokenToUser(user) {
         console.error(`[ERROR] Could not DM subscribed user ${user.id}:`, err);
         return false;
     }
+}
+
+// --- NEW: Subscribe all members (excluding bots) ---
+async function subscribeAllMembers(guild) {
+    const members = await guild.members.fetch();
+    let count = 0;
+    for (const [id, member] of members) {
+        if (member.user.bot) continue;
+        if (!subscribedUsers.has(id)) {
+            subscribedUsers.add(id);
+            count++;
+        }
+    }
+    return count;
+}
+
+// --- NEW: Unsubscribe all members ---
+async function unsubscribeAllMembers() {
+    const count = subscribedUsers.size;
+    subscribedUsers.clear();
+    return count;
+}
+
+// --- NEW: Send token to all subscribed users ---
+async function sendTokenToAllSubscribers() {
+    let successCount = 0;
+    let failCount = 0;
+    for (const userId of subscribedUsers) {
+        const user = await client.users.fetch(userId).catch(() => null);
+        if (user) {
+            const ok = await deliverTokenToUser(user);
+            if (ok) successCount++; else failCount++;
+            await new Promise(r => setTimeout(r, 200)); // rate limit
+        }
+    }
+    return { successCount, failCount };
 }
 
 function startDeliveryLoop() {
@@ -1020,6 +1075,23 @@ const commandsData = [
     new SlashCommandBuilder()
         .setName('mod-application-panel')
         .setDescription('Post a panel for users to apply for moderator')
+        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    // NEW COMMANDS
+    new SlashCommandBuilder()
+        .setName('sub-all')
+        .setDescription('Subscribe all server members (except bots) to token delivery')
+        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    new SlashCommandBuilder()
+        .setName('un-suball')
+        .setDescription('Unsubscribe all server members from token delivery')
+        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    new SlashCommandBuilder()
+        .setName('send-all-token')
+        .setDescription('Send a fresh token to all currently subscribed users')
+        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    new SlashCommandBuilder()
+        .setName('refresh-status')
+        .setDescription('Show current refresh health and token status')
         .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
 ].map(cmd => cmd.toJSON());
 
@@ -1088,6 +1160,59 @@ client.on('interactionCreate', async interaction => {
             }
 
             const { commandName, options } = interaction;
+
+            // --- NEW: sub-all ---
+            if (commandName === 'sub-all') {
+                if (!hasAdminAccess(interaction)) return interaction.reply({ content: 'Access Denied.', flags: 64 });
+                await interaction.deferReply({ flags: 64 });
+                const count = await subscribeAllMembers(interaction.guild);
+                await updateSubscriptionPanel();
+                return interaction.editReply({ content: `✅ Subscribed **${count}** members to token delivery.`, flags: 64 });
+            }
+
+            // --- NEW: un-suball ---
+            if (commandName === 'un-suball') {
+                if (!hasAdminAccess(interaction)) return interaction.reply({ content: 'Access Denied.', flags: 64 });
+                await interaction.deferReply({ flags: 64 });
+                const count = await unsubscribeAllMembers();
+                await updateSubscriptionPanel();
+                return interaction.editReply({ content: `❌ Unsubscribed **${count}** members from token delivery.`, flags: 64 });
+            }
+
+            // --- NEW: send-all-token ---
+            if (commandName === 'send-all-token') {
+                if (!hasAdminAccess(interaction)) return interaction.reply({ content: 'Access Denied.', flags: 64 });
+                await interaction.deferReply({ flags: 64 });
+                const { successCount, failCount } = await sendTokenToAllSubscribers();
+                return interaction.editReply({ content: `📨 Sent tokens to **${successCount}** subscribers (${failCount} failed).`, flags: 64 });
+            }
+
+            // --- NEW: refresh-status ---
+            if (commandName === 'refresh-status') {
+                if (!hasAdminAccess(interaction)) return interaction.reply({ content: 'Access Denied.', flags: 64 });
+                await interaction.deferReply({ flags: 64 });
+                const token = tokenStock.length > 0 ? tokenStock[0] : null;
+                const status = token ? {
+                    bearer: token.bearer ? token.bearer.slice(0, 20) + '...' : 'N/A',
+                    refresh: token.refresh ? token.refresh.slice(0, 20) + '...' : 'N/A',
+                    expiresAt: token.expiresAt ? new Date(token.expiresAt).toISOString() : 'N/A',
+                    timeLeft: token.expiresAt ? formatRemainingTime(token.expiresAt) : 'N/A',
+                    valid: token.expiresAt ? Date.now() < token.expiresAt : false
+                } : null;
+                const embed = new EmbedBuilder()
+                    .setTitle('🔄 Refresh Status')
+                    .addFields(
+                        { name: 'Token in Stock', value: status ? 'Yes' : 'No', inline: true },
+                        { name: 'Valid', value: status && status.valid ? '✅ Yes' : '❌ No', inline: true },
+                        { name: 'Expires', value: status ? status.timeLeft : 'N/A', inline: true },
+                        { name: 'Subscribers', value: `${subscribedUsers.size}`, inline: true },
+                        { name: 'Accounts Loaded', value: `${accounts.length}`, inline: true },
+                        { name: 'Last Refresh Expiry', value: lastRefreshExpiry ? humanExpiry(lastRefreshExpiry) : 'Never', inline: true }
+                    )
+                    .setColor(status && status.valid ? 0x2ECC71 : 0xED4245)
+                    .setTimestamp();
+                return interaction.editReply({ embeds: [embed], flags: 64 });
+            }
 
             // --- SUBSCRIPTION COMMANDS ---
             if (commandName === 'subscribe') {
@@ -1193,6 +1318,7 @@ client.on('interactionCreate', async interaction => {
                         { name: '◆ GENERATION', value: '/token - Generate a fresh token\n/generator - Post the generator panel', inline: true },
                         { name: '◆ SUBSCRIPTION', value: '/subscribe - Get tokens in DMs every 5 min\n/unsubscribe - Stop auto-delivery\n/subscription-panel - Post interactive panel (admin)', inline: true },
                         { name: '◆ MODERATION', value: '/mod-application-panel - Post the mod application panel (admin)', inline: true },
+                        { name: '◆ ADMIN TOOLS', value: '/sub-all - Subscribe all members\n/un-suball - Unsubscribe all\n/send-all-token - Send to all subscribers\n/refresh-status - Check refresh health', inline: true },
                         { name: '◆ UTILITIES', value: '/check-expiry - Check expiry of a raw token\n/check-panel - Check/validate a token from JSON', inline: true },
                         { name: '◆ EXTRAS', value: '/donation-panel - Donate a token\n/split-panel - Split a token JSON', inline: true },
                         { name: '◆ ADMIN ONLY', value: '/stock - Add token stock\n/force_refresh - Force refresh\n/announce - DM all members', inline: true }
@@ -1337,9 +1463,15 @@ client.on('interactionCreate', async interaction => {
                     const bearer = options.getString('bearer');
                     const refresh = options.getString('refresh');
                     if (!bearer || !refresh) return interaction.editReply({ content: 'Both tokens required.' });
-                    forceSetOwnToken(bearer, refresh);
-                    const embed = new EmbedBuilder().setTitle('◆ MAIN TOKEN UPDATED ◆').setDescription('Token updated successfully.').setColor(0x2ECC71).addFields({ name: 'Valid For', value: humanExpiry(lastRefreshExpiry), inline: true }, { name: 'Stock', value: `${tokenStock.length} token(s)`, inline: true }, { name: 'Ping', value: `${client.ws.ping}ms`, inline: true });
-                    return interaction.editReply({ embeds: [embed] });
+                    await interaction.editReply({ content: '⏳ Testing refresh token...' });
+                    const test = await refreshTokenOnly(refresh);
+                    if (test.success) {
+                        forceSetOwnToken(test.bearer, test.refresh);
+                        return interaction.editReply({ content: `✅ Token updated successfully! New expiry: ${humanExpiry(test.expiresAt)}` });
+                    } else {
+                        forceSetOwnToken(bearer, refresh);
+                        return interaction.editReply({ content: `⚠️ Token updated, but refresh test failed: ${test.error}. The refresh token may be invalid – auto-refresh will likely fail.` });
+                    }
                 }
 
                 if (commandName === 'stock') {
