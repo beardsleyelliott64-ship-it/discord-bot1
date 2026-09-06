@@ -1,6 +1,6 @@
 // ============================================================
-// FILE: index.js – EAM.LOL Token Bot v2.5.4
-// FIXED: Account data parsing – now reads nested `account` object.
+// FILE: index.js – EAM.LOL Token Bot v2.5.5
+// Fixed: API validation now handles nested and flat account data.
 // ============================================================
 
 const {
@@ -42,7 +42,7 @@ const client = new Client({
 });
 
 // --- CONFIGURATION ---
-const VERSION = "2.5.4";
+const VERSION = "2.5.5";
 const UPDATE_LOG_CHANNEL_ID = "1545829503912120431";
 const STATUS_CHANNEL_ID = "1545624109583695933";
 const TOKEN_NUMBER_CHANNEL_ID = "1546151859465756722";
@@ -51,7 +51,7 @@ const LOG_CHANNEL_ID = "1545922334534148196";
 const CHANGELOG = `🔧 Bot Update v${VERSION}
 
 What's fixed:
-• **Validation parsing** – now correctly reads the nested \`account\` object returned by Nakama's /v2/account endpoint.
+• **API validation** – now correctly parses both nested \`account\` objects and flat responses from Nakama.
 • "Empty account data" error is resolved.`;
 
 const MEMBER_ROLE_ID = "1492798151516491816";
@@ -319,7 +319,7 @@ function validateTokenJWT(bearerToken, refreshToken = null) {
     };
 }
 
-// ========== API TOKEN VALIDATION (FIXED: parse nested account) ==========
+// ========== FIXED: API TOKEN VALIDATION ==========
 async function validateTokenDetails(bearer, refreshToken) {
     try {
         const url = `${ACTIVE_API_URL}/v2/account`;
@@ -334,8 +334,9 @@ async function validateTokenDetails(bearer, refreshToken) {
             const body = await response.text();
             if (body && body.startsWith('{')) {
                 const parsed = JSON.parse(body);
-                // The account details are nested under "account" key
-                if (parsed.account && (parsed.account.id || parsed.account.username)) {
+                // Try nested "account" first, then fallback to flat
+                const account = parsed.account || parsed;
+                if (account.id || account.username || account.tid) {
                     return { valid: true, apiError: null };
                 }
                 return { valid: false, apiError: 'Empty account data' };
