@@ -1,7 +1,7 @@
 {
   "name": "discord-bot",
   "version": "2.5.7",
-  "description": "EAM.LOL Token Generator Bot for Animal Company",
+  "description": "EAM.LOL Token Generator Bot",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
@@ -11,7 +11,5 @@
   },
   "engines": {
     "node": ">=18.0.0"
-  },
-  "author": "elliott",
-  "license": "MIT"
+  }
 }
