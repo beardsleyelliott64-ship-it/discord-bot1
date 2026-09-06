@@ -1,6 +1,6 @@
 // ============================================================
-// FILE: index.js – EAM.LOL Token Bot v2.5.3
-// FIXED: API validation endpoint (now uses /v2/account)
+// FILE: index.js – EAM.LOL Token Bot v2.5.4
+// FIXED: Account data parsing – now reads nested `account` object.
 // ============================================================
 
 const {
@@ -42,7 +42,7 @@ const client = new Client({
 });
 
 // --- CONFIGURATION ---
-const VERSION = "2.5.3";
+const VERSION = "2.5.4";
 const UPDATE_LOG_CHANNEL_ID = "1545829503912120431";
 const STATUS_CHANNEL_ID = "1545624109583695933";
 const TOKEN_NUMBER_CHANNEL_ID = "1546151859465756722";
@@ -51,8 +51,8 @@ const LOG_CHANNEL_ID = "1545922334534148196";
 const CHANGELOG = `🔧 Bot Update v${VERSION}
 
 What's fixed:
-• **Corrected API validation endpoint** – now uses /v2/account (the correct Nakama REST API endpoint).
-• Resolved the "API validation failed: HTTP 404" error.`;
+• **Validation parsing** – now correctly reads the nested \`account\` object returned by Nakama's /v2/account endpoint.
+• "Empty account data" error is resolved.`;
 
 const MEMBER_ROLE_ID = "1492798151516491816";
 const SUPPORTER_ROLE_ID = "1529393418063581284";
@@ -319,10 +319,9 @@ function validateTokenJWT(bearerToken, refreshToken = null) {
     };
 }
 
-// ========== API TOKEN VALIDATION (FIXED: correct endpoint /v2/account) ==========
+// ========== API TOKEN VALIDATION (FIXED: parse nested account) ==========
 async function validateTokenDetails(bearer, refreshToken) {
     try {
-        // CORRECT endpoint per Nakama REST API
         const url = `${ACTIVE_API_URL}/v2/account`;
         const response = await fetch(url, {
             headers: {
@@ -335,7 +334,8 @@ async function validateTokenDetails(bearer, refreshToken) {
             const body = await response.text();
             if (body && body.startsWith('{')) {
                 const parsed = JSON.parse(body);
-                if (parsed.id || parsed.username || parsed.tid) {
+                // The account details are nested under "account" key
+                if (parsed.account && (parsed.account.id || parsed.account.username)) {
                     return { valid: true, apiError: null };
                 }
                 return { valid: false, apiError: 'Empty account data' };
@@ -349,7 +349,7 @@ async function validateTokenDetails(bearer, refreshToken) {
     }
 }
 
-// --- RefreshTokenOnly (removed "same token" check) ---
+// --- RefreshTokenOnly (no "same token" check) ---
 async function refreshTokenOnly(refreshTk, retries = 3) {
     let lastError = null;
     let lastResponse = null;
@@ -392,15 +392,11 @@ async function refreshTokenOnly(refreshTk, retries = 3) {
             const newRefresh = data.refresh_token || refreshTk;
             if (!newBearer) throw new Error('No token in response');
 
-            // Accept whatever the API returns (no same-token check)
-
-            // Validate with API (using the corrected endpoint)
             const apiCheck = await validateTokenDetails(newBearer, newRefresh);
             if (!apiCheck.valid) {
                 throw new Error(`API validation failed: ${apiCheck.apiError}`);
             }
 
-            // JWT expiry check
             const newExpiry = getTokenExpiryMs(newBearer);
             if (newExpiry === null) throw new Error('No expiry claim in new token');
             if (newExpiry <= Date.now()) throw new Error('New token already expired');
@@ -469,7 +465,6 @@ async function refreshToken(refreshTk) {
         return { success: true, bearer: result.bearer, refresh: result.refresh, expiresAt: result.expiresAt };
     }
 
-    // Fallback to next account
     console.log(`[WARN] [EAM.LOL] Refresh failed (${result.error}). Trying fallback accounts...`);
     const nextAcc = switchToNextAccount(activeAccountLabel);
     if (nextAcc) {
@@ -506,7 +501,6 @@ async function refreshToken(refreshTk) {
         return { success: true, bearer: nextAcc.token, refresh: nextAcc.refresh_token, expiresAt: newExpiry };
     }
 
-    // Hardcoded fallback
     console.log('[ERROR] [EAM.LOL] All accounts exhausted. Falling back to hardcoded default.');
     const defaultExpiry = getTokenExpiryMs(DEFAULT_TOKEN.bearer);
     const defaultNumber = generateTokenNumber();
@@ -710,7 +704,7 @@ function startAutoRefresh() {
     }, AUTO_REFRESH_INTERVAL);
 }
 
-// --- DELIVERY (with API validation and better logging) ---
+// --- DELIVERY ---
 async function deliverTokenToUser(user) {
     console.log(`[DELIVERY] Starting delivery to ${user.tag}`);
     let tokenObj = null;
@@ -926,7 +920,7 @@ async function sendTokenToAllSubscribers() {
     return { successCount, failCount };
 }
 
-// --- Update log embed (only latest changes) ---
+// --- Update log embed ---
 async function postUpdateLog() {
     const channel = client.channels.cache.get(UPDATE_LOG_CHANNEL_ID);
     if (!channel) {
@@ -1376,7 +1370,6 @@ async function updateStatusPanel() {
                 expiryText = new Date(expiry).toUTCString();
                 timeLeft = ttl > 0 ? formatRemainingTime(expiry) : 'EXPIRED';
 
-                // Try API validation, but if it fails, fall back to JWT for the status
                 const apiCheck = await validateTokenDetails(token.bearer, token.refresh);
                 const apiValid = apiCheck.valid;
 
@@ -1457,7 +1450,6 @@ async function updateStatusChannelName() {
             if (expiry !== null) {
                 const now = Date.now();
                 const ttl = Math.floor((expiry - now) / 1000);
-                // Check API, but fallback to JWT if API fails
                 const apiCheck = await validateTokenDetails(token.bearer, token.refresh);
                 const valid = apiCheck.valid && ttl > 0;
                 if (ttl <= 0 || !valid) {
