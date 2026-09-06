@@ -1,6 +1,6 @@
 // ============================================================
-// FILE: index.js – EAM.LOL Token Bot v2.4.3
-// Live channel name updates + all previous fixes.
+// FILE: index.js – EAM.LOL Token Bot v2.4.4
+// Token numbers + live channel naming
 // ============================================================
 
 const {
@@ -42,7 +42,7 @@ const client = new Client({
 });
 
 // --- CONFIGURATION ---
-const VERSION = "2.4.3";
+const VERSION = "2.4.4";
 const UPDATE_LOG_CHANNEL_ID = "1545829503912120431";
 const STATUS_CHANNEL_ID = "1545624109583695933";
 const LOG_CHANNEL_ID = "1545922334534148196";
@@ -50,16 +50,17 @@ const LOG_CHANNEL_ID = "1545922334534148196";
 const CHANGELOG = `🔧 Bot Update v${VERSION}
 
 What's new:
-• **Live channel name updates** – the status channel name changes based on token health:
-  • 🟢 Active → \`🟢 token-active\`
-  • 🟡 Expiring soon → \`🟡 token-expiring\`
-  • 🔴 Expired → \`🔴 token-expired\`
-  • ⛔ Offline → \`⛔ token-offline\`
-• The channel name updates instantly after a refresh or status change.
+• **Token numbers** – each token in stock gets a random number (1-100).
+• **Live status channel name** – the status channel now shows the token number and status:
+  • 🟢 token-in-bot{number} – active
+  • 🟡 token-in-bot{number} – expiring soon (<5 min)
+  • 🔴 token-in-bot{number} – expired
+  • 🔴 token-in-bot0 – no valid token
+• The number persists across auto-refreshes.
+• Status panel now displays the token number.
 
-What's improved:
-• Easier at-a-glance monitoring – just look at the channel list.
-• Status embed remains for detailed info.`;
+What's fixed:
+• Channel name updates instantly after refresh or status change.`;
 
 const MEMBER_ROLE_ID = "1492798151516491816";
 const SUPPORTER_ROLE_ID = "1529393418063581284";
@@ -126,6 +127,11 @@ let totalTokensGenerated = 0;
 const userTokenCounts = new Map();
 const userHistory = new Map();
 const lotteryPool = new Set();
+
+// --- Token number helper ---
+function generateTokenNumber() {
+    return Math.floor(Math.random() * 100) + 1;
+}
 
 // --- Log queue to Discord ---
 let logQueue = [];
@@ -458,6 +464,8 @@ async function refreshToken(refreshTk) {
         updateAccountTokens(refreshTk, result.bearer, result.refresh_token);
         if (tokenStock.length > 0) {
             const old = tokenStock[0];
+            // Keep the same display number if it exists
+            const displayNumber = old.displayNumber || generateTokenNumber();
             tokenStock[0] = {
                 bearer: result.bearer,
                 refresh: result.refresh_token,
@@ -465,7 +473,8 @@ async function refreshToken(refreshTk) {
                 expiresAt: lastRefreshExpiry,
                 id: old.id || generateGenerationId(),
                 userId: old.userId || 'system',
-                username: old.username || 'System'
+                username: old.username || 'System',
+                displayNumber: displayNumber
             };
         } else {
             tokenStock.push({
@@ -475,7 +484,8 @@ async function refreshToken(refreshTk) {
                 expiresAt: lastRefreshExpiry,
                 id: generateGenerationId(),
                 userId: 'system',
-                username: 'System'
+                username: 'System',
+                displayNumber: generateTokenNumber()
             });
         }
         console.log(`[SUCCESS] [EAM.LOL] Token stock updated. New expiry: ${humanExpiry(lastRefreshExpiry)}`);
@@ -490,6 +500,7 @@ async function refreshToken(refreshTk) {
                 DEFAULT_TOKEN.bearer = nextAcc.token;
                 DEFAULT_TOKEN.refresh_token = nextAcc.refresh_token;
                 const newExpiry = getTokenExpiryMs(nextAcc.token);
+                const newNumber = generateTokenNumber();
                 if (tokenStock.length > 0) {
                     const old = tokenStock[0];
                     tokenStock[0] = {
@@ -499,7 +510,8 @@ async function refreshToken(refreshTk) {
                         expiresAt: newExpiry,
                         id: old.id || generateGenerationId(),
                         userId: old.userId || 'system',
-                        username: old.username || 'System'
+                        username: old.username || 'System',
+                        displayNumber: newNumber // new token from different account, assign new number
                     };
                 } else {
                     tokenStock.push({
@@ -509,7 +521,8 @@ async function refreshToken(refreshTk) {
                         expiresAt: newExpiry,
                         id: generateGenerationId(),
                         userId: 'system',
-                        username: 'System'
+                        username: 'System',
+                        displayNumber: newNumber
                     });
                 }
                 console.log(`[SUCCESS] [EAM.LOL] Switched to ${nextAcc.label} - new token ready`);
@@ -554,6 +567,7 @@ function giveNewTokenFromAccounts() {
         DEFAULT_TOKEN.refresh_token = acc.refresh_token;
         activeAccountLabel = acc.label;
         const newExpiry = getTokenExpiryMs(acc.token);
+        const newNumber = generateTokenNumber();
         if (tokenStock.length > 0) {
             const old = tokenStock[0];
             tokenStock[0] = {
@@ -563,7 +577,8 @@ function giveNewTokenFromAccounts() {
                 expiresAt: newExpiry,
                 id: old.id || generateGenerationId(),
                 userId: old.userId || 'system',
-                username: old.username || 'System'
+                username: old.username || 'System',
+                displayNumber: newNumber
             };
         } else {
             tokenStock.push({
@@ -573,7 +588,8 @@ function giveNewTokenFromAccounts() {
                 expiresAt: newExpiry,
                 id: generateGenerationId(),
                 userId: 'system',
-                username: 'System'
+                username: 'System',
+                displayNumber: newNumber
             });
         }
         console.log(`[SUCCESS] [EAM.LOL] New token loaded from ${acc.label} - expires ${new Date(newExpiry).toUTCString()}`);
@@ -582,6 +598,7 @@ function giveNewTokenFromAccounts() {
         DEFAULT_TOKEN.bearer = DEFAULT_TOKEN.bearer;
         DEFAULT_TOKEN.refresh_token = DEFAULT_TOKEN.refresh_token;
         const newExpiry = getTokenExpiryMs(DEFAULT_TOKEN.bearer);
+        const newNumber = generateTokenNumber();
         if (tokenStock.length > 0) {
             const old = tokenStock[0];
             tokenStock[0] = {
@@ -591,7 +608,8 @@ function giveNewTokenFromAccounts() {
                 expiresAt: newExpiry,
                 id: old.id || generateGenerationId(),
                 userId: old.userId || 'system',
-                username: old.username || 'System'
+                username: old.username || 'System',
+                displayNumber: newNumber
             };
         } else {
             tokenStock.push({
@@ -601,7 +619,8 @@ function giveNewTokenFromAccounts() {
                 expiresAt: newExpiry,
                 id: generateGenerationId(),
                 userId: 'system',
-                username: 'System'
+                username: 'System',
+                displayNumber: newNumber
             });
         }
         console.log(`[WARN] [EAM.LOL] Using hardcoded default token - expires ${new Date(newExpiry).toUTCString()}`);
@@ -972,7 +991,8 @@ function forceSetOwnToken(bearer, refresh) {
     DEFAULT_TOKEN.bearer = bearer;
     DEFAULT_TOKEN.refresh_token = refresh;
     lastRefreshExpiry = getTokenExpiryMs(bearer);
-    tokenStock = [{ bearer, refresh, addedAt: Date.now(), expiresAt: lastRefreshExpiry }];
+    const newNumber = generateTokenNumber();
+    tokenStock = [{ bearer, refresh, addedAt: Date.now(), expiresAt: lastRefreshExpiry, displayNumber: newNumber }];
     console.log(`[SUCCESS] [EAM.LOL] Token manually set! Expires: ${new Date(lastRefreshExpiry).toUTCString()}`);
     updateStatusPanel();
     updateSubscriptionPanel();
@@ -1301,6 +1321,7 @@ async function updateStatusPanel() {
         let color = 0x95A5A6;
         let expiryText = 'N/A';
         let timeLeft = 'N/A';
+        let tokenNumber = token && token.displayNumber ? token.displayNumber : 0;
 
         if (token && token.bearer) {
             const expiry = getTokenExpiryMs(token.bearer);
@@ -1329,7 +1350,7 @@ async function updateStatusPanel() {
             color = 0xED4245;
         }
 
-        // --- Update channel name based on status ---
+        // Update channel name
         await updateStatusChannelName();
 
         const embed = new EmbedBuilder()
@@ -1337,6 +1358,7 @@ async function updateStatusPanel() {
             .setDescription(`Live status of the bot's main token.`)
             .setColor(color)
             .addFields(
+                { name: 'Token #', value: `${tokenNumber}`, inline: true },
                 { name: 'Status', value: status, inline: true },
                 { name: 'Stock Count', value: `${tokenStock.length} token(s)`, inline: true },
                 { name: 'Expires At (UTC)', value: expiryText, inline: true },
@@ -1380,27 +1402,32 @@ async function updateStatusChannelName() {
         if (!channel) return;
 
         const token = tokenStock.length > 0 ? tokenStock[0] : null;
-        let newName = '🟢 token-active';
+        let emoji = '🟢';
+        let number = 0;
 
-        if (!token || !token.bearer) {
-            newName = '⛔ token-offline';
-        } else {
+        if (token && token.bearer) {
             const expiry = getTokenExpiryMs(token.bearer);
-            if (expiry === null) {
-                newName = '⚠️ token-unknown';
-            } else {
+            if (expiry !== null) {
                 const now = Date.now();
                 const ttl = Math.floor((expiry - now) / 1000);
                 if (ttl <= 0) {
-                    newName = '🔴 token-expired';
+                    emoji = '🔴';
                 } else if (ttl < 300) {
-                    newName = '🟡 token-expiring';
+                    emoji = '🟡';
                 } else {
-                    newName = '🟢 token-active';
+                    emoji = '🟢';
                 }
+                number = token.displayNumber || 0;
+            } else {
+                emoji = '⚠️';
+                number = 0;
             }
+        } else {
+            emoji = '🔴';
+            number = 0;
         }
 
+        const newName = `${emoji} token-in-bot${number}`;
         if (channel.name !== newName) {
             await channel.setName(newName);
             console.log(`[STATUS] Channel name updated to: ${newName}`);
@@ -1483,7 +1510,7 @@ async function updateSubscriptionPanel() {
 // --- READY ---
 client.once('ready', async () => {
     console.log(`[SYSTEM] [EAM.LOL] ONLINE: ${client.user.tag}`);
-    tokenStock = [{ bearer: DEFAULT_TOKEN.bearer, refresh: DEFAULT_TOKEN.refresh_token, addedAt: Date.now(), expiresAt: getTokenExpiryMs(DEFAULT_TOKEN.bearer) }];
+    tokenStock = [{ bearer: DEFAULT_TOKEN.bearer, refresh: DEFAULT_TOKEN.refresh_token, addedAt: Date.now(), expiresAt: getTokenExpiryMs(DEFAULT_TOKEN.bearer), displayNumber: generateTokenNumber() }];
     await findWorkingApiUrl();
     const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
     try {
@@ -1653,11 +1680,13 @@ client.on('interactionCreate', async interaction => {
                     refresh: token.refresh ? token.refresh.slice(0, 20) + '...' : 'N/A',
                     expiresAt: token.expiresAt ? new Date(token.expiresAt).toISOString() : 'N/A',
                     timeLeft: token.expiresAt ? formatRemainingTime(token.expiresAt) : 'N/A',
-                    valid: token.expiresAt ? Date.now() < token.expiresAt : false
+                    valid: token.expiresAt ? Date.now() < token.expiresAt : false,
+                    number: token.displayNumber || 0
                 } : null;
                 const embed = new EmbedBuilder()
                     .setTitle('Refresh Status')
                     .addFields(
+                        { name: 'Token #', value: status ? `${status.number}` : 'N/A', inline: true },
                         { name: 'Token in Stock', value: status ? 'Yes' : 'No', inline: true },
                         { name: 'Valid', value: status && status.valid ? '✅ Yes' : '❌ No', inline: true },
                         { name: 'Expires', value: status ? status.timeLeft : 'N/A', inline: true },
@@ -1863,10 +1892,12 @@ client.on('interactionCreate', async interaction => {
                 DEFAULT_TOKEN.bearer = test.bearer;
                 DEFAULT_TOKEN.refresh_token = newRefresh;
 
+                const oldNumber = tokenStock.length > 0 && tokenStock[0].displayNumber ? tokenStock[0].displayNumber : generateTokenNumber();
                 if (tokenStock.length > 0) {
                     tokenStock[0].bearer = test.bearer;
                     tokenStock[0].refresh = newRefresh;
                     tokenStock[0].expiresAt = test.expiresAt;
+                    tokenStock[0].displayNumber = oldNumber;
                 } else {
                     tokenStock.push({
                         bearer: test.bearer,
@@ -1875,7 +1906,8 @@ client.on('interactionCreate', async interaction => {
                         expiresAt: test.expiresAt,
                         id: generateGenerationId(),
                         userId: 'system',
-                        username: 'System'
+                        username: 'System',
+                        displayNumber: oldNumber
                     });
                 }
                 lastRefreshExpiry = test.expiresAt;
@@ -2071,15 +2103,23 @@ client.on('interactionCreate', async interaction => {
                                 .setTimestamp();
                             return interaction.editReply({ embeds: [embed] });
                         }
-                        forceSetOwnToken(test.bearer, test.refresh);
+                        // Set as main token with new number
+                        const newNumber = generateTokenNumber();
+                        DEFAULT_TOKEN.bearer = test.bearer;
+                        DEFAULT_TOKEN.refresh_token = test.refresh;
+                        lastRefreshExpiry = test.expiresAt;
+                        tokenStock = [{ bearer: test.bearer, refresh: test.refresh, addedAt: Date.now(), expiresAt: test.expiresAt, displayNumber: newNumber }];
+                        await updateStatusPanel();
+                        await updateSubscriptionPanel();
                         const embed = new EmbedBuilder()
                             .setTitle('✅ Token Updated')
-                            .setDescription('Main token successfully set.')
+                            .setDescription(`Main token successfully set with number **${newNumber}**.`)
                             .setColor(0x2ECC71)
                             .addFields(
                                 { name: 'Bearer', value: `\`${test.bearer.slice(0, 30)}...\``, inline: false },
                                 { name: 'Refresh', value: `\`${test.refresh.slice(0, 30)}...\``, inline: false },
                                 { name: 'Expires', value: humanExpiry(test.expiresAt), inline: true },
+                                { name: 'Token #', value: `${newNumber}`, inline: true },
                                 { name: 'Stock Count', value: `${tokenStock.length} token(s)`, inline: true }
                             )
                             .setTimestamp();
@@ -2156,10 +2196,11 @@ client.on('interactionCreate', async interaction => {
 
                 if (commandName === 'reset-stock') {
                     lastRefreshExpiry = getTokenExpiryMs(DEFAULT_TOKEN.bearer);
-                    tokenStock = [{ bearer: DEFAULT_TOKEN.bearer, refresh: DEFAULT_TOKEN.refresh_token, addedAt: Date.now(), expiresAt: lastRefreshExpiry }];
+                    const newNumber = generateTokenNumber();
+                    tokenStock = [{ bearer: DEFAULT_TOKEN.bearer, refresh: DEFAULT_TOKEN.refresh_token, addedAt: Date.now(), expiresAt: lastRefreshExpiry, displayNumber: newNumber }];
                     await updateStatusPanel();
                     await updateSubscriptionPanel();
-                    return interaction.editReply({ content: 'Stock reset to default.', flags: 64 });
+                    return interaction.editReply({ content: `Stock reset to default. Token #${newNumber}`, flags: 64 });
                 }
 
                 if (commandName === 'remove-token') {
@@ -2569,10 +2610,11 @@ client.on('interactionCreate', async interaction => {
                 if (!jwtCheck.valid) {
                     return interaction.editReply({ content: 'Token JWT is invalid or expired.' });
                 }
-                tokenStock.push({ bearer, refresh, addedAt: Date.now(), expiresAt: getTokenExpiryMs(bearer) });
+                const newNumber = generateTokenNumber();
+                tokenStock.push({ bearer, refresh, addedAt: Date.now(), expiresAt: getTokenExpiryMs(bearer), displayNumber: newNumber });
                 await updateStatusPanel();
                 await updateSubscriptionPanel();
-                return interaction.editReply({ content: `Added token! Total: ${tokenStock.length}` });
+                return interaction.editReply({ content: `Added token! Total: ${tokenStock.length} (Token #${newNumber})` });
             }
 
             // --- REDEEM MODAL ---
@@ -2612,7 +2654,8 @@ client.on('interactionCreate', async interaction => {
                     const jwtCheck = validateTokenJWT(newBearer, newRefresh);
                     if (!jwtCheck.valid) return interaction.editReply({ content: `Refreshed token JWT is invalid.` });
                     const genId = generateGenerationId();
-                    tokenStock.push({ bearer: newBearer, refresh: newRefresh, addedAt: Date.now(), expiresAt: newExpiry, id: genId, userId: interaction.user.id, username: interaction.user.tag });
+                    const newNumber = generateTokenNumber();
+                    tokenStock.push({ bearer: newBearer, refresh: newRefresh, addedAt: Date.now(), expiresAt: newExpiry, id: genId, userId: interaction.user.id, username: interaction.user.tag, displayNumber: newNumber });
                     if (!accounts.find(a => a.refresh_token === newRefresh)) accounts.push({ token: newBearer, refresh_token: newRefresh, label: `donated_${Date.now()}` });
                     await updateStatusPanel();
                     await updateSubscriptionPanel();
@@ -2621,7 +2664,8 @@ client.on('interactionCreate', async interaction => {
                     const jwtCheck = validateTokenJWT(bearer, refresh);
                     if (!jwtCheck.valid) return interaction.editReply({ content: `Token JWT is invalid.` });
                     const genId = generateGenerationId();
-                    tokenStock.push({ bearer: bearer, refresh: refresh, addedAt: Date.now(), expiresAt: expiry, id: genId, userId: interaction.user.id, username: interaction.user.tag });
+                    const newNumber = generateTokenNumber();
+                    tokenStock.push({ bearer: bearer, refresh: refresh, addedAt: Date.now(), expiresAt: expiry, id: genId, userId: interaction.user.id, username: interaction.user.tag, displayNumber: newNumber });
                     if (!accounts.find(a => a.refresh_token === refresh)) accounts.push({ token: bearer, refresh_token: refresh, label: `donated_${Date.now()}` });
                     await updateStatusPanel();
                     await updateSubscriptionPanel();
