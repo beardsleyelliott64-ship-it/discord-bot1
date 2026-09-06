@@ -1,6 +1,6 @@
 // ============================================================
-// FILE: index.js – EAM.LOL Token Bot v2.5.2
-// Full version with all fixes – correct API endpoint, refresh, and channels.
+// FILE: index.js – EAM.LOL Token Bot v2.5.3
+// FIXED: API validation endpoint (now uses /v2/account)
 // ============================================================
 
 const {
@@ -42,7 +42,7 @@ const client = new Client({
 });
 
 // --- CONFIGURATION ---
-const VERSION = "2.5.2";
+const VERSION = "2.5.3";
 const UPDATE_LOG_CHANNEL_ID = "1545829503912120431";
 const STATUS_CHANNEL_ID = "1545624109583695933";
 const TOKEN_NUMBER_CHANNEL_ID = "1546151859465756722";
@@ -50,16 +50,9 @@ const LOG_CHANNEL_ID = "1545922334534148196";
 
 const CHANGELOG = `🔧 Bot Update v${VERSION}
 
-What's new:
-• **Fixed API validation endpoint** – now uses /v2/account/me (the same as the game client).
-• **Refresh token fix** – no longer rejects when the returned token is identical.
-• **Token‑number channel** updates correctly with status (🟢🟡🔴) and number.
-• **Manual force refresh** command added: /force-refresh-now.
-• **Improved error handling** for API failures – falls back to JWT expiry but shows expired.
-
 What's fixed:
-• "Empty account data" error resolved.
-• The refresher now works reliably every 2.5 minutes.`;
+• **Corrected API validation endpoint** – now uses /v2/account (the correct Nakama REST API endpoint).
+• Resolved the "API validation failed: HTTP 404" error.`;
 
 const MEMBER_ROLE_ID = "1492798151516491816";
 const SUPPORTER_ROLE_ID = "1529393418063581284";
@@ -326,10 +319,11 @@ function validateTokenJWT(bearerToken, refreshToken = null) {
     };
 }
 
-// --- API VALIDATION (calls /v2/account/me) ---
+// ========== API TOKEN VALIDATION (FIXED: correct endpoint /v2/account) ==========
 async function validateTokenDetails(bearer, refreshToken) {
     try {
-        const url = `${ACTIVE_API_URL}/v2/account/me`;
+        // CORRECT endpoint per Nakama REST API
+        const url = `${ACTIVE_API_URL}/v2/account`;
         const response = await fetch(url, {
             headers: {
                 'Authorization': `Bearer ${bearer}`,
@@ -398,7 +392,7 @@ async function refreshTokenOnly(refreshTk, retries = 3) {
             const newRefresh = data.refresh_token || refreshTk;
             if (!newBearer) throw new Error('No token in response');
 
-            // Removed the "same token" check – accept whatever the API returns
+            // Accept whatever the API returns (no same-token check)
 
             // Validate with API (using the corrected endpoint)
             const apiCheck = await validateTokenDetails(newBearer, newRefresh);
