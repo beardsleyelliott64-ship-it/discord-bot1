@@ -1170,7 +1170,7 @@ async def premium_generatepanel(interaction: discord.Interaction):
             "Generate your tokens/files below\n\n"
             "✨ *Powered by envo*"
         ),
-        color=discord.Color.dark_embed()
+        color=discord.Color.dark_gold()  # FIXED: was dark_embed() which is invalid
     )
     embed.set_thumbnail(url=f"attachment://{IMAGE_FILENAME}")
     
@@ -1612,7 +1612,7 @@ async def generator(interaction: discord.Interaction):
             "Generate your tokens/files below\n\n"
             "✨ *Powered by envo*"
         ),
-        color=discord.Color.dark_embed()
+        color=discord.Color.blue()  # FIXED: was dark_embed() which is invalid
     )
     embed.set_thumbnail(url=f"attachment://{IMAGE_FILENAME}")
     
@@ -1623,7 +1623,7 @@ async def generator(interaction: discord.Interaction):
         await interaction.channel.send(embed=embed, view=GenerateView())
         print(f"[ERROR] Could not find image at: {IMAGE_PATH}")
 
-    await interaction.followup.send("Generator panel posted saved successfully!", ephemeral=True)
+    await interaction.followup.send("Generator panel posted successfully!", ephemeral=True)  # fixed typo "saved"
 
 if __name__ == "__main__":
     bot.run(BOT_TOKEN)
