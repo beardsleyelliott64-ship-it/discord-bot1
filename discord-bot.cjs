@@ -1,6 +1,6 @@
 // ============================================================
-// FILE: index.js – EAM.LOL Token Bot v2.4.11
-// All auto‑cleanup, consistent status, full features.
+// FILE: index.js – EAM.LOL Token Bot v2.4.12
+// FIXED: Refresh now validates via API + rejects identical tokens
 // ============================================================
 
 const {
@@ -42,23 +42,22 @@ const client = new Client({
 });
 
 // --- CONFIGURATION ---
-const VERSION = "2.4.11";
+const VERSION = "2.4.12";
 const UPDATE_LOG_CHANNEL_ID = "1545829503912120431";
-const STATUS_CHANNEL_ID = "1545624109583695933";      // This channel's name changes based on token status
-const TOKEN_NUMBER_CHANNEL_ID = "1546151859465756722"; // This channel shows only the token number
+const STATUS_CHANNEL_ID = "1545624109583695933";
+const TOKEN_NUMBER_CHANNEL_ID = "1546151859465756722";
 const LOG_CHANNEL_ID = "1545922334534148196";
 
 const CHANGELOG = `🔧 Bot Update v${VERSION}
 
 What's new:
-• **Auto‑delete duplicate status panels** – only the latest status embed remains.
-• **Status channel name and embed are now perfectly in sync** – both show the same token state.
-• **Status channel name** updates every 30 seconds to: 🟢 token-available / 🟡 token-expiring-soon / 🔴 token-expired / 🟠 token-none.
-• All previous features remain: 5‑sec subscription updates, token number channel, fixed refresh.
+• **Refresh now validates against the Nakama API** – no more “valid” tokens that don't actually work.
+• **Detects identical tokens** – if the refresh returns the same bearer, it's treated as a failure.
+• **Fallback to next account** – if refresh fails (same token or API invalid), the bot automatically switches to the next account.
 
 What's fixed:
-• Status embed no longer shows conflicting "ACTIVE" when token is expired.
-• Duplicate status panels are automatically removed.`;
+• Tokens that looked valid in JWT but were rejected by the game now get caught.
+• No more lying about expiry time – the bot actually checks if the token works.`;
 
 const MEMBER_ROLE_ID = "1492798151516491816";
 const SUPPORTER_ROLE_ID = "1529393418063581284";
@@ -325,10 +324,39 @@ function validateTokenJWT(bearerToken, refreshToken = null) {
     };
 }
 
-// --- Refresh token (standalone) with detailed logging ---
+// ========== FIXED: API TOKEN VALIDATION (no nakamaFetch) ==========
+async function validateTokenDetails(bearer, refreshToken) {
+    try {
+        const url = `${ACTIVE_API_URL}/v2/account/me`;
+        const response = await fetch(url, {
+            headers: {
+                'Authorization': `Bearer ${bearer}`,
+                'Content-Type': 'application/json'
+            }
+        });
+        if (response.status === 200) {
+            return { valid: true, apiError: null };
+        }
+        return { valid: false, apiError: `API returned ${response.status}` };
+    } catch (err) {
+        return { valid: false, apiError: err.message };
+    }
+}
+
+// ========== NEW: Helper to detect identical tokens ==========
+function tokensAreDifferent(tokenA, tokenB) {
+    if (!tokenA || !tokenB) return true;
+    // Compare first 50 chars – enough to detect a change
+    return tokenA.slice(0, 50) !== tokenB.slice(0, 50);
+}
+
+// ========== FIXED: RefreshTokenOnly with API validation + same-token check ==========
 async function refreshTokenOnly(refreshTk, retries = 3) {
     let lastError = null;
     let lastResponse = null;
+    // Store the current bearer to compare later
+    const oldBearer = tokenStock.length > 0 ? tokenStock[0].bearer : null;
+
     for (let attempt = 1; attempt <= retries; attempt++) {
         try {
             console.log(`[REFRESH] Attempt ${attempt} to refresh token...`);
@@ -363,15 +391,30 @@ async function refreshTokenOnly(refreshTk, retries = 3) {
             const newBearer = data.token || data.access_token || data.bearer;
             const newRefresh = data.refresh_token || refreshTk;
             if (!newBearer) throw new Error('No token in response');
+
+            // --- NEW CHECKS ---
+            // 1. Check if the new bearer is different from the old one
+            if (oldBearer && !tokensAreDifferent(oldBearer, newBearer)) {
+                throw new Error('Refresh returned the same bearer token – not a new one');
+            }
+
+            // 2. Validate the new token with the API (not just JWT)
+            const apiCheck = await validateTokenDetails(newBearer, newRefresh);
+            if (!apiCheck.valid) {
+                throw new Error(`API validation failed: ${apiCheck.apiError}`);
+            }
+
+            // 3. Check JWT expiry (still useful)
             const newExpiry = getTokenExpiryMs(newBearer);
-            if (newExpiry === null || newExpiry <= Date.now()) throw new Error('Refreshed token already expired or invalid');
+            if (newExpiry === null) throw new Error('No expiry claim in new token');
+            if (newExpiry <= Date.now()) throw new Error('New token already expired');
 
             const jwtCheck = validateTokenJWT(newBearer, newRefresh);
             if (!jwtCheck.valid) {
                 throw new Error('New token JWT is invalid or expired');
             }
 
-            console.log(`[REFRESH] Successfully refreshed token. New expiry: ${new Date(newExpiry).toUTCString()}`);
+            console.log(`[REFRESH] Successfully refreshed to a NEW token. Expiry: ${new Date(newExpiry).toUTCString()}`);
             return { success: true, bearer: newBearer, refresh: newRefresh, expiresAt: newExpiry };
         } catch (err) {
             lastError = err;
@@ -387,87 +430,33 @@ async function refreshTokenOnly(refreshTk, retries = 3) {
     return { success: false, error: lastError ? lastError.message : 'Unknown error', response: lastResponse };
 }
 
-// --- Global refresh with fallback ---
-async function doRefresh(tokens, retries = 3) {
-    let lastError = null;
-    for (let attempt = 1; attempt <= retries; attempt++) {
-        try {
-            console.log(`[DO_REFRESH] Attempt ${attempt}...`);
-            const refreshUrl = `${ACTIVE_API_URL}/v2/account/session/refresh`;
-            const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 15000);
-            const serverKeyAuth = 'Basic ' + Buffer.from(NAKAMA_SERVER_KEY + ':').toString('base64');
-            const response = await fetch(refreshUrl, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'User-Agent': 'SteamVR 1.88.1.3421_a3df6ce5',
-                    'Authorization': serverKeyAuth
-                },
-                body: JSON.stringify({ token: tokens.refresh_token }),
-                signal: controller.signal
-            });
-            clearTimeout(timeoutId);
-            const status = response.status;
-            const contentType = response.headers.get('content-type');
-            if (!contentType || !contentType.includes('application/json')) {
-                throw new Error(`Non-JSON response (status ${status})`);
-            }
-            const data = await response.json();
-            if (!response.ok) {
-                const err = new Error(data?.message || `HTTP ${status}`);
-                err.httpCode = status;
-                throw err;
-            }
-            const newBearer = data.token || data.access_token || data.bearer;
-            const newRefresh = data.refresh_token || tokens.refresh_token;
-            if (!newBearer) throw new Error('No token in response');
-            if (newBearer === tokens.refresh_token) throw new Error('Refresh returned identical token');
-            const newExpiry = getTokenExpiryMs(newBearer);
-            if (newExpiry === null || newExpiry <= Date.now()) throw new Error('Refreshed token already expired or invalid');
-
-            const jwtCheck = validateTokenJWT(newBearer, newRefresh);
-            if (!jwtCheck.valid) {
-                throw new Error('New token JWT is invalid or expired');
-            }
-
-            tokens.bearer = newBearer;
-            tokens.refresh_token = newRefresh;
-            console.log(`[SUCCESS] [EAM.LOL] Token refreshed! New expiry: ${new Date(newExpiry).toISOString()}`);
-            return tokens;
-        } catch (err) {
-            lastError = err;
-            console.error(`[DO_REFRESH] Attempt ${attempt} failed: ${err.message}`);
-            if (attempt < retries) {
-                const delay = Math.pow(2, attempt - 1) * 1000;
-                console.log(`[DO_REFRESH] Retrying in ${delay/1000}s...`);
-                await new Promise(r => setTimeout(r, delay));
-            }
-        }
-    }
-    console.error(`[DO_REFRESH] All attempts failed. Last error: ${lastError?.message || 'Unknown'}`);
-    throw lastError || new Error('Refresh failed after retries');
-}
-
+// ========== FIXED: refreshToken now uses the improved refreshTokenOnly ==========
 async function refreshToken(refreshTk) {
     if (!refreshTk) return { success: false, error: 'No refresh token' };
-    try {
-        const tokens = { bearer: DEFAULT_TOKEN.bearer, refresh_token: refreshTk };
-        const result = await doRefresh(tokens, 5);
+
+    // Try to refresh with the provided token
+    const result = await refreshTokenOnly(refreshTk, 5);
+
+    if (result.success) {
+        // Update DEFAULT_TOKEN
         DEFAULT_TOKEN.bearer = result.bearer;
-        DEFAULT_TOKEN.refresh_token = result.refresh_token;
+        DEFAULT_TOKEN.refresh_token = result.refresh;
         apiWorking = true;
         consecutiveFails = 0;
-        lastRefreshExpiry = getTokenExpiryMs(result.bearer);
-        updateAccountTokens(refreshTk, result.bearer, result.refresh_token);
+        lastRefreshExpiry = result.expiresAt;
+
+        // Update accounts list
+        updateAccountTokens(refreshTk, result.bearer, result.refresh);
+
+        // Update tokenStock
         if (tokenStock.length > 0) {
             const old = tokenStock[0];
             const displayNumber = old.displayNumber || generateTokenNumber();
             tokenStock[0] = {
                 bearer: result.bearer,
-                refresh: result.refresh_token,
+                refresh: result.refresh,
                 addedAt: Date.now(),
-                expiresAt: lastRefreshExpiry,
+                expiresAt: result.expiresAt,
                 id: old.id || generateGenerationId(),
                 userId: old.userId || 'system',
                 username: old.username || 'System',
@@ -476,9 +465,9 @@ async function refreshToken(refreshTk) {
         } else {
             tokenStock.push({
                 bearer: result.bearer,
-                refresh: result.refresh_token,
+                refresh: result.refresh,
                 addedAt: Date.now(),
-                expiresAt: lastRefreshExpiry,
+                expiresAt: result.expiresAt,
                 id: generateGenerationId(),
                 userId: 'system',
                 username: 'System',
@@ -486,49 +475,76 @@ async function refreshToken(refreshTk) {
             });
         }
         console.log(`[SUCCESS] [EAM.LOL] Token stock updated. New expiry: ${humanExpiry(lastRefreshExpiry)}`);
-        return { success: true, bearer: result.bearer, refresh: result.refresh_token, expiresAt: lastRefreshExpiry };
-    } catch (err) {
-        const httpCode = err.httpCode || 0;
-        if (httpCode === 401 || httpCode === 403) {
-            console.log(`[WARN] [EAM.LOL] Auth error on ${activeAccountLabel} - trying next account...`);
-            const nextAcc = switchToNextAccount(activeAccountLabel);
-            if (nextAcc) {
-                activeAccountLabel = nextAcc.label;
-                DEFAULT_TOKEN.bearer = nextAcc.token;
-                DEFAULT_TOKEN.refresh_token = nextAcc.refresh_token;
-                const newExpiry = getTokenExpiryMs(nextAcc.token);
-                const newNumber = generateTokenNumber();
-                if (tokenStock.length > 0) {
-                    const old = tokenStock[0];
-                    tokenStock[0] = {
-                        bearer: nextAcc.token,
-                        refresh: nextAcc.refresh_token,
-                        addedAt: Date.now(),
-                        expiresAt: newExpiry,
-                        id: old.id || generateGenerationId(),
-                        userId: old.userId || 'system',
-                        username: old.username || 'System',
-                        displayNumber: newNumber
-                    };
-                } else {
-                    tokenStock.push({
-                        bearer: nextAcc.token,
-                        refresh: nextAcc.refresh_token,
-                        addedAt: Date.now(),
-                        expiresAt: newExpiry,
-                        id: generateGenerationId(),
-                        userId: 'system',
-                        username: 'System',
-                        displayNumber: newNumber
-                    });
-                }
-                console.log(`[SUCCESS] [EAM.LOL] Switched to ${nextAcc.label} - new token ready`);
-                return { success: true, bearer: nextAcc.token, refresh: nextAcc.refresh_token, expiresAt: newExpiry };
-            }
-            console.error('[ERROR] [EAM.LOL] All accounts exhausted');
-        }
-        return { success: false, error: err.message };
+        return { success: true, bearer: result.bearer, refresh: result.refresh, expiresAt: result.expiresAt };
     }
+
+    // --- REFRESH FAILED – FALL BACK TO NEXT ACCOUNT ---
+    console.log(`[WARN] [EAM.LOL] Refresh failed (${result.error}). Trying fallback accounts...`);
+    const nextAcc = switchToNextAccount(activeAccountLabel);
+    if (nextAcc) {
+        activeAccountLabel = nextAcc.label;
+        DEFAULT_TOKEN.bearer = nextAcc.token;
+        DEFAULT_TOKEN.refresh_token = nextAcc.refresh_token;
+        const newExpiry = getTokenExpiryMs(nextAcc.token);
+        const newNumber = generateTokenNumber();
+        if (tokenStock.length > 0) {
+            const old = tokenStock[0];
+            tokenStock[0] = {
+                bearer: nextAcc.token,
+                refresh: nextAcc.refresh_token,
+                addedAt: Date.now(),
+                expiresAt: newExpiry,
+                id: old.id || generateGenerationId(),
+                userId: old.userId || 'system',
+                username: old.username || 'System',
+                displayNumber: newNumber
+            };
+        } else {
+            tokenStock.push({
+                bearer: nextAcc.token,
+                refresh: nextAcc.refresh_token,
+                addedAt: Date.now(),
+                expiresAt: newExpiry,
+                id: generateGenerationId(),
+                userId: 'system',
+                username: 'System',
+                displayNumber: newNumber
+            });
+        }
+        console.log(`[SUCCESS] [EAM.LOL] Switched to ${nextAcc.label} - new token ready`);
+        return { success: true, bearer: nextAcc.token, refresh: nextAcc.refresh_token, expiresAt: newExpiry };
+    }
+
+    // No fallback accounts – try hardcoded default
+    console.log('[ERROR] [EAM.LOL] All accounts exhausted. Falling back to hardcoded default.');
+    const defaultExpiry = getTokenExpiryMs(DEFAULT_TOKEN.bearer);
+    const defaultNumber = generateTokenNumber();
+    if (tokenStock.length > 0) {
+        const old = tokenStock[0];
+        tokenStock[0] = {
+            bearer: DEFAULT_TOKEN.bearer,
+            refresh: DEFAULT_TOKEN.refresh_token,
+            addedAt: Date.now(),
+            expiresAt: defaultExpiry,
+            id: old.id || generateGenerationId(),
+            userId: old.userId || 'system',
+            username: old.username || 'System',
+            displayNumber: defaultNumber
+        };
+    } else {
+        tokenStock.push({
+            bearer: DEFAULT_TOKEN.bearer,
+            refresh: DEFAULT_TOKEN.refresh_token,
+            addedAt: Date.now(),
+            expiresAt: defaultExpiry,
+            id: generateGenerationId(),
+            userId: 'system',
+            username: 'System',
+            displayNumber: defaultNumber
+        });
+    }
+    console.log(`[WARN] [EAM.LOL] Using hardcoded default token - expires ${new Date(defaultExpiry).toUTCString()}`);
+    return { success: true, bearer: DEFAULT_TOKEN.bearer, refresh: DEFAULT_TOKEN.refresh_token, expiresAt: defaultExpiry };
 }
 
 function updateAccountTokens(oldRefresh, newBearer, newRefresh) {
@@ -726,9 +742,15 @@ async function deliverTokenToUser(user) {
             console.log(`[DELIVERY] Current token has ${currentTtl}s left (>${MIN_TTL}s), using it.`);
             const validation = validateTokenJWT(tokenObj.bearer, tokenObj.refresh);
             if (validation.valid) {
-                valid = true;
-                console.log('[DELIVERY] Current token passed JWT validation.');
-                break;
+                // Also check with API to be sure
+                const apiCheck = await validateTokenDetails(tokenObj.bearer, tokenObj.refresh);
+                if (apiCheck.valid) {
+                    valid = true;
+                    console.log('[DELIVERY] Current token passed JWT and API validation.');
+                    break;
+                } else {
+                    console.log(`[DELIVERY] Current token failed API validation: ${apiCheck.apiError}, refreshing.`);
+                }
             } else {
                 console.log(`[DELIVERY] Current token failed JWT validation, refreshing.`);
             }
@@ -744,13 +766,18 @@ async function deliverTokenToUser(user) {
                 console.log(`[DELIVERY] Refresh succeeded. New expiry: ${humanExpiry(tokenObj.expiresAt)}`);
                 const validation = validateTokenJWT(tokenObj.bearer, tokenObj.refresh);
                 if (validation.valid) {
-                    const newTtl = Math.floor((tokenObj.expiresAt - Date.now()) / 1000);
-                    if (newTtl > MIN_TTL) {
-                        valid = true;
-                        console.log('[DELIVERY] Refreshed token passed JWT and has enough TTL.');
-                        break;
+                    const apiCheck = await validateTokenDetails(tokenObj.bearer, tokenObj.refresh);
+                    if (apiCheck.valid) {
+                        const newTtl = Math.floor((tokenObj.expiresAt - Date.now()) / 1000);
+                        if (newTtl > MIN_TTL) {
+                            valid = true;
+                            console.log('[DELIVERY] Refreshed token passed JWT, API, and has enough TTL.');
+                            break;
+                        } else {
+                            console.log(`[DELIVERY] Refreshed token TTL (${newTtl}s) still below threshold, retrying...`);
+                        }
                     } else {
-                        console.log(`[DELIVERY] Refreshed token TTL (${newTtl}s) still below threshold, retrying...`);
+                        console.log(`[DELIVERY] Refreshed token failed API validation: ${apiCheck.apiError}, retrying...`);
                     }
                 } else {
                     console.log('[DELIVERY] Refreshed token JWT invalid, retrying...');
@@ -762,13 +789,18 @@ async function deliverTokenToUser(user) {
                 if (tokenObj) {
                     const validation = validateTokenJWT(tokenObj.bearer, tokenObj.refresh);
                     if (validation.valid) {
-                        const fallbackTtl = Math.floor((tokenObj.expiresAt - Date.now()) / 1000);
-                        if (fallbackTtl > MIN_TTL) {
-                            valid = true;
-                            console.log('[DELIVERY] Fallback token passed JWT and has enough TTL.');
-                            break;
+                        const apiCheck = await validateTokenDetails(tokenObj.bearer, tokenObj.refresh);
+                        if (apiCheck.valid) {
+                            const fallbackTtl = Math.floor((tokenObj.expiresAt - Date.now()) / 1000);
+                            if (fallbackTtl > MIN_TTL) {
+                                valid = true;
+                                console.log('[DELIVERY] Fallback token passed JWT, API, and has enough TTL.');
+                                break;
+                            } else {
+                                console.log(`[DELIVERY] Fallback token TTL (${fallbackTtl}s) too low, retrying...`);
+                            }
                         } else {
-                            console.log(`[DELIVERY] Fallback token TTL (${fallbackTtl}s) too low, retrying...`);
+                            console.log(`[DELIVERY] Fallback token failed API validation: ${apiCheck.apiError}`);
                         }
                     } else {
                         console.log('[DELIVERY] Fallback token JWT invalid.');
@@ -791,9 +823,14 @@ async function deliverTokenToUser(user) {
                 console.log(`[DELIVERY] Final fallback: using current token (${Math.floor(timeLeft/60)} min left).`);
                 const validation = validateTokenJWT(current.bearer, current.refresh);
                 if (validation.valid) {
-                    tokenObj = current;
-                    valid = true;
-                    console.log('[DELIVERY] Final fallback passed JWT.');
+                    const apiCheck = await validateTokenDetails(current.bearer, current.refresh);
+                    if (apiCheck.valid) {
+                        tokenObj = current;
+                        valid = true;
+                        console.log('[DELIVERY] Final fallback passed JWT and API.');
+                    } else {
+                        console.log(`[DELIVERY] Final fallback failed API: ${apiCheck.apiError}`);
+                    }
                 } else {
                     console.log('[DELIVERY] Final fallback JWT validation failed.');
                 }
@@ -1127,6 +1164,15 @@ async function processTokenGeneration(interaction, tierName) {
         return interaction.editReply({ content: `Token JWT validation failed.`, components: [] });
     }
 
+    // Also validate with API to be safe
+    const apiCheck = await validateTokenDetails(tokenObj.bearer, tokenObj.refresh);
+    if (!apiCheck.valid) {
+        isGenerating = false;
+        activeGenerations.delete(userId);
+        console.error(`[GENERATION] API validation failed for ${interaction.user.tag}: ${apiCheck.apiError}`);
+        return interaction.editReply({ content: `Token failed API validation. Please try again.`, components: [] });
+    }
+
     await updateGenerationEmbed(interaction, 3, `Finalizing (${ttl}s left)...`, ttl);
     const genId = generateGenerationId();
     tokenObj.id = genId;
@@ -1399,7 +1445,7 @@ async function updateStatusPanel() {
     }
 }
 
-// ========== STATUS CHANNEL NAME UPDATE (only status channel) ==========
+// ========== STATUS CHANNEL NAME UPDATE ==========
 async function updateStatusChannelName() {
     try {
         const channel = client.channels.cache.get(STATUS_CHANNEL_ID);
@@ -1436,7 +1482,7 @@ async function updateStatusChannelName() {
     }
 }
 
-// ========== TOKEN NUMBER CHANNEL UPDATE (separate) ==========
+// ========== TOKEN NUMBER CHANNEL UPDATE ==========
 async function updateTokenNumberChannel() {
     try {
         const channel = client.channels.cache.get(TOKEN_NUMBER_CHANNEL_ID);
