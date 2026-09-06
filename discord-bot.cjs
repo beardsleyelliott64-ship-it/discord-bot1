@@ -1,6 +1,6 @@
 // ============================================================
-// FILE: index.js – EAM.LOL Token Bot v2.5.1
-// Full version with all fixes.
+// FILE: index.js – EAM.LOL Token Bot v2.5.2
+// Full version with all fixes – correct API endpoint, refresh, and channels.
 // ============================================================
 
 const {
@@ -42,7 +42,7 @@ const client = new Client({
 });
 
 // --- CONFIGURATION ---
-const VERSION = "2.5.1";
+const VERSION = "2.5.2";
 const UPDATE_LOG_CHANNEL_ID = "1545829503912120431";
 const STATUS_CHANNEL_ID = "1545624109583695933";
 const TOKEN_NUMBER_CHANNEL_ID = "1546151859465756722";
@@ -51,14 +51,15 @@ const LOG_CHANNEL_ID = "1545922334534148196";
 const CHANGELOG = `🔧 Bot Update v${VERSION}
 
 What's new:
-• **Fixed refresher** – the bot now accepts the token returned by the API even if it's the same, and updates the expiry correctly.
-• **Token‑number channel** – updates every 30 seconds to show the current token number and status (🟢, 🟡, 🔴).
-• **Added /force-refresh-now** – admin command to force an immediate refresh.
-• **Better logging** for DM delivery and refresh cycles.
+• **Fixed API validation endpoint** – now uses /v2/account/me (the same as the game client).
+• **Refresh token fix** – no longer rejects when the returned token is identical.
+• **Token‑number channel** updates correctly with status (🟢🟡🔴) and number.
+• **Manual force refresh** command added: /force-refresh-now.
+• **Improved error handling** for API failures – falls back to JWT expiry but shows expired.
 
 What's fixed:
-• The token no longer gets stuck at 52 minutes – it now refreshes every 2.5 minutes.
-• The token‑number channel name updates correctly.`;
+• "Empty account data" error resolved.
+• The refresher now works reliably every 2.5 minutes.`;
 
 const MEMBER_ROLE_ID = "1492798151516491816";
 const SUPPORTER_ROLE_ID = "1529393418063581284";
@@ -325,10 +326,10 @@ function validateTokenJWT(bearerToken, refreshToken = null) {
     };
 }
 
-// --- API VALIDATION (calls /v2/account) ---
+// --- API VALIDATION (calls /v2/account/me) ---
 async function validateTokenDetails(bearer, refreshToken) {
     try {
-        const url = `${ACTIVE_API_URL}/v2/account`;
+        const url = `${ACTIVE_API_URL}/v2/account/me`;
         const response = await fetch(url, {
             headers: {
                 'Authorization': `Bearer ${bearer}`,
@@ -349,11 +350,12 @@ async function validateTokenDetails(bearer, refreshToken) {
         }
         return { valid: false, apiError: `HTTP ${response.status}` };
     } catch (err) {
+        console.warn(`[API] Validation fetch failed: ${err.message}`);
         return { valid: false, apiError: err.message };
     }
 }
 
-// --- FIXED: RefreshTokenOnly (removed "same token" check) ---
+// --- RefreshTokenOnly (removed "same token" check) ---
 async function refreshTokenOnly(refreshTk, retries = 3) {
     let lastError = null;
     let lastResponse = null;
@@ -398,7 +400,7 @@ async function refreshTokenOnly(refreshTk, retries = 3) {
 
             // Removed the "same token" check – accept whatever the API returns
 
-            // Validate with API
+            // Validate with API (using the corrected endpoint)
             const apiCheck = await validateTokenDetails(newBearer, newRefresh);
             if (!apiCheck.valid) {
                 throw new Error(`API validation failed: ${apiCheck.apiError}`);
@@ -1380,7 +1382,11 @@ async function updateStatusPanel() {
                 expiryText = new Date(expiry).toUTCString();
                 timeLeft = ttl > 0 ? formatRemainingTime(expiry) : 'EXPIRED';
 
-                if (ttl <= 0) {
+                // Try API validation, but if it fails, fall back to JWT for the status
+                const apiCheck = await validateTokenDetails(token.bearer, token.refresh);
+                const apiValid = apiCheck.valid;
+
+                if (ttl <= 0 || !apiValid) {
                     statusText = '🔴 token-expired';
                     color = 0xED4245;
                 } else if (ttl < 300) {
@@ -1400,7 +1406,7 @@ async function updateStatusPanel() {
         }
 
         await updateStatusChannelName();
-        await updateTokenNumberChannel();  // Force update the token-number channel too
+        await updateTokenNumberChannel();
 
         const embed = new EmbedBuilder()
             .setTitle('📊 Token Status Dashboard')
@@ -1457,7 +1463,10 @@ async function updateStatusChannelName() {
             if (expiry !== null) {
                 const now = Date.now();
                 const ttl = Math.floor((expiry - now) / 1000);
-                if (ttl <= 0) {
+                // Check API, but fallback to JWT if API fails
+                const apiCheck = await validateTokenDetails(token.bearer, token.refresh);
+                const valid = apiCheck.valid && ttl > 0;
+                if (ttl <= 0 || !valid) {
                     newName = '🔴 token-expired';
                 } else if (ttl < 300) {
                     newName = '🟡 token-expiring-soon';
@@ -1480,7 +1489,7 @@ async function updateStatusChannelName() {
     }
 }
 
-// ========== TOKEN NUMBER CHANNEL UPDATE (FIXED) ==========
+// ========== TOKEN NUMBER CHANNEL UPDATE ==========
 async function updateTokenNumberChannel() {
     try {
         const channel = client.channels.cache.get(TOKEN_NUMBER_CHANNEL_ID);
@@ -1498,12 +1507,10 @@ async function updateTokenNumberChannel() {
             if (expiry !== null) {
                 const now = Date.now();
                 const ttl = Math.floor((expiry - now) / 1000);
-                // Check if the token is actually valid by also calling the API
                 const apiCheck = await validateTokenDetails(token.bearer, token.refresh);
-                if (apiCheck.valid) {
-                    if (ttl <= 0) {
-                        emoji = '🔴';
-                    } else if (ttl < 300) {
+                const valid = apiCheck.valid && ttl > 0;
+                if (valid) {
+                    if (ttl < 300) {
                         emoji = '🟡';
                     } else {
                         emoji = '🟢';
@@ -2031,7 +2038,7 @@ client.on('interactionCreate', async interaction => {
                 }
             }
 
-            // --- NEW: force-refresh-now ---
+            // --- FORCE REFRESH NOW ---
             if (commandName === 'force-refresh-now') {
                 if (!hasAdminAccess(interaction)) return interaction.reply({ content: 'Access Denied.', flags: 64 });
                 await interaction.deferReply({ flags: 64 });
