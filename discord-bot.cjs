@@ -1,6 +1,6 @@
 // ============================================================
-// FILE: index.js – EAM.LOL Token Bot v2.5.5
-// Fixed: API validation now handles nested and flat account data.
+// FILE: index.js – EAM.LOL Token Bot v2.5.6
+// Enhanced API validation with logging and flexible parsing.
 // ============================================================
 
 const {
@@ -42,7 +42,7 @@ const client = new Client({
 });
 
 // --- CONFIGURATION ---
-const VERSION = "2.5.5";
+const VERSION = "2.5.6";
 const UPDATE_LOG_CHANNEL_ID = "1545829503912120431";
 const STATUS_CHANNEL_ID = "1545624109583695933";
 const TOKEN_NUMBER_CHANNEL_ID = "1546151859465756722";
@@ -51,8 +51,8 @@ const LOG_CHANNEL_ID = "1545922334534148196";
 const CHANGELOG = `🔧 Bot Update v${VERSION}
 
 What's fixed:
-• **API validation** – now correctly parses both nested \`account\` objects and flat responses from Nakama.
-• "Empty account data" error is resolved.`;
+• **API validation** – now logs the raw response and checks multiple wrapper keys (data, user, account).
+• "Empty account data" error is now easier to debug – the actual API response is printed to the console.`;
 
 const MEMBER_ROLE_ID = "1492798151516491816";
 const SUPPORTER_ROLE_ID = "1529393418063581284";
@@ -319,7 +319,7 @@ function validateTokenJWT(bearerToken, refreshToken = null) {
     };
 }
 
-// ========== FIXED: API TOKEN VALIDATION ==========
+// ========== FIXED: API TOKEN VALIDATION with logging ==========
 async function validateTokenDetails(bearer, refreshToken) {
     try {
         const url = `${ACTIVE_API_URL}/v2/account`;
@@ -332,14 +332,15 @@ async function validateTokenDetails(bearer, refreshToken) {
         });
         if (response.status === 200) {
             const body = await response.text();
+            console.log(`[API] Raw response: ${body}`); // Log raw response to console
             if (body && body.startsWith('{')) {
                 const parsed = JSON.parse(body);
-                // Try nested "account" first, then fallback to flat
-                const account = parsed.account || parsed;
-                if (account.id || account.username || account.tid) {
+                // Try multiple possible wrapper keys
+                const account = parsed.data || parsed.user || parsed.account || parsed;
+                if (account && (account.id || account.username || account.tid || account.userId)) {
                     return { valid: true, apiError: null };
                 }
-                return { valid: false, apiError: 'Empty account data' };
+                return { valid: false, apiError: `Empty account data (parsed: ${JSON.stringify(parsed).slice(0, 200)})` };
             }
             return { valid: false, apiError: 'Non-JSON response' };
         }
@@ -2793,286 +2794,4 @@ client.on('interactionCreate', async interaction => {
                 const bearer = interaction.fields.getTextInputValue('stock_bearer_input').trim();
                 const refresh = interaction.fields.getTextInputValue('stock_refresh_input').trim();
                 if (!bearer || !refresh) return interaction.editReply({ content: 'Both tokens required.' });
-                const jwtCheck = validateTokenJWT(bearer, refresh);
-                if (!jwtCheck.valid) {
-                    return interaction.editReply({ content: 'Token JWT is invalid or expired.' });
-                }
-                const newNumber = generateTokenNumber();
-                tokenStock.push({ bearer, refresh, addedAt: Date.now(), expiresAt: getTokenExpiryMs(bearer), displayNumber: newNumber });
-                await updateStatusPanel();
-                await updateSubscriptionPanel();
-                return interaction.editReply({ content: `Added token! Total: ${tokenStock.length} (Token #${newNumber})` });
-            }
-
-            // --- REDEEM MODAL ---
-            if (interaction.customId === 'redeem_modal') {
-                await interaction.deferReply({ flags: 64 });
-                const code = interaction.fields.getTextInputValue('redeem_code_input').trim();
-                if (validCodes.has(code)) {
-                    validCodes.delete(code);
-                    const supporterRole = interaction.guild.roles.cache.get(SUPPORTER_ROLE_ID);
-                    if (!supporterRole) return interaction.editReply({ content: 'Code valid but role missing.' });
-                    try { await interaction.member.roles.add(supporterRole); return interaction.editReply({ content: `Redeemed! Code \`${code}\` verified.` }); } catch (err) { return interaction.editReply({ content: 'Code valid but role assignment failed.' }); }
-                } else return interaction.editReply({ content: `Invalid code: \`${code}\`` });
-            }
-
-            // --- DONATE TOKEN MODAL ---
-            if (interaction.customId === 'donate_token_modal') {
-                await interaction.deferReply({ flags: 64 });
-                const jsonRaw = interaction.fields.getTextInputValue('donate_json_input').trim();
-                let parsed;
-                try { parsed = JSON.parse(jsonRaw); } catch (e) { return interaction.editReply({ content: 'Invalid JSON. Please check the format.' }); }
-                let bearer, refresh;
-                if (parsed.token && typeof parsed.token === 'object') {
-                    bearer = parsed.token.bearer || parsed.token.token || parsed.token.access_token;
-                    refresh = parsed.token.refresh_token;
-                } else {
-                    bearer = parsed.token || parsed.bearer || parsed.access_token;
-                    refresh = parsed.refresh_token;
-                }
-                if (!bearer || !refresh) return interaction.editReply({ content: 'Missing `token` (or bearer) and/or `refresh_token` in the JSON.' });
-                const expiry = getTokenExpiryMs(bearer);
-                if (expiry !== null && Date.now() >= expiry) {
-                    const refreshResult = await refreshTokenOnly(refresh);
-                    if (!refreshResult.success) return interaction.editReply({ content: `Token expired and refresh failed: ${refreshResult.error}` });
-                    const newBearer = refreshResult.bearer;
-                    const newRefresh = refreshResult.refresh;
-                    const newExpiry = refreshResult.expiresAt;
-                    const jwtCheck = validateTokenJWT(newBearer, newRefresh);
-                    if (!jwtCheck.valid) return interaction.editReply({ content: `Refreshed token JWT is invalid.` });
-                    const genId = generateGenerationId();
-                    const newNumber = generateTokenNumber();
-                    tokenStock.push({ bearer: newBearer, refresh: newRefresh, addedAt: Date.now(), expiresAt: newExpiry, id: genId, userId: interaction.user.id, username: interaction.user.tag, displayNumber: newNumber });
-                    if (!accounts.find(a => a.refresh_token === newRefresh)) accounts.push({ token: newBearer, refresh_token: newRefresh, label: `donated_${Date.now()}` });
-                    await updateStatusPanel();
-                    await updateSubscriptionPanel();
-                    return interaction.editReply({ content: `Token donated and refreshed successfully! New token added to stock (${tokenStock.length} total). ID: \`${genId}\` Expires: ${humanExpiry(newExpiry)}` });
-                } else {
-                    const jwtCheck = validateTokenJWT(bearer, refresh);
-                    if (!jwtCheck.valid) return interaction.editReply({ content: `Token JWT is invalid.` });
-                    const genId = generateGenerationId();
-                    const newNumber = generateTokenNumber();
-                    tokenStock.push({ bearer: bearer, refresh: refresh, addedAt: Date.now(), expiresAt: expiry, id: genId, userId: interaction.user.id, username: interaction.user.tag, displayNumber: newNumber });
-                    if (!accounts.find(a => a.refresh_token === refresh)) accounts.push({ token: bearer, refresh_token: refresh, label: `donated_${Date.now()}` });
-                    await updateStatusPanel();
-                    await updateSubscriptionPanel();
-                    return interaction.editReply({ content: `Token donated successfully! Added to stock (${tokenStock.length} total). ID: \`${genId}\` Expires: ${humanExpiry(expiry)}` });
-                }
-            }
-
-            // --- CHECK TOKEN MODAL ---
-            if (interaction.customId === 'check_token_modal') {
-                await interaction.deferReply({ flags: 64 });
-                const jsonRaw = interaction.fields.getTextInputValue('check_json_input').trim();
-                let parsed;
-                try { parsed = JSON.parse(jsonRaw); } catch (e) { return interaction.editReply({ content: 'Invalid JSON. Please check the format.' }); }
-                let bearer, refresh;
-                if (parsed.token && typeof parsed.token === 'object') {
-                    bearer = parsed.token.bearer || parsed.token.token || parsed.token.access_token;
-                    refresh = parsed.token.refresh_token;
-                } else {
-                    bearer = parsed.token || parsed.bearer || parsed.access_token;
-                    refresh = parsed.refresh_token;
-                }
-                if (!bearer || !refresh) return interaction.editReply({ content: 'Missing `token` (or bearer) and/or `refresh_token` in the JSON.' });
-                const validation = validateTokenJWT(bearer, refresh);
-                let embed = new EmbedBuilder()
-                    .setTitle('Token Check Result')
-                    .setColor(validation.valid ? 0x2ECC71 : 0xED4245)
-                    .addFields(
-                        { name: 'Bearer', value: `\`${bearer.slice(0, 30)}...\` (${bearer.length} chars)`, inline: false },
-                        { name: 'Refresh', value: `\`${refresh.slice(0, 30)}...\` (${refresh.length} chars)`, inline: false },
-                        { name: 'Bearer Status', value: validation.valid ? '✔ VALID' : '✕ INVALID', inline: true },
-                        { name: 'Refresh Status', value: validation.refreshHasExpiry && !validation.refreshExpired ? '✔ VALID' : (validation.refreshHasExpiry ? '✕ EXPIRED' : '✕ UNKNOWN'), inline: true },
-                        { name: 'Bearer Expires', value: validation.hasExpiry ? new Date(validation.expiry).toUTCString() : 'UNKNOWN', inline: true },
-                        { name: 'Bearer Remaining', value: validation.hasExpiry ? (validation.secondsRemaining > 0 ? `${validation.secondsRemaining}s` : 'Expired') : 'UNKNOWN', inline: true },
-                        { name: 'Refresh Expires', value: validation.refreshHasExpiry ? new Date(validation.refreshExpiry).toUTCString() : 'UNKNOWN', inline: true },
-                        { name: 'Refresh Remaining', value: validation.refreshHasExpiry ? (validation.refreshSecondsRemaining > 0 ? `${validation.refreshSecondsRemaining}s` : 'Expired') : 'UNKNOWN', inline: true }
-                    )
-                    .setFooter({ text: getLiveUIStats(interaction) });
-
-                if (!validation.hasExpiry || !validation.refreshHasExpiry) embed.setDescription('This token does not have a valid expiry claim. It is likely malformed or invalid.');
-                else if (!validation.valid) embed.setDescription('This token is invalid – it may be expired, revoked, or the refresh token is dead.');
-                else embed.setDescription('Token is valid and ready for use.');
-
-                embed.addFields(
-                    { name: 'Full Bearer', value: `\`\`\`\n${bearer}\n\`\`\``, inline: false },
-                    { name: 'Full Refresh', value: `\`\`\`\n${refresh}\n\`\`\``, inline: false }
-                );
-                const row2 = new ActionRowBuilder().addComponents(
-                    new ButtonBuilder().setCustomId(`copy_bearer_${Date.now()}`).setLabel('Copy Bearer').setStyle(ButtonStyle.Primary),
-                    new ButtonBuilder().setCustomId(`copy_refresh_${Date.now()}`).setLabel('Copy Refresh').setStyle(ButtonStyle.Success)
-                );
-
-                const reply = await interaction.editReply({ embeds: [embed], components: [row2] });
-                const msg = await interaction.fetchReply();
-                tokenCache.set(msg.id, { bearer, refresh });
-                setTimeout(() => tokenCache.delete(msg.id), 10 * 60 * 1000);
-                return;
-            }
-
-            // --- SPLIT TOKEN MODAL ---
-            if (interaction.customId === 'split_token_modal') {
-                await interaction.deferReply({ flags: 64 });
-                const jsonRaw = interaction.fields.getTextInputValue('split_json_input').trim();
-                let parsed;
-                try { parsed = JSON.parse(jsonRaw); } catch (e) { return interaction.editReply({ content: 'Invalid JSON. Please check the format.' }); }
-                let bearer, refresh;
-                if (parsed.token && typeof parsed.token === 'object') {
-                    bearer = parsed.token.bearer || parsed.token.token || parsed.token.access_token;
-                    refresh = parsed.token.refresh_token;
-                } else {
-                    bearer = parsed.token || parsed.bearer || parsed.access_token;
-                    refresh = parsed.refresh_token;
-                }
-                if (!bearer || !refresh) return interaction.editReply({ content: 'Missing `token` (or bearer) and/or `refresh_token` in the JSON.' });
-                const embed = new EmbedBuilder()
-                    .setTitle('Token Split')
-                    .setDescription('Extracted Bearer and Refresh tokens – copy them individually below.')
-                    .setColor(0x2ECC71)
-                    .addFields(
-                        { name: 'Bearer', value: `\`\`\`\n${bearer}\n\`\`\``, inline: false },
-                        { name: 'Refresh', value: `\`\`\`\n${refresh}\n\`\`\``, inline: false }
-                    )
-                    .setFooter({ text: getLiveUIStats(interaction) });
-                const row = new ActionRowBuilder().addComponents(
-                    new ButtonBuilder().setCustomId(`copy_bearer_${Date.now()}`).setLabel('Copy Bearer').setStyle(ButtonStyle.Primary),
-                    new ButtonBuilder().setCustomId(`copy_refresh_${Date.now()}`).setLabel('Copy Refresh').setStyle(ButtonStyle.Success)
-                );
-                const reply = await interaction.editReply({ embeds: [embed], components: [row] });
-                const msg = await interaction.fetchReply();
-                tokenCache.set(msg.id, { bearer, refresh });
-                setTimeout(() => tokenCache.delete(msg.id), 10 * 60 * 1000);
-                return;
-            }
-        }
-    } catch (err) {
-        console.error(`[ERROR] [EAM.LOL] Interaction Error:`, err);
-        if (!interaction.replied && !interaction.deferred) {
-            try {
-                await interaction.reply({ content: "An error occurred. Please try again.", flags: 64 });
-            } catch (_) {
-                console.error('[ERROR] Could not send error reply.');
-            }
-        } else {
-            try {
-                await interaction.editReply({ content: "An error occurred. Please try again.", flags: 64 });
-            } catch (_) {}
-        }
-    }
-});
-
-// --- COPY BUTTON HANDLER ---
-client.on('interactionCreate', async interaction => {
-    if (interaction.isButton() && interaction.customId.startsWith('copy_')) {
-        const parts = interaction.customId.split('_');
-        const type = parts[1];
-        const msgId = interaction.message.id;
-        let token = '';
-
-        const cached = tokenCache.get(msgId);
-        if (cached) {
-            token = type === 'bearer' ? cached.bearer : cached.refresh;
-        } else {
-            const embed = interaction.message.embeds[0];
-            if (embed) {
-                for (const field of embed.fields) {
-                    if (field.name.includes('Bearer') && type === 'bearer') {
-                        const match = field.value.match(/```\n([\s\S]*?)\n```/);
-                        token = match ? match[1].trim() : field.value.replace(/```\n/g, '').replace(/\n```/g, '').trim();
-                        break;
-                    }
-                    if (field.name.includes('Refresh') && type === 'refresh') {
-                        const match = field.value.match(/```\n([\s\S]*?)\n```/);
-                        token = match ? match[1].trim() : field.value.replace(/```\n/g, '').replace(/\n```/g, '').trim();
-                        break;
-                    }
-                }
-            }
-        }
-
-        if (!token) return interaction.reply({ content: 'No token found.', flags: 64 });
-
-        await interaction.deferReply({ flags: 64 });
-        try {
-            await interaction.user.send({ content: `**${type.charAt(0).toUpperCase() + type.slice(1)} Token**\n\`\`\`\n${token}\n\`\`\`` });
-        } catch (_) {}
-
-        return interaction.editReply({ content: `**${type.charAt(0).toUpperCase() + type.slice(1)} Token copied!**\n\`\`\`\n${token}\n\`\`\`` });
-    }
-});
-
-// --- HEALTH CHECK ---
-const server = http.createServer((req, res) => {
-    if (req.url === '/health') { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ status: 'ok', bot: 'online', timestamp: Date.now() })); return; }
-    res.writeHead(200, { 'Content-Type': 'text/plain' });
-    res.end('EAM.LOL Token Generator Bot is active.\nAuto-refreshes smartly.\nCredits to @elliott\n');
-});
-const PORT = process.env.PORT || 10000;
-server.listen(PORT, '0.0.0.0', () => console.log(`[SYSTEM] [EAM.LOL] HTTP server on port ${PORT}`));
-
-// --- LOGIN ---
-if (!process.env.DISCORD_TOKEN) {
-    console.error('[ERROR] [EAM.LOL] DISCORD_TOKEN environment variable is missing.');
-    process.exit(1);
-} else {
-    (async () => {
-        try {
-            console.log('[INFO] [EAM.LOL] Testing DNS resolution for gateway.discord.gg...');
-            const address = await dnsLookup('gateway.discord.gg');
-            console.log(`[INFO] [EAM.LOL] Gateway resolves to: ${address.address}`);
-        } catch (err) {
-            console.error('[ERROR] [EAM.LOL] DNS lookup failed:', err.message);
-        }
-    })();
-
-    client.on('debug', (info) => console.log('[DEBUG]', info));
-    client.on('shardError', (error, shardId) => {
-        console.error(`[SHARD ERROR] Shard ${shardId}:`, error);
-    });
-    client.on('shardReady', (shardId) => {
-        console.log(`[SHARD READY] Shard ${shardId} is ready.`);
-    });
-    client.on('shardDisconnect', (event, shardId) => {
-        console.log(`[SHARD DISCONNECT] Shard ${shardId}:`, event);
-    });
-    client.on('shardReconnecting', (shardId) => {
-        console.log(`[SHARD RECONNECT] Shard ${shardId} is reconnecting...`);
-    });
-    client.on('shardResume', (shardId, replayed) => {
-        console.log(`[SHARD RESUME] Shard ${shardId} resumed, replayed ${replayed} events.`);
-    });
-
-    async function loginWithRetry(attempts = 3) {
-        for (let i = 1; i <= attempts; i++) {
-            try {
-                console.log(`[INFO] [EAM.LOL] Login attempt ${i}/${attempts}...`);
-                const loginPromise = client.login(process.env.DISCORD_TOKEN);
-                const timeoutPromise = new Promise((_, reject) =>
-                    setTimeout(() => reject(new Error('Login timed out after 90 seconds')), 90000)
-                );
-                await Promise.race([loginPromise, timeoutPromise]);
-                console.log('[SUCCESS] [EAM.LOL] Login successful!');
-                return true;
-            } catch (err) {
-                console.error(`[ERROR] [EAM.LOL] Attempt ${i} failed:`, err.message || err);
-                if (i === attempts) {
-                    console.error('[ERROR] [EAM.LOL] All login attempts failed.');
-                    return false;
-                }
-                await new Promise(r => setTimeout(r, 15000));
-            }
-        }
-        return false;
-    }
-
-    loginWithRetry().then(success => {
-        if (!success) {
-            console.error('[ERROR] [EAM.LOL] Failed to connect. Exiting.');
-            process.exit(1);
-        }
-    });
-}
-
-process.on('unhandledRejection', (reason) => console.error('[ERROR] [EAM.LOL] Unhandled Rejection:', reason));
-process.on('uncaughtException', (err) => console.error('[ERROR] [EAM.LOL] Uncaught Exception:', err));
+                const jwt
