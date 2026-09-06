@@ -1,6 +1,6 @@
 // ============================================================
-// FILE: index.js – EAM.LOL Token Bot v2.4.12
-// FIXED: Refresh now validates via API + rejects identical tokens
+// FILE: index.js – EAM.LOL Token Bot v2.4.13
+// FIXED: Account validation endpoint (now uses /v2/account)
 // ============================================================
 
 const {
@@ -42,7 +42,7 @@ const client = new Client({
 });
 
 // --- CONFIGURATION ---
-const VERSION = "2.4.12";
+const VERSION = "2.4.13";
 const UPDATE_LOG_CHANNEL_ID = "1545829503912120431";
 const STATUS_CHANNEL_ID = "1545624109583695933";
 const TOKEN_NUMBER_CHANNEL_ID = "1546151859465756722";
@@ -51,13 +51,11 @@ const LOG_CHANNEL_ID = "1545922334534148196";
 const CHANGELOG = `🔧 Bot Update v${VERSION}
 
 What's new:
-• **Refresh now validates against the Nakama API** – no more “valid” tokens that don't actually work.
-• **Detects identical tokens** – if the refresh returns the same bearer, it's treated as a failure.
-• **Fallback to next account** – if refresh fails (same token or API invalid), the bot automatically switches to the next account.
+• **Fixed account validation endpoint** – now uses /v2/account (correct Nakama REST API).
+• **More robust API validation** – non‑200 responses (including 404) are treated as invalid.
 
 What's fixed:
-• Tokens that looked valid in JWT but were rejected by the game now get caught.
-• No more lying about expiry time – the bot actually checks if the token works.`;
+• The "API validation failed: API returned 404" error is now resolved.`;
 
 const MEMBER_ROLE_ID = "1492798151516491816";
 const SUPPORTER_ROLE_ID = "1529393418063581284";
@@ -324,10 +322,10 @@ function validateTokenJWT(bearerToken, refreshToken = null) {
     };
 }
 
-// ========== FIXED: API TOKEN VALIDATION (no nakamaFetch) ==========
+// ========== FIXED: API TOKEN VALIDATION (uses correct /v2/account) ==========
 async function validateTokenDetails(bearer, refreshToken) {
     try {
-        const url = `${ACTIVE_API_URL}/v2/account/me`;
+        const url = `${ACTIVE_API_URL}/v2/account`;
         const response = await fetch(url, {
             headers: {
                 'Authorization': `Bearer ${bearer}`,
@@ -343,18 +341,16 @@ async function validateTokenDetails(bearer, refreshToken) {
     }
 }
 
-// ========== NEW: Helper to detect identical tokens ==========
+// ========== Helper to detect identical tokens ==========
 function tokensAreDifferent(tokenA, tokenB) {
     if (!tokenA || !tokenB) return true;
-    // Compare first 50 chars – enough to detect a change
     return tokenA.slice(0, 50) !== tokenB.slice(0, 50);
 }
 
-// ========== FIXED: RefreshTokenOnly with API validation + same-token check ==========
+// ========== FIXED: RefreshTokenOnly with correct validation ==========
 async function refreshTokenOnly(refreshTk, retries = 3) {
     let lastError = null;
     let lastResponse = null;
-    // Store the current bearer to compare later
     const oldBearer = tokenStock.length > 0 ? tokenStock[0].bearer : null;
 
     for (let attempt = 1; attempt <= retries; attempt++) {
@@ -392,19 +388,18 @@ async function refreshTokenOnly(refreshTk, retries = 3) {
             const newRefresh = data.refresh_token || refreshTk;
             if (!newBearer) throw new Error('No token in response');
 
-            // --- NEW CHECKS ---
-            // 1. Check if the new bearer is different from the old one
+            // 1. Check if the new bearer is different
             if (oldBearer && !tokensAreDifferent(oldBearer, newBearer)) {
                 throw new Error('Refresh returned the same bearer token – not a new one');
             }
 
-            // 2. Validate the new token with the API (not just JWT)
+            // 2. Validate with API (now using /v2/account)
             const apiCheck = await validateTokenDetails(newBearer, newRefresh);
             if (!apiCheck.valid) {
                 throw new Error(`API validation failed: ${apiCheck.apiError}`);
             }
 
-            // 3. Check JWT expiry (still useful)
+            // 3. JWT expiry check
             const newExpiry = getTokenExpiryMs(newBearer);
             if (newExpiry === null) throw new Error('No expiry claim in new token');
             if (newExpiry <= Date.now()) throw new Error('New token already expired');
@@ -430,25 +425,21 @@ async function refreshTokenOnly(refreshTk, retries = 3) {
     return { success: false, error: lastError ? lastError.message : 'Unknown error', response: lastResponse };
 }
 
-// ========== FIXED: refreshToken now uses the improved refreshTokenOnly ==========
+// ========== refreshToken with fallback ==========
 async function refreshToken(refreshTk) {
     if (!refreshTk) return { success: false, error: 'No refresh token' };
 
-    // Try to refresh with the provided token
     const result = await refreshTokenOnly(refreshTk, 5);
 
     if (result.success) {
-        // Update DEFAULT_TOKEN
         DEFAULT_TOKEN.bearer = result.bearer;
         DEFAULT_TOKEN.refresh_token = result.refresh;
         apiWorking = true;
         consecutiveFails = 0;
         lastRefreshExpiry = result.expiresAt;
 
-        // Update accounts list
         updateAccountTokens(refreshTk, result.bearer, result.refresh);
 
-        // Update tokenStock
         if (tokenStock.length > 0) {
             const old = tokenStock[0];
             const displayNumber = old.displayNumber || generateTokenNumber();
@@ -478,7 +469,7 @@ async function refreshToken(refreshTk) {
         return { success: true, bearer: result.bearer, refresh: result.refresh, expiresAt: result.expiresAt };
     }
 
-    // --- REFRESH FAILED – FALL BACK TO NEXT ACCOUNT ---
+    // Fallback to next account
     console.log(`[WARN] [EAM.LOL] Refresh failed (${result.error}). Trying fallback accounts...`);
     const nextAcc = switchToNextAccount(activeAccountLabel);
     if (nextAcc) {
@@ -515,7 +506,7 @@ async function refreshToken(refreshTk) {
         return { success: true, bearer: nextAcc.token, refresh: nextAcc.refresh_token, expiresAt: newExpiry };
     }
 
-    // No fallback accounts – try hardcoded default
+    // Hardcoded fallback
     console.log('[ERROR] [EAM.LOL] All accounts exhausted. Falling back to hardcoded default.');
     const defaultExpiry = getTokenExpiryMs(DEFAULT_TOKEN.bearer);
     const defaultNumber = generateTokenNumber();
@@ -742,7 +733,6 @@ async function deliverTokenToUser(user) {
             console.log(`[DELIVERY] Current token has ${currentTtl}s left (>${MIN_TTL}s), using it.`);
             const validation = validateTokenJWT(tokenObj.bearer, tokenObj.refresh);
             if (validation.valid) {
-                // Also check with API to be sure
                 const apiCheck = await validateTokenDetails(tokenObj.bearer, tokenObj.refresh);
                 if (apiCheck.valid) {
                     valid = true;
@@ -1164,7 +1154,6 @@ async function processTokenGeneration(interaction, tierName) {
         return interaction.editReply({ content: `Token JWT validation failed.`, components: [] });
     }
 
-    // Also validate with API to be safe
     const apiCheck = await validateTokenDetails(tokenObj.bearer, tokenObj.refresh);
     if (!apiCheck.valid) {
         isGenerating = false;
@@ -1180,7 +1169,6 @@ async function processTokenGeneration(interaction, tierName) {
     tokenObj.username = interaction.user.tag;
     if (!hasNoCooldown) cooldowns.set(`public_${userId}`, Date.now() + GENERATION_COOLDOWN);
 
-    // Update stats
     totalTokensGenerated++;
     userTokenCounts.set(userId, (userTokenCounts.get(userId) || 0) + 1);
     if (!userHistory.has(userId)) userHistory.set(userId, []);
@@ -1363,7 +1351,6 @@ async function updateStatusPanel() {
             return;
         }
 
-        // Clean up duplicate status panels first
         await cleanupDuplicateStatusPanels(STATUS_CHANNEL_ID);
 
         const token = tokenStock.length > 0 ? tokenStock[0] : null;
@@ -1400,7 +1387,6 @@ async function updateStatusPanel() {
             color = 0xF39C12;
         }
 
-        // Update the status channel name (not the token-number channel)
         await updateStatusChannelName();
 
         const embed = new EmbedBuilder()
@@ -1445,7 +1431,6 @@ async function updateStatusPanel() {
     }
 }
 
-// ========== STATUS CHANNEL NAME UPDATE ==========
 async function updateStatusChannelName() {
     try {
         const channel = client.channels.cache.get(STATUS_CHANNEL_ID);
@@ -1482,7 +1467,6 @@ async function updateStatusChannelName() {
     }
 }
 
-// ========== TOKEN NUMBER CHANNEL UPDATE ==========
 async function updateTokenNumberChannel() {
     try {
         const channel = client.channels.cache.get(TOKEN_NUMBER_CHANNEL_ID);
@@ -1524,7 +1508,6 @@ async function updateTokenNumberChannel() {
     }
 }
 
-// ========== CLEANUP DUPLICATE STATUS PANELS ==========
 async function cleanupDuplicateStatusPanels(channelId) {
     try {
         const channel = client.channels.cache.get(channelId);
@@ -1546,7 +1529,6 @@ async function cleanupDuplicateStatusPanels(channelId) {
     }
 }
 
-// ========== SUBSCRIPTION PANEL BUILD ==========
 function buildSubscriptionEmbed() {
     const token = tokenStock.length > 0 ? tokenStock[0] : null;
     let status = '🔴 EXPIRED';
@@ -1599,17 +1581,13 @@ function buildSubscriptionEmbed() {
     return embed;
 }
 
-// --- Helper to update subscription panel (with duplicate removal) ---
 async function updateSubscriptionPanel() {
-    // Clean up any duplicate subscription panels from the same channel
     if (subscriptionPanelMessage) {
         const oldChannel = client.channels.cache.get(subscriptionPanelMessage.channelId);
         if (oldChannel) {
             try {
-                const oldMsg = await oldChannel.messages.fetch(subscriptionPanelMessage.messageId);
-                // Message exists, we'll update it
+                await oldChannel.messages.fetch(subscriptionPanelMessage.messageId);
             } catch (err) {
-                // Message not found, clear tracking
                 subscriptionPanelMessage = null;
             }
         } else {
@@ -1617,7 +1595,6 @@ async function updateSubscriptionPanel() {
         }
     }
 
-    // If we have a tracked panel, update it
     if (subscriptionPanelMessage) {
         try {
             const channel = client.channels.cache.get(subscriptionPanelMessage.channelId);
@@ -1633,11 +1610,8 @@ async function updateSubscriptionPanel() {
             subscriptionPanelMessage = null;
         }
     }
-
-    // If no tracked panel, do nothing (we only post via command)
 }
 
-// --- Cleanup duplicate subscription panels ---
 async function cleanupDuplicateSubscriptionPanels(channelId) {
     try {
         const channel = client.channels.cache.get(channelId);
@@ -1645,7 +1619,6 @@ async function cleanupDuplicateSubscriptionPanels(channelId) {
         const messages = await channel.messages.fetch({ limit: 20 });
         const botMessages = messages.filter(m => m.author.id === client.user.id && m.embeds.length > 0 && m.embeds[0].title === '📋 Subscription Panel');
         if (botMessages.size > 1) {
-            // Delete all but the latest
             const sorted = botMessages.sort((a, b) => b.createdTimestamp - a.createdTimestamp);
             const latest = sorted.first();
             for (const [id, msg] of sorted) {
@@ -1671,10 +1644,8 @@ client.once('ready', async () => {
         console.log('[SUCCESS] [EAM.LOL] Slash commands registered');
     } catch (error) { console.error('[ERROR] [EAM.LOL] Failed to register commands:', error); }
 
-    // Start log queue processor
     logQueueInterval = setInterval(processLogQueue, 2000);
 
-    // Update channel names on startup
     await updateStatusChannelName();
     await updateTokenNumberChannel();
 
@@ -1684,18 +1655,14 @@ client.once('ready', async () => {
     await postUpdateLog();
     await updateStatusPanel();
 
-    // Clean up any old subscription panels in the channel (if we have one tracked)
     if (subscriptionPanelMessage) {
         await cleanupDuplicateSubscriptionPanels(subscriptionPanelMessage.channelId);
     }
 
-    // Separate intervals:
-    // Status panel updates every 30 seconds (includes status channel name rename)
     setInterval(async () => {
         await updateStatusPanel();
     }, 30000);
 
-    // Subscription panel updates every 5 seconds
     setInterval(async () => {
         await updateSubscriptionPanel();
     }, 5000);
@@ -1715,7 +1682,6 @@ client.on('interactionCreate', async interaction => {
 
             const { commandName, options } = interaction;
 
-            // --- FUN COMMANDS ---
             if (commandName === 'fun') {
                 const facts = [
                     "🦴 Animal Company tokens are powered by Nakama server technology.",
@@ -1804,7 +1770,6 @@ client.on('interactionCreate', async interaction => {
                 return interaction.reply({ embeds: [embed], flags: 64 });
             }
 
-            // --- UPDATE LOG ---
             if (commandName === 'update-log') {
                 if (!hasAdminAccess(interaction)) return interaction.reply({ content: 'Access Denied.', flags: 64 });
                 await interaction.deferReply({ flags: 64 });
@@ -1812,7 +1777,6 @@ client.on('interactionCreate', async interaction => {
                 return interaction.editReply({ content: 'Update log posted to <#' + UPDATE_LOG_CHANNEL_ID + '>.', flags: 64 });
             }
 
-            // --- SUB-ALL ---
             if (commandName === 'sub-all') {
                 if (!hasAdminAccess(interaction)) return interaction.reply({ content: 'Access Denied.', flags: 64 });
                 await interaction.deferReply({ flags: 64 });
@@ -1821,7 +1785,6 @@ client.on('interactionCreate', async interaction => {
                 return interaction.editReply({ content: `Subscribed **${count}** members.`, flags: 64 });
             }
 
-            // --- UN-SUBALL ---
             if (commandName === 'un-suball') {
                 if (!hasAdminAccess(interaction)) return interaction.reply({ content: 'Access Denied.', flags: 64 });
                 await interaction.deferReply({ flags: 64 });
@@ -1830,7 +1793,6 @@ client.on('interactionCreate', async interaction => {
                 return interaction.editReply({ content: `Unsubscribed **${count}** members.`, flags: 64 });
             }
 
-            // --- SEND-ALL-TOKEN ---
             if (commandName === 'send-all-token') {
                 if (!hasAdminAccess(interaction)) return interaction.reply({ content: 'Access Denied.', flags: 64 });
                 await interaction.deferReply({ flags: 64 });
@@ -1838,7 +1800,6 @@ client.on('interactionCreate', async interaction => {
                 return interaction.editReply({ content: `Sent to **${successCount}** subscribers (${failCount} failed).`, flags: 64 });
             }
 
-            // --- REFRESH-STATUS ---
             if (commandName === 'refresh-status') {
                 if (!hasAdminAccess(interaction)) return interaction.reply({ content: 'Access Denied.', flags: 64 });
                 await interaction.deferReply({ flags: 64 });
@@ -1867,7 +1828,6 @@ client.on('interactionCreate', async interaction => {
                 return interaction.editReply({ embeds: [embed], flags: 64 });
             }
 
-            // --- SUBSCRIPTION COMMANDS ---
             if (commandName === 'subscribe') {
                 await interaction.deferReply({ flags: 64 });
                 if (subscribedUsers.has(interaction.user.id)) {
@@ -1889,11 +1849,9 @@ client.on('interactionCreate', async interaction => {
                 return interaction.editReply({ content: 'Unsubscribed.', flags: 64 });
             }
 
-            // --- SUBSCRIPTION PANEL ---
             if (commandName === 'subscription-panel') {
                 if (!hasAdminAccess(interaction)) return interaction.reply({ content: 'Access Denied – Admin only to post panel.', flags: 64 });
 
-                // Clean up any old panels in the same channel (if any)
                 await cleanupDuplicateSubscriptionPanels(interaction.channel.id);
 
                 const embed = buildSubscriptionEmbed();
@@ -1929,7 +1887,6 @@ client.on('interactionCreate', async interaction => {
                 return;
             }
 
-            // --- MOD APPLICATION PANEL ---
             if (commandName === 'mod-application-panel') {
                 if (!hasAdminAccess(interaction)) return interaction.reply({ content: 'Access Denied – Admin only to post panel.', flags: 64 });
 
@@ -1958,7 +1915,6 @@ client.on('interactionCreate', async interaction => {
                 return;
             }
 
-            // --- FAST COMMANDS ---
             const fastCommands = ['ping', '8ball', 'help', 'serverinfo'];
             if (fastCommands.includes(commandName)) {
                 if (commandName === 'ping') {
@@ -2001,7 +1957,6 @@ client.on('interactionCreate', async interaction => {
                 }
             }
 
-            // --- TOKEN-MEANING ---
             if (commandName === 'token-meaning') {
                 const embed = new EmbedBuilder()
                     .setTitle('📘 Token Glossary & Status Guide')
@@ -2028,7 +1983,6 @@ client.on('interactionCreate', async interaction => {
                 return interaction.reply({ embeds: [embed], flags: 64 });
             }
 
-            // --- RENAME TOKEN CHANNEL (fallback) ---
             if (commandName === 'rename-token-channel') {
                 if (!hasAdminAccess(interaction)) return interaction.reply({ content: 'Access Denied.', flags: 64 });
                 await interaction.deferReply({ flags: 64 });
@@ -2041,10 +1995,8 @@ client.on('interactionCreate', async interaction => {
                 }
             }
 
-            // --- ALL OTHER COMMANDS ---
             await interaction.deferReply({ flags: 64 });
 
-            // --- SET-REFRESH (fixed) ---
             if (commandName === 'set-refresh') {
                 if (!hasAdminAccess(interaction)) return interaction.editReply({ content: 'Access Denied.', flags: 64 });
                 const newRefresh = options.getString('refresh');
@@ -2074,7 +2026,6 @@ client.on('interactionCreate', async interaction => {
                     return interaction.editReply({ embeds: [embed] });
                 }
 
-                // --- UPDATE EVERYTHING ---
                 DEFAULT_TOKEN.bearer = test.bearer;
                 DEFAULT_TOKEN.refresh_token = newRefresh;
 
@@ -2099,7 +2050,6 @@ client.on('interactionCreate', async interaction => {
                 lastRefreshExpiry = test.expiresAt;
                 consecutiveFails = 0;
 
-                // --- CRITICAL: add/update the accounts array ---
                 addOrUpdateAccount(test.bearer, newRefresh);
 
                 await updateStatusPanel();
@@ -2118,7 +2068,6 @@ client.on('interactionCreate', async interaction => {
                 return interaction.editReply({ embeds: [embed] });
             }
 
-            // --- TEST REFRESH ---
             if (commandName === 'test-refresh') {
                 if (!hasAdminAccess(interaction)) return interaction.editReply({ content: 'Access Denied.', flags: 64 });
                 if (tokenStock.length === 0) return interaction.editReply({ content: 'No token in stock.' });
@@ -2148,13 +2097,11 @@ client.on('interactionCreate', async interaction => {
                 }
             }
 
-            // --- TOKEN GENERATION ---
             if (commandName === 'token') {
                 await processTokenGeneration(interaction, 'Public Token');
                 return;
             }
 
-            // --- ANNOUNCE ---
             if (commandName === 'announce') {
                 if (!hasAdminAccess(interaction)) return interaction.editReply({ content: 'You need admin permissions.', flags: 64 });
                 const messageContent = options.getString('message');
@@ -2179,7 +2126,6 @@ client.on('interactionCreate', async interaction => {
                 return interaction.editReply({ content: `Announcement DMs sent! ${successCount} succeeded, ${failCount} failed (skipped bots).` });
             }
 
-            // --- DONATE-PANEL ---
             if (commandName === 'donate-panel') {
                 const embed = new EmbedBuilder()
                     .setTitle('Support the Project')
@@ -2200,7 +2146,6 @@ client.on('interactionCreate', async interaction => {
                 return interaction.editReply({ embeds: [embed], components: [row1, row2], ephemeral: false });
             }
 
-            // --- DONATION-PANEL ---
             if (commandName === 'donation-panel') {
                 const embed = new EmbedBuilder()
                     .setTitle('Donate a Token')
@@ -2216,7 +2161,6 @@ client.on('interactionCreate', async interaction => {
                 return interaction.editReply({ embeds: [embed], components: [row], ephemeral: false });
             }
 
-            // --- CHECK-PANEL ---
             if (commandName === 'check-panel') {
                 const embed = new EmbedBuilder()
                     .setTitle('Check Token')
@@ -2232,7 +2176,6 @@ client.on('interactionCreate', async interaction => {
                 return interaction.editReply({ embeds: [embed], components: [row], ephemeral: false });
             }
 
-            // --- SPLIT-PANEL ---
             if (commandName === 'split-panel') {
                 const embed = new EmbedBuilder()
                     .setTitle('Split Token')
@@ -2248,7 +2191,6 @@ client.on('interactionCreate', async interaction => {
                 return interaction.editReply({ embeds: [embed], components: [row], ephemeral: false });
             }
 
-            // --- CHECK-EXPIRY ---
             if (commandName === 'check-expiry') {
                 const token = options.getString('token');
                 const expiry = getTokenExpiryMs(token);
@@ -2267,7 +2209,6 @@ client.on('interactionCreate', async interaction => {
                 return interaction.editReply({ embeds: [embed], flags: 64 });
             }
 
-            // --- ADMIN COMMANDS ---
             const adminCommands = ['stock', 'stock_main', 'generator', 'force_refresh', 'remove-stock', 'reset-stock', 'gen-codes', 'remove-token', 'refresh_cooldown_all', 'panel'];
             if (adminCommands.includes(commandName)) {
                 if (!hasAdminAccess(interaction)) return interaction.editReply({ content: 'Access Denied.', flags: 64 });
@@ -2435,9 +2376,7 @@ client.on('interactionCreate', async interaction => {
             }
         }
 
-        // --- BUTTON HANDLERS ---
         if (interaction.isButton()) {
-            // --- MOD APPLICATION BUTTON ---
             if (interaction.customId === 'mod_app_apply') {
                 const modal = new ModalBuilder()
                     .setCustomId('mod_app_modal')
@@ -2503,7 +2442,6 @@ client.on('interactionCreate', async interaction => {
                 return await interaction.showModal(modal);
             }
 
-            // --- SUBSCRIPTION PANEL BUTTONS ---
             if (interaction.customId === 'subscribe_panel' || interaction.customId === 'unsubscribe_panel') {
                 await interaction.deferUpdate();
                 const isSubscribe = interaction.customId === 'subscribe_panel';
@@ -2527,7 +2465,6 @@ client.on('interactionCreate', async interaction => {
                 }
             }
 
-            // --- GET TOKEN NOW ---
             if (interaction.customId === 'get_token_now') {
                 await interaction.deferUpdate();
                 const userId = interaction.user.id;
@@ -2538,7 +2475,6 @@ client.on('interactionCreate', async interaction => {
                 return interaction.editReply({ content: success ? 'A fresh token has been sent to your DMs!' : 'Could not send a token right now. Please try again later.', flags: 64 });
             }
 
-            // --- REFRESH STOCK (admin) ---
             if (interaction.customId === 'refresh_stock_btn') {
                 if (!hasAdminAccess(interaction)) {
                     return interaction.reply({ content: 'You need admin permissions to refresh the stock.', flags: 64 });
@@ -2561,7 +2497,6 @@ client.on('interactionCreate', async interaction => {
                 }
             }
 
-            // --- CANCEL GENERATION ---
             if (interaction.customId === 'cancel_gen') {
                 await interaction.deferUpdate();
                 const userId = interaction.user.id;
@@ -2578,7 +2513,6 @@ client.on('interactionCreate', async interaction => {
                 return;
             }
 
-            // --- DONATE INFO ---
             if (interaction.customId === 'donate_info') {
                 return interaction.reply({
                     embeds: [new EmbedBuilder()
@@ -2590,7 +2524,6 @@ client.on('interactionCreate', async interaction => {
                 });
             }
 
-            // --- DONATE TOKEN BUTTON ---
             if (interaction.customId === 'donate_token_btn') {
                 const modal = new ModalBuilder().setCustomId('donate_token_modal').setTitle('Donate Token JSON');
                 const jsonInput = new TextInputBuilder().setCustomId('donate_json_input').setLabel('Paste your JSON here').setStyle(TextInputStyle.Paragraph).setPlaceholder('{"refresh_token":"...","token":"..."}').setRequired(true).setMinLength(20).setMaxLength(2000);
@@ -2598,7 +2531,6 @@ client.on('interactionCreate', async interaction => {
                 return await interaction.showModal(modal);
             }
 
-            // --- CHECK TOKEN BUTTON ---
             if (interaction.customId === 'check_token_btn') {
                 const modal = new ModalBuilder().setCustomId('check_token_modal').setTitle('Check Token JSON');
                 const jsonInput = new TextInputBuilder().setCustomId('check_json_input').setLabel('Paste your JSON here').setStyle(TextInputStyle.Paragraph).setPlaceholder('{"token":"...","refresh_token":"..."}').setRequired(true).setMinLength(20).setMaxLength(2000);
@@ -2606,7 +2538,6 @@ client.on('interactionCreate', async interaction => {
                 return await interaction.showModal(modal);
             }
 
-            // --- SPLIT TOKEN BUTTON ---
             if (interaction.customId === 'split_token_btn') {
                 const modal = new ModalBuilder().setCustomId('split_token_modal').setTitle('Split Token JSON');
                 const jsonInput = new TextInputBuilder().setCustomId('split_json_input').setLabel('Paste your JSON here').setStyle(TextInputStyle.Paragraph).setPlaceholder('{"token":"...","refresh_token":"..."}').setRequired(true).setMinLength(20).setMaxLength(2000);
@@ -2614,7 +2545,6 @@ client.on('interactionCreate', async interaction => {
                 return await interaction.showModal(modal);
             }
 
-            // --- STOCK PAGINATION ---
             if (interaction.customId === 'stock_prev' || interaction.customId === 'stock_next') {
                 await interaction.deferUpdate();
                 const page = interaction.customId === 'stock_prev' ? stockPage - 1 : stockPage + 1;
@@ -2637,7 +2567,6 @@ client.on('interactionCreate', async interaction => {
                 return;
             }
 
-            // --- REMOVE TOKEN BUTTON ---
             if (interaction.customId.startsWith('remove_')) {
                 await interaction.deferUpdate();
                 const id = interaction.customId.replace('remove_', '');
@@ -2657,12 +2586,10 @@ client.on('interactionCreate', async interaction => {
                 return;
             }
 
-            // --- GENERATE BUTTON ---
             if (interaction.customId === 'gen_public') {
                 return await processTokenGeneration(interaction, 'Public Token');
             }
 
-            // --- VERIFY BUTTON ---
             if (interaction.customId === 'verify_btn') {
                 await interaction.deferReply({ flags: 64 });
                 const role = interaction.guild.roles.cache.get(MEMBER_ROLE_ID);
@@ -2671,7 +2598,6 @@ client.on('interactionCreate', async interaction => {
                 try { await interaction.member.roles.add(role); return interaction.editReply({ content: "Verified!" }); } catch (err) { return interaction.editReply({ content: "Failed to verify." }); }
             }
 
-            // --- REDEEM BUTTON ---
             if (interaction.customId === 'redeem_btn') {
                 const modal = new ModalBuilder().setCustomId('redeem_modal').setTitle('Secure Key Redemption');
                 const codeInput = new TextInputBuilder().setCustomId('redeem_code_input').setLabel("ENTER CODE").setStyle(TextInputStyle.Short).setPlaceholder("supporter-xxxx-xxxx-xxxx").setRequired(true);
@@ -2679,7 +2605,6 @@ client.on('interactionCreate', async interaction => {
                 return await interaction.showModal(modal);
             }
 
-            // --- CLOSE TICKET BUTTON ---
             if (interaction.customId === 'close_ticket_btn') {
                 if (!hasAdminAccess(interaction)) return interaction.reply({ content: "Only staff can close tickets.", flags: 64 });
                 await interaction.reply({ content: "Closing ticket..." });
@@ -2691,7 +2616,6 @@ client.on('interactionCreate', async interaction => {
             await interaction.editReply({ content: 'This button is not yet handled.', flags: 64 });
         }
 
-        // --- SELECT MENU: Support ticket ---
         if (interaction.isStringSelectMenu() && interaction.customId === 'support_select') {
             await interaction.deferReply({ flags: 64 });
             const category = interaction.values[0];
@@ -2711,9 +2635,7 @@ client.on('interactionCreate', async interaction => {
             } catch (err) { return interaction.editReply({ content: "Failed to create ticket." }); }
         }
 
-        // --- MODAL SUBMITS ---
         if (interaction.isModalSubmit()) {
-            // --- MOD APPLICATION MODAL ---
             if (interaction.customId === 'mod_app_modal') {
                 await interaction.deferReply({ flags: 64 });
 
@@ -2783,7 +2705,6 @@ client.on('interactionCreate', async interaction => {
                 return;
             }
 
-            // --- STOCK MODAL ---
             if (interaction.customId === 'stock_modal') {
                 if (!hasAdminAccess(interaction)) return interaction.reply({ content: 'Access Denied.', flags: 64 });
                 await interaction.deferReply({ flags: 64 });
@@ -2801,7 +2722,6 @@ client.on('interactionCreate', async interaction => {
                 return interaction.editReply({ content: `Added token! Total: ${tokenStock.length} (Token #${newNumber})` });
             }
 
-            // --- REDEEM MODAL ---
             if (interaction.customId === 'redeem_modal') {
                 await interaction.deferReply({ flags: 64 });
                 const code = interaction.fields.getTextInputValue('redeem_code_input').trim();
@@ -2813,7 +2733,6 @@ client.on('interactionCreate', async interaction => {
                 } else return interaction.editReply({ content: `Invalid code: \`${code}\`` });
             }
 
-            // --- DONATE TOKEN MODAL ---
             if (interaction.customId === 'donate_token_modal') {
                 await interaction.deferReply({ flags: 64 });
                 const jsonRaw = interaction.fields.getTextInputValue('donate_json_input').trim();
@@ -2857,7 +2776,6 @@ client.on('interactionCreate', async interaction => {
                 }
             }
 
-            // --- CHECK TOKEN MODAL ---
             if (interaction.customId === 'check_token_modal') {
                 await interaction.deferReply({ flags: 64 });
                 const jsonRaw = interaction.fields.getTextInputValue('check_json_input').trim();
@@ -2908,7 +2826,6 @@ client.on('interactionCreate', async interaction => {
                 return;
             }
 
-            // --- SPLIT TOKEN MODAL ---
             if (interaction.customId === 'split_token_modal') {
                 await interaction.deferReply({ flags: 64 });
                 const jsonRaw = interaction.fields.getTextInputValue('split_json_input').trim();
