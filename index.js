@@ -1,6 +1,6 @@
 // ============================================================
-// FILE: discord.cjs – EAM.LOL Token Bot v2.5.7
-// CommonJS version (works with .cjs extension)
+// FILE: index.js – EAM.LOL Token Bot v2.5.7
+// FIXED: Clear 401 error, no retry, fallback works.
 // ============================================================
 
 const {
@@ -29,6 +29,9 @@ const dnsLookup = promisify(dns.lookup);
 
 dns.setServers(['8.8.8.8', '1.1.1.1']);
 console.log('[INFO] [EAM.LOL] DNS set to Google DNS (8.8.8.8, 1.1.1.1)');
+
+// ========== DEBUG: Check if DISCORD_TOKEN is set ==========
+console.log('[DEBUG] DISCORD_TOKEN is set?', process.env.DISCORD_TOKEN ? '✅ Yes' : '❌ No');
 
 const client = new Client({
     intents: [
