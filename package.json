@@ -1,15 +1,17 @@
 {
   "name": "discord-bot",
-  "version": "1.0.0",
-  "description": "Discord moderation and token management bot",
+  "version": "2.5.7",
+  "description": "EAM.LOL Token Generator Bot for Animal Company",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
   },
   "dependencies": {
-    "@google/generative-ai": "^0.21.0",
-    "better-sqlite3": "^11.8.1",
-    "discord.js": "^14.18.0",
-    "dotenv": "^16.4.7"
-  }
+    "discord.js": "^14.14.1"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "author": "elliott",
+  "license": "MIT"
 }
