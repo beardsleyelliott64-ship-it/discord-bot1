@@ -1,5 +1,6 @@
 // ============================================================
-// FILE: index.js – EAM.LOL Token Bot v2.5.7
+// FILE: discord.cjs – EAM.LOL Token Bot v2.5.7
+// CommonJS version (works with .cjs extension)
 // ============================================================
 
 const {
