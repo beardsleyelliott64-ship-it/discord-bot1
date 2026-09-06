@@ -1,6 +1,6 @@
 // ============================================================
-// FILE: index.js – EAM.LOL Token Bot v2.4.9
-// Status panel: token-available, token-expiring-soon, token-expired
+// FILE: index.js – EAM.LOL Token Bot v2.4.11
+// All auto‑cleanup, consistent status, full features.
 // ============================================================
 
 const {
@@ -42,26 +42,23 @@ const client = new Client({
 });
 
 // --- CONFIGURATION ---
-const VERSION = "2.4.9";
+const VERSION = "2.4.11";
 const UPDATE_LOG_CHANNEL_ID = "1545829503912120431";
-const STATUS_CHANNEL_ID = "1545624109583695933";
-const TOKEN_NUMBER_CHANNEL_ID = "1546151859465756722";
+const STATUS_CHANNEL_ID = "1545624109583695933";      // This channel's name changes based on token status
+const TOKEN_NUMBER_CHANNEL_ID = "1546151859465756722"; // This channel shows only the token number
 const LOG_CHANNEL_ID = "1545922334534148196";
 
 const CHANGELOG = `🔧 Bot Update v${VERSION}
 
 What's new:
-• **Status panel naming** – the status channel now shows:
-  • 🟢 token-available – token is valid and working
-  • 🟡 token-expiring-soon – less than 5 minutes left
-  • 🔴 token-expired – token is expired or no token available
-• **Subscription panel updates every 5 seconds** – live token number, status, time left.
-• **Auto‑deletes duplicate panels** – only one subscription panel remains.
-• **Refresh token fallback fixed** – /set-refresh now properly adds tokens to the accounts list.
+• **Auto‑delete duplicate status panels** – only the latest status embed remains.
+• **Status channel name and embed are now perfectly in sync** – both show the same token state.
+• **Status channel name** updates every 30 seconds to: 🟢 token-available / 🟡 token-expiring-soon / 🔴 token-expired / 🟠 token-none.
+• All previous features remain: 5‑sec subscription updates, token number channel, fixed refresh.
 
 What's fixed:
-• Freezing issues – the bot now handles refresh failures gracefully.
-• The "All accounts exhausted" error is gone.`;
+• Status embed no longer shows conflicting "ACTIVE" when token is expired.
+• Duplicate status panels are automatically removed.`;
 
 const MEMBER_ROLE_ID = "1492798151516491816";
 const SUPPORTER_ROLE_ID = "1529393418063581284";
@@ -1320,8 +1317,11 @@ async function updateStatusPanel() {
             return;
         }
 
+        // Clean up duplicate status panels first
+        await cleanupDuplicateStatusPanels(STATUS_CHANNEL_ID);
+
         const token = tokenStock.length > 0 ? tokenStock[0] : null;
-        let status = '🔴 token-expired';
+        let statusText = '🔴 token-expired';
         let color = 0xED4245;
         let expiryText = 'N/A';
         let timeLeft = 'N/A';
@@ -1336,26 +1336,26 @@ async function updateStatusPanel() {
                 timeLeft = ttl > 0 ? formatRemainingTime(expiry) : 'EXPIRED';
 
                 if (ttl <= 0) {
-                    status = '🔴 token-expired';
+                    statusText = '🔴 token-expired';
                     color = 0xED4245;
                 } else if (ttl < 300) {
-                    status = '🟡 token-expiring-soon';
+                    statusText = '🟡 token-expiring-soon';
                     color = 0xF1C40F;
                 } else {
-                    status = '🟢 token-available';
+                    statusText = '🟢 token-available';
                     color = 0x2ECC71;
                 }
             } else {
-                status = '⚠️ token-unknown';
+                statusText = '⚠️ token-unknown';
                 color = 0xFEE75C;
             }
         } else {
-            status = '🔴 token-expired';
-            color = 0xED4245;
+            statusText = '🟠 token-none';
+            color = 0xF39C12;
         }
 
-        // Update token number channel name
-        await updateTokenNumberChannel();
+        // Update the status channel name (not the token-number channel)
+        await updateStatusChannelName();
 
         const embed = new EmbedBuilder()
             .setTitle('📊 Token Status Dashboard')
@@ -1363,7 +1363,7 @@ async function updateStatusPanel() {
             .setColor(color)
             .addFields(
                 { name: 'Token #', value: `${tokenNumber}`, inline: true },
-                { name: 'Status', value: status, inline: true },
+                { name: 'Status', value: statusText, inline: true },
                 { name: 'Stock Count', value: `${tokenStock.length} token(s)`, inline: true },
                 { name: 'Expires At (UTC)', value: expiryText, inline: true },
                 { name: 'Time Left', value: timeLeft, inline: true },
@@ -1399,14 +1399,48 @@ async function updateStatusPanel() {
     }
 }
 
-// ========== TOKEN NUMBER CHANNEL NAME UPDATE ==========
+// ========== STATUS CHANNEL NAME UPDATE (only status channel) ==========
+async function updateStatusChannelName() {
+    try {
+        const channel = client.channels.cache.get(STATUS_CHANNEL_ID);
+        if (!channel) return;
+
+        const token = tokenStock.length > 0 ? tokenStock[0] : null;
+        let newName = '🟠 token-none';
+
+        if (token && token.bearer) {
+            const expiry = getTokenExpiryMs(token.bearer);
+            if (expiry !== null) {
+                const now = Date.now();
+                const ttl = Math.floor((expiry - now) / 1000);
+                if (ttl <= 0) {
+                    newName = '🔴 token-expired';
+                } else if (ttl < 300) {
+                    newName = '🟡 token-expiring-soon';
+                } else {
+                    newName = '🟢 token-available';
+                }
+            } else {
+                newName = '⚠️ token-unknown';
+            }
+        } else {
+            newName = '🟠 token-none';
+        }
+
+        if (channel.name !== newName) {
+            await channel.setName(newName);
+            console.log(`[STATUS] Channel name updated to: ${newName}`);
+        }
+    } catch (err) {
+        console.error('[STATUS] Error updating status channel name:', err);
+    }
+}
+
+// ========== TOKEN NUMBER CHANNEL UPDATE (separate) ==========
 async function updateTokenNumberChannel() {
     try {
         const channel = client.channels.cache.get(TOKEN_NUMBER_CHANNEL_ID);
-        if (!channel) {
-            console.error(`[TOKEN_NUMBER] Channel ${TOKEN_NUMBER_CHANNEL_ID} not found.`);
-            return;
-        }
+        if (!channel) return;
 
         const token = tokenStock.length > 0 ? tokenStock[0] : null;
         let emoji = '🔴';
@@ -1444,6 +1478,28 @@ async function updateTokenNumberChannel() {
     }
 }
 
+// ========== CLEANUP DUPLICATE STATUS PANELS ==========
+async function cleanupDuplicateStatusPanels(channelId) {
+    try {
+        const channel = client.channels.cache.get(channelId);
+        if (!channel) return;
+        const messages = await channel.messages.fetch({ limit: 20 });
+        const botMessages = messages.filter(m => m.author.id === client.user.id && m.embeds.length > 0 && m.embeds[0].title === '📊 Token Status Dashboard');
+        if (botMessages.size > 1) {
+            const sorted = botMessages.sort((a, b) => b.createdTimestamp - a.createdTimestamp);
+            const latest = sorted.first();
+            for (const [id, msg] of sorted) {
+                if (msg.id !== latest.id) {
+                    await msg.delete();
+                    console.log(`[CLEANUP] Deleted duplicate status panel: ${msg.id}`);
+                }
+            }
+        }
+    } catch (err) {
+        console.error('[CLEANUP] Error cleaning up status panels:', err);
+    }
+}
+
 // ========== SUBSCRIPTION PANEL BUILD ==========
 function buildSubscriptionEmbed() {
     const token = tokenStock.length > 0 ? tokenStock[0] : null;
@@ -1474,8 +1530,8 @@ function buildSubscriptionEmbed() {
             color = 0xFEE75C;
         }
     } else {
-        status = '🔴 OFFLINE';
-        color = 0xED4245;
+        status = '🟠 NONE';
+        color = 0xF39C12;
     }
 
     const embed = new EmbedBuilder()
@@ -1572,18 +1628,8 @@ client.once('ready', async () => {
     // Start log queue processor
     logQueueInterval = setInterval(processLogQueue, 2000);
 
-    // Set the status channel name to static
-    const statusChannel = client.channels.cache.get(STATUS_CHANNEL_ID);
-    if (statusChannel && statusChannel.name !== '📊 token-status') {
-        try {
-            await statusChannel.setName('📊 token-status');
-            console.log('[STATUS] Status channel name set to static: 📊 token-status');
-        } catch (err) {
-            console.error('[ERROR] Failed to set status channel name:', err);
-        }
-    }
-
-    // Update token number channel immediately
+    // Update channel names on startup
+    await updateStatusChannelName();
     await updateTokenNumberChannel();
 
     startAutoRefresh();
@@ -1598,7 +1644,7 @@ client.once('ready', async () => {
     }
 
     // Separate intervals:
-    // Status panel updates every 30 seconds (includes token number channel rename)
+    // Status panel updates every 30 seconds (includes status channel name rename)
     setInterval(async () => {
         await updateStatusPanel();
     }, 30000);
@@ -1918,7 +1964,8 @@ client.on('interactionCreate', async interaction => {
                         '**Status Indicators**\n' +
                         '🟢 **token-available** – Token is alive and ready to use (≥5 min left).\n' +
                         '🟡 **token-expiring-soon** – Less than 5 minutes left; the bot will auto‑refresh shortly.\n' +
-                        '🔴 **token-expired** – Token no longer works; the bot will fall back to a new token.\n\n' +
+                        '🔴 **token-expired** – Token no longer works; the bot will fall back to a new token.\n' +
+                        '🟠 **token-none** – No token in stock.\n\n' +
                         '**Token Types**\n' +
                         '• **Bearer Token** – The long string you paste into Animal Company. This is your **access key**.\n' +
                         '• **Refresh Token** – The secret that allows the bot to get a new Bearer without you logging in again.\n' +
