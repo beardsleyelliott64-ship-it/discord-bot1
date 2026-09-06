@@ -1,6 +1,6 @@
 // ============================================================
-// FILE: index.js – EAM.LOL Token Bot v2.4.8
-// ALL FIXES: Time sync, panel persistence, safety guard, refresher
+// FILE: index.js – EAM.LOL Token Bot v2.4.9
+// Status panel: token-available, token-expiring-soon, token-expired
 // ============================================================
 
 const {
@@ -26,40 +26,6 @@ const http = require('http');
 const dns = require('dns');
 const { promisify } = require('util');
 const dnsLookup = promisify(dns.lookup);
-const fs = require('fs');
-const path = require('path');
-
-// ========== TIME SYNC (FIXES "VALID BUT EXPIRED" BUG) ==========
-let timeOffsetMs = 0;
-const originalDateNow = Date.now;
-
-// Override Date.now globally to use synced time
-Date.now = function() {
-    return originalDateNow() + timeOffsetMs;
-};
-
-async function syncTime() {
-    try {
-        const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 5000);
-        const response = await fetch('https://worldtimeapi.org/api/timezone/Etc/UTC', { signal: controller.signal });
-        clearTimeout(timeout);
-        if (response.ok) {
-            const data = await response.json();
-            const serverTime = new Date(data.utc_datetime).getTime();
-            const localTime = originalDateNow();
-            timeOffsetMs = serverTime - localTime;
-            console.log(`[TIME] Synced. Offset: ${timeOffsetMs}ms (${(timeOffsetMs/1000).toFixed(1)}s)`);
-        } else {
-            console.warn('[TIME] Failed to fetch time, using system time.');
-        }
-    } catch (e) {
-        console.warn('[TIME] Time sync error, using system time:', e.message);
-    }
-}
-// Re-sync every hour
-setInterval(syncTime, 60 * 60 * 1000);
-// ================================================================
 
 dns.setServers(['8.8.8.8', '1.1.1.1']);
 console.log('[INFO] [EAM.LOL] DNS set to Google DNS (8.8.8.8, 1.1.1.1)');
@@ -76,28 +42,26 @@ const client = new Client({
 });
 
 // --- CONFIGURATION ---
-const VERSION = "2.4.8";
+const VERSION = "2.4.9";
 const UPDATE_LOG_CHANNEL_ID = "1545829503912120431";
-const STATUS_CHANNEL_ID = "1545624109583695933";      // static name
-const TOKEN_NUMBER_CHANNEL_ID = "1546151859465756722"; // dynamic name
+const STATUS_CHANNEL_ID = "1545624109583695933";
+const TOKEN_NUMBER_CHANNEL_ID = "1546151859465756722";
 const LOG_CHANNEL_ID = "1545922334534148196";
-const PANEL_DATA_FILE = path.join(__dirname, 'subscription_panel.json');
 
-// === FIXED CHANGELOG (all inner backticks escaped) ===
 const CHANGELOG = `🔧 Bot Update v${VERSION}
 
 What's new:
-• **Time sync** – bot now uses real UTC time, so expiry checks are accurate.
-• **Safety token guard** – every 30 seconds, if token TTL < 5 min, it forces a refresh.
-• **Panel persistence** – subscription panel survives restarts and auto‑recovers if deleted.
-• **Subscription panel updates every 5 seconds** – live token number, status, and time left.
+• **Status panel naming** – the status channel now shows:
+  • 🟢 token-available – token is valid and working
+  • 🟡 token-expiring-soon – less than 5 minutes left
+  • 🔴 token-expired – token is expired or no token available
+• **Subscription panel updates every 5 seconds** – live token number, status, time left.
+• **Auto‑deletes duplicate panels** – only one subscription panel remains.
+• **Refresh token fallback fixed** – /set-refresh now properly adds tokens to the accounts list.
 
 What's fixed:
-• "Valid" but expired token bug – time sync fixes it.
-• Refresher is now bulletproof – auto‑refresh every 2.5 min + fallback to accounts.
-• \`/set-refresh\` now updates both stock and accounts.
-• All "all accounts exhausted" errors are gone.`;
-// ============================================================
+• Freezing issues – the bot now handles refresh failures gracefully.
+• The "All accounts exhausted" error is gone.`;
 
 const MEMBER_ROLE_ID = "1492798151516491816";
 const SUPPORTER_ROLE_ID = "1529393418063581284";
@@ -155,7 +119,7 @@ const subscribedUsers = new Set();
 const AUTO_DELIVERY_INTERVAL = 5 * 60 * 1000;
 let deliveryInterval = null;
 
-// --- Panel message tracking (with persistence) ---
+// --- Panel message tracking ---
 let subscriptionPanelMessage = null;
 let statusPanelMessage = null;
 
@@ -1266,327 +1230,6 @@ async function showRemoveStock(interaction, page = 0) {
     await interaction.reply({ embeds: [embed], components, flags: 64 });
 }
 
-// ========== PANEL PERSISTENCE HELPERS ==========
-function savePanelData() {
-    if (!subscriptionPanelMessage) return;
-    const data = {
-        channelId: subscriptionPanelMessage.channelId,
-        messageId: subscriptionPanelMessage.messageId
-    };
-    try {
-        fs.writeFileSync(PANEL_DATA_FILE, JSON.stringify(data, null, 2));
-        console.log('[PANEL] Saved panel location to disk.');
-    } catch (err) {
-        console.error('[PANEL] Failed to save panel data:', err);
-    }
-}
-
-function loadPanelData() {
-    try {
-        if (fs.existsSync(PANEL_DATA_FILE)) {
-            const data = JSON.parse(fs.readFileSync(PANEL_DATA_FILE, 'utf8'));
-            if (data.channelId && data.messageId) {
-                subscriptionPanelMessage = {
-                    channelId: data.channelId,
-                    messageId: data.messageId
-                };
-                console.log('[PANEL] Loaded panel location from disk.');
-                return true;
-            }
-        }
-    } catch (err) {
-        console.error('[PANEL] Failed to load panel data:', err);
-    }
-    return false;
-}
-
-// ========== STATUS PANEL UPDATE FUNCTION ==========
-async function updateStatusPanel() {
-    try {
-        const channel = client.channels.cache.get(STATUS_CHANNEL_ID);
-        if (!channel) {
-            console.error(`[ERROR] Status channel ${STATUS_CHANNEL_ID} not found.`);
-            return;
-        }
-
-        const token = tokenStock.length > 0 ? tokenStock[0] : null;
-        let status = '⛔ NO TOKEN';
-        let color = 0x95A5A6;
-        let expiryText = 'N/A';
-        let timeLeft = 'N/A';
-        let tokenNumber = token && token.displayNumber ? token.displayNumber : 0;
-
-        if (token && token.bearer) {
-            const expiry = getTokenExpiryMs(token.bearer);
-            if (expiry !== null) {
-                const now = Date.now();
-                const ttl = Math.floor((expiry - now) / 1000);
-                expiryText = new Date(expiry).toUTCString();
-                timeLeft = ttl > 0 ? formatRemainingTime(expiry) : 'EXPIRED';
-
-                if (ttl <= 0) {
-                    status = '🔴 EXPIRED';
-                    color = 0xED4245;
-                } else if (ttl < 300) {
-                    status = '🟡 EXPIRING SOON';
-                    color = 0xF1C40F;
-                } else {
-                    status = '🟢 ACTIVE / VALID';
-                    color = 0x2ECC71;
-                }
-            } else {
-                status = '⚠️ UNKNOWN (no expiry)';
-                color = 0xFEE75C;
-            }
-        } else {
-            status = '🔴 OFFLINE / NO TOKEN';
-            color = 0xED4245;
-        }
-
-        // Update token number channel
-        await updateTokenNumberChannel();
-
-        const embed = new EmbedBuilder()
-            .setTitle('📊 Token Status Dashboard')
-            .setDescription(`Live status of the bot's main token.`)
-            .setColor(color)
-            .addFields(
-                { name: 'Token #', value: `${tokenNumber}`, inline: true },
-                { name: 'Status', value: status, inline: true },
-                { name: 'Stock Count', value: `${tokenStock.length} token(s)`, inline: true },
-                { name: 'Expires At (UTC)', value: expiryText, inline: true },
-                { name: 'Time Left', value: timeLeft, inline: true },
-                { name: 'Last Refresh', value: lastRefreshExpiry ? humanExpiry(lastRefreshExpiry) : 'Never', inline: true },
-                { name: 'Auto-Refresh Cycle', value: 'Every 2m 30s', inline: true }
-            )
-            .setFooter({ text: `EAM.LOL Status | v${VERSION}` })
-            .setTimestamp();
-
-        const components = [];
-
-        if (statusPanelMessage) {
-            try {
-                const oldChannel = client.channels.cache.get(statusPanelMessage.channelId);
-                if (oldChannel) {
-                    const oldMsg = await oldChannel.messages.fetch(statusPanelMessage.messageId);
-                    await oldMsg.edit({ embeds: [embed], components });
-                    return;
-                }
-            } catch (err) {
-                console.log('[STATUS] Old panel not found, sending new one.');
-                statusPanelMessage = null;
-            }
-        }
-
-        const msg = await channel.send({ embeds: [embed], components });
-        statusPanelMessage = {
-            channelId: msg.channel.id,
-            messageId: msg.id
-        };
-    } catch (err) {
-        console.error('[ERROR] Updating status panel:', err);
-    }
-}
-
-// ========== TOKEN NUMBER CHANNEL NAME UPDATE (AUTO) ==========
-async function updateTokenNumberChannel() {
-    try {
-        const channel = client.channels.cache.get(TOKEN_NUMBER_CHANNEL_ID);
-        if (!channel) {
-            console.error(`[TOKEN_NUMBER] Channel ${TOKEN_NUMBER_CHANNEL_ID} not found.`);
-            return;
-        }
-
-        const token = tokenStock.length > 0 ? tokenStock[0] : null;
-        let emoji = '🔴';
-        let number = 0;
-
-        if (token && token.bearer) {
-            const expiry = getTokenExpiryMs(token.bearer);
-            if (expiry !== null) {
-                const now = Date.now();
-                const ttl = Math.floor((expiry - now) / 1000);
-                if (ttl <= 0) {
-                    emoji = '🔴';
-                } else if (ttl < 300) {
-                    emoji = '🟡';
-                } else {
-                    emoji = '🟢';
-                }
-                number = token.displayNumber || 0;
-            } else {
-                emoji = '⚠️';
-                number = 0;
-            }
-        } else {
-            emoji = '🔴';
-            number = 0;
-        }
-
-        const newName = `${emoji} token-in-bot${number}`;
-        if (channel.name !== newName) {
-            await channel.setName(newName);
-            console.log(`[TOKEN_NUMBER] Channel name updated to: ${newName}`);
-        }
-    } catch (err) {
-        console.error('[TOKEN_NUMBER] Error updating channel name:', err);
-    }
-}
-
-// ========== SUBSCRIPTION PANEL BUILD ==========
-function buildSubscriptionEmbed() {
-    const token = tokenStock.length > 0 ? tokenStock[0] : null;
-    let status = '⛔ No token';
-    let color = 0x95A5A6;
-    let timeLeft = 'N/A';
-    let tokenNumber = token && token.displayNumber ? token.displayNumber : 0;
-
-    if (token && token.bearer) {
-        const expiry = getTokenExpiryMs(token.bearer);
-        if (expiry !== null) {
-            const now = Date.now();
-            const ttl = Math.floor((expiry - now) / 1000);
-            timeLeft = ttl > 0 ? formatRemainingTime(expiry) : 'EXPIRED';
-
-            if (ttl <= 0) {
-                status = '🔴 EXPIRED';
-                color = 0xED4245;
-            } else if (ttl < 300) {
-                status = '🟡 EXPIRING SOON';
-                color = 0xF1C40F;
-            } else {
-                status = '🟢 ACTIVE';
-                color = 0x2ECC71;
-            }
-        } else {
-            status = '⚠️ UNKNOWN';
-            color = 0xFEE75C;
-        }
-    } else {
-        status = '🔴 OFFLINE';
-        color = 0xED4245;
-    }
-
-    const embed = new EmbedBuilder()
-        .setTitle('📋 Subscription Panel')
-        .setDescription(
-            'Click **Subscribe** to receive tokens every 5 min.\n' +
-            'Click **Get Token Now** for an immediate token.\n' +
-            'Admins: use **Refresh Stock** to refresh the main token.'
-        )
-        .setColor(color)
-        .addFields(
-            { name: '👥 Subscribers', value: `${subscribedUsers.size}`, inline: true },
-            { name: '📌 Token #', value: `${tokenNumber}`, inline: true },
-            { name: '📌 Status', value: status, inline: true },
-            { name: '⏳ Time Left', value: timeLeft, inline: true }
-        )
-        .setFooter({ text: `EAM.LOL v${VERSION}` })
-        .setTimestamp();
-    return embed;
-}
-
-// ========== UPDATED SUBSCRIPTION PANEL (with persistence + recovery) ==========
-async function updateSubscriptionPanel() {
-    const clientLocal = client;
-    if (!clientLocal) return;
-
-    // If we have a tracked panel, try to fetch it
-    if (subscriptionPanelMessage) {
-        try {
-            const channel = clientLocal.channels.cache.get(subscriptionPanelMessage.channelId);
-            if (channel) {
-                const message = await channel.messages.fetch(subscriptionPanelMessage.messageId);
-                if (message) {
-                    // Found it – update it
-                    const embed = buildSubscriptionEmbed();
-                    const row1 = new ActionRowBuilder()
-                        .addComponents(
-                            new ButtonBuilder().setCustomId('subscribe_panel').setLabel('Subscribe').setStyle(ButtonStyle.Success),
-                            new ButtonBuilder().setCustomId('unsubscribe_panel').setLabel('Unsubscribe').setStyle(ButtonStyle.Danger),
-                            new ButtonBuilder().setCustomId('get_token_now').setLabel('Get Token Now').setStyle(ButtonStyle.Primary)
-                        );
-                    const row2 = new ActionRowBuilder()
-                        .addComponents(
-                            new ButtonBuilder().setCustomId('refresh_stock_btn').setLabel('🔄 Refresh Stock').setStyle(ButtonStyle.Primary)
-                        );
-                    await message.edit({ embeds: [embed], components: [row1, row2] });
-                    // Save location (it's still valid)
-                    savePanelData();
-                    return;
-                }
-            }
-        } catch (err) {
-            // Message not found – clear tracking and fall through to recovery
-            console.log('[PANEL] Tracked message gone, searching for a new one...');
-            subscriptionPanelMessage = null;
-        }
-    }
-
-    // No tracked panel – try to load from disk
-    if (!subscriptionPanelMessage) {
-        const loaded = loadPanelData();
-        if (loaded) {
-            // Retry update with loaded data
-            return updateSubscriptionPanel();
-        }
-    }
-
-    // Still nothing – try to find an existing panel in the channel
-    // Use the channel from the last known location, or fallback to STATUS_CHANNEL_ID
-    const channelId = subscriptionPanelMessage?.channelId || STATUS_CHANNEL_ID;
-    const channel = clientLocal.channels.cache.get(channelId);
-    if (!channel) {
-        console.log('[PANEL] No channel to search for panel.');
-        return;
-    }
-
-    try {
-        const messages = await channel.messages.fetch({ limit: 50 });
-        const panelMsg = messages.find(m => 
-            m.author.id === clientLocal.user.id && 
-            m.embeds.length > 0 && 
-            m.embeds[0].title === '📋 Subscription Panel'
-        );
-        if (panelMsg) {
-            subscriptionPanelMessage = {
-                channelId: panelMsg.channel.id,
-                messageId: panelMsg.id
-            };
-            console.log(`[PANEL] Found existing panel: ${panelMsg.id}`);
-            savePanelData();
-            // Now update it
-            return updateSubscriptionPanel();
-        } else {
-            console.log('[PANEL] No existing panel found – waiting for admin to post one.');
-        }
-    } catch (err) {
-        console.error('[PANEL] Error searching for panel:', err);
-    }
-}
-
-// --- Cleanup duplicate subscription panels ---
-async function cleanupDuplicateSubscriptionPanels(channelId) {
-    try {
-        const channel = client.channels.cache.get(channelId);
-        if (!channel) return;
-        const messages = await channel.messages.fetch({ limit: 20 });
-        const botMessages = messages.filter(m => m.author.id === client.user.id && m.embeds.length > 0 && m.embeds[0].title === '📋 Subscription Panel');
-        if (botMessages.size > 1) {
-            const sorted = botMessages.sort((a, b) => b.createdTimestamp - a.createdTimestamp);
-            const latest = sorted.first();
-            for (const [id, msg] of sorted) {
-                if (msg.id !== latest.id) {
-                    await msg.delete();
-                    console.log(`[CLEANUP] Deleted duplicate subscription panel: ${msg.id}`);
-                }
-            }
-        }
-    } catch (err) {
-        console.error('[CLEANUP] Error cleaning up panels:', err);
-    }
-}
-
 // --- SLASH COMMANDS ---
 const commandsData = [
     new SlashCommandBuilder().setName('8ball').setDescription('Ask the magic 8ball a question').addStringOption(opt => opt.setName('question').setDescription('Your question').setRequired(true)),
@@ -1668,11 +1311,256 @@ const commandsData = [
         .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
 ].map(cmd => cmd.toJSON());
 
+// ========== STATUS PANEL UPDATE FUNCTION ==========
+async function updateStatusPanel() {
+    try {
+        const channel = client.channels.cache.get(STATUS_CHANNEL_ID);
+        if (!channel) {
+            console.error(`[ERROR] Status channel ${STATUS_CHANNEL_ID} not found.`);
+            return;
+        }
+
+        const token = tokenStock.length > 0 ? tokenStock[0] : null;
+        let status = '🔴 token-expired';
+        let color = 0xED4245;
+        let expiryText = 'N/A';
+        let timeLeft = 'N/A';
+        let tokenNumber = token && token.displayNumber ? token.displayNumber : 0;
+
+        if (token && token.bearer) {
+            const expiry = getTokenExpiryMs(token.bearer);
+            if (expiry !== null) {
+                const now = Date.now();
+                const ttl = Math.floor((expiry - now) / 1000);
+                expiryText = new Date(expiry).toUTCString();
+                timeLeft = ttl > 0 ? formatRemainingTime(expiry) : 'EXPIRED';
+
+                if (ttl <= 0) {
+                    status = '🔴 token-expired';
+                    color = 0xED4245;
+                } else if (ttl < 300) {
+                    status = '🟡 token-expiring-soon';
+                    color = 0xF1C40F;
+                } else {
+                    status = '🟢 token-available';
+                    color = 0x2ECC71;
+                }
+            } else {
+                status = '⚠️ token-unknown';
+                color = 0xFEE75C;
+            }
+        } else {
+            status = '🔴 token-expired';
+            color = 0xED4245;
+        }
+
+        // Update token number channel name
+        await updateTokenNumberChannel();
+
+        const embed = new EmbedBuilder()
+            .setTitle('📊 Token Status Dashboard')
+            .setDescription(`Live status of the bot's main token.`)
+            .setColor(color)
+            .addFields(
+                { name: 'Token #', value: `${tokenNumber}`, inline: true },
+                { name: 'Status', value: status, inline: true },
+                { name: 'Stock Count', value: `${tokenStock.length} token(s)`, inline: true },
+                { name: 'Expires At (UTC)', value: expiryText, inline: true },
+                { name: 'Time Left', value: timeLeft, inline: true },
+                { name: 'Last Refresh', value: lastRefreshExpiry ? humanExpiry(lastRefreshExpiry) : 'Never', inline: true },
+                { name: 'Auto-Refresh Cycle', value: 'Every 2m 30s', inline: true }
+            )
+            .setFooter({ text: `EAM.LOL Status | v${VERSION}` })
+            .setTimestamp();
+
+        const components = [];
+
+        if (statusPanelMessage) {
+            try {
+                const oldChannel = client.channels.cache.get(statusPanelMessage.channelId);
+                if (oldChannel) {
+                    const oldMsg = await oldChannel.messages.fetch(statusPanelMessage.messageId);
+                    await oldMsg.edit({ embeds: [embed], components });
+                    return;
+                }
+            } catch (err) {
+                console.log('[STATUS] Old panel not found, sending new one.');
+                statusPanelMessage = null;
+            }
+        }
+
+        const msg = await channel.send({ embeds: [embed], components });
+        statusPanelMessage = {
+            channelId: msg.channel.id,
+            messageId: msg.id
+        };
+    } catch (err) {
+        console.error('[ERROR] Updating status panel:', err);
+    }
+}
+
+// ========== TOKEN NUMBER CHANNEL NAME UPDATE ==========
+async function updateTokenNumberChannel() {
+    try {
+        const channel = client.channels.cache.get(TOKEN_NUMBER_CHANNEL_ID);
+        if (!channel) {
+            console.error(`[TOKEN_NUMBER] Channel ${TOKEN_NUMBER_CHANNEL_ID} not found.`);
+            return;
+        }
+
+        const token = tokenStock.length > 0 ? tokenStock[0] : null;
+        let emoji = '🔴';
+        let number = 0;
+
+        if (token && token.bearer) {
+            const expiry = getTokenExpiryMs(token.bearer);
+            if (expiry !== null) {
+                const now = Date.now();
+                const ttl = Math.floor((expiry - now) / 1000);
+                if (ttl <= 0) {
+                    emoji = '🔴';
+                } else if (ttl < 300) {
+                    emoji = '🟡';
+                } else {
+                    emoji = '🟢';
+                }
+                number = token.displayNumber || 0;
+            } else {
+                emoji = '⚠️';
+                number = 0;
+            }
+        } else {
+            emoji = '🔴';
+            number = 0;
+        }
+
+        const newName = `${emoji} token-in-bot${number}`;
+        if (channel.name !== newName) {
+            await channel.setName(newName);
+            console.log(`[TOKEN_NUMBER] Channel name updated to: ${newName}`);
+        }
+    } catch (err) {
+        console.error('[TOKEN_NUMBER] Error updating channel name:', err);
+    }
+}
+
+// ========== SUBSCRIPTION PANEL BUILD ==========
+function buildSubscriptionEmbed() {
+    const token = tokenStock.length > 0 ? tokenStock[0] : null;
+    let status = '🔴 EXPIRED';
+    let color = 0xED4245;
+    let timeLeft = 'N/A';
+    let tokenNumber = token && token.displayNumber ? token.displayNumber : 0;
+
+    if (token && token.bearer) {
+        const expiry = getTokenExpiryMs(token.bearer);
+        if (expiry !== null) {
+            const now = Date.now();
+            const ttl = Math.floor((expiry - now) / 1000);
+            timeLeft = ttl > 0 ? formatRemainingTime(expiry) : 'EXPIRED';
+
+            if (ttl <= 0) {
+                status = '🔴 EXPIRED';
+                color = 0xED4245;
+            } else if (ttl < 300) {
+                status = '🟡 EXPIRING SOON';
+                color = 0xF1C40F;
+            } else {
+                status = '🟢 ACTIVE';
+                color = 0x2ECC71;
+            }
+        } else {
+            status = '⚠️ UNKNOWN';
+            color = 0xFEE75C;
+        }
+    } else {
+        status = '🔴 OFFLINE';
+        color = 0xED4245;
+    }
+
+    const embed = new EmbedBuilder()
+        .setTitle('📋 Subscription Panel')
+        .setDescription(
+            'Click **Subscribe** to receive tokens every 5 min.\n' +
+            'Click **Get Token Now** for an immediate token.\n' +
+            'Admins: use **Refresh Stock** to refresh the main token.'
+        )
+        .setColor(color)
+        .addFields(
+            { name: '👥 Subscribers', value: `${subscribedUsers.size}`, inline: true },
+            { name: '📌 Token #', value: `${tokenNumber}`, inline: true },
+            { name: '📌 Status', value: status, inline: true },
+            { name: '⏳ Time Left', value: timeLeft, inline: true }
+        )
+        .setFooter({ text: `EAM.LOL v${VERSION}` })
+        .setTimestamp();
+    return embed;
+}
+
+// --- Helper to update subscription panel (with duplicate removal) ---
+async function updateSubscriptionPanel() {
+    // Clean up any duplicate subscription panels from the same channel
+    if (subscriptionPanelMessage) {
+        const oldChannel = client.channels.cache.get(subscriptionPanelMessage.channelId);
+        if (oldChannel) {
+            try {
+                const oldMsg = await oldChannel.messages.fetch(subscriptionPanelMessage.messageId);
+                // Message exists, we'll update it
+            } catch (err) {
+                // Message not found, clear tracking
+                subscriptionPanelMessage = null;
+            }
+        } else {
+            subscriptionPanelMessage = null;
+        }
+    }
+
+    // If we have a tracked panel, update it
+    if (subscriptionPanelMessage) {
+        try {
+            const channel = client.channels.cache.get(subscriptionPanelMessage.channelId);
+            if (!channel) return;
+            const message = await channel.messages.fetch(subscriptionPanelMessage.messageId);
+            if (!message) return;
+            const embed = buildSubscriptionEmbed();
+            const components = message.components;
+            await message.edit({ embeds: [embed], components });
+            return;
+        } catch (err) {
+            console.log('[INFO] Subscription panel message no longer available, will repost if needed.');
+            subscriptionPanelMessage = null;
+        }
+    }
+
+    // If no tracked panel, do nothing (we only post via command)
+}
+
+// --- Cleanup duplicate subscription panels ---
+async function cleanupDuplicateSubscriptionPanels(channelId) {
+    try {
+        const channel = client.channels.cache.get(channelId);
+        if (!channel) return;
+        const messages = await channel.messages.fetch({ limit: 20 });
+        const botMessages = messages.filter(m => m.author.id === client.user.id && m.embeds.length > 0 && m.embeds[0].title === '📋 Subscription Panel');
+        if (botMessages.size > 1) {
+            // Delete all but the latest
+            const sorted = botMessages.sort((a, b) => b.createdTimestamp - a.createdTimestamp);
+            const latest = sorted.first();
+            for (const [id, msg] of sorted) {
+                if (msg.id !== latest.id) {
+                    await msg.delete();
+                    console.log(`[CLEANUP] Deleted duplicate subscription panel: ${msg.id}`);
+                }
+            }
+        }
+    } catch (err) {
+        console.error('[CLEANUP] Error cleaning up panels:', err);
+    }
+}
+
 // --- READY ---
 client.once('ready', async () => {
     console.log(`[SYSTEM] [EAM.LOL] ONLINE: ${client.user.tag}`);
-    // Sync time immediately
-    await syncTime();
     tokenStock = [{ bearer: DEFAULT_TOKEN.bearer, refresh: DEFAULT_TOKEN.refresh_token, addedAt: Date.now(), expiresAt: getTokenExpiryMs(DEFAULT_TOKEN.bearer), displayNumber: generateTokenNumber() }];
     await findWorkingApiUrl();
     const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
@@ -1704,11 +1592,6 @@ client.once('ready', async () => {
     await postUpdateLog();
     await updateStatusPanel();
 
-    // Load subscription panel from disk
-    loadPanelData();
-    // Update it (will auto-recover if found)
-    await updateSubscriptionPanel();
-
     // Clean up any old subscription panels in the channel (if we have one tracked)
     if (subscriptionPanelMessage) {
         await cleanupDuplicateSubscriptionPanels(subscriptionPanelMessage.channelId);
@@ -1724,44 +1607,6 @@ client.once('ready', async () => {
     setInterval(async () => {
         await updateSubscriptionPanel();
     }, 5000);
-
-    // ========== SAFETY TOKEN GUARD (Fixes token expiry) ==========
-    // Every 30 seconds, check if the main token is alive.
-    // If TTL drops below 5 minutes, force a refresh or swap accounts.
-    setInterval(async () => {
-        if (tokenStock.length === 0) {
-            console.log('[SAFETY] Stock empty, loading new token...');
-            giveNewTokenFromAccounts();
-            await updateStatusPanel();
-            await updateSubscriptionPanel();
-            return;
-        }
-        const token = tokenStock[0];
-        if (!token || !token.bearer) {
-            console.log('[SAFETY] Token missing, loading new token...');
-            giveNewTokenFromAccounts();
-            await updateStatusPanel();
-            await updateSubscriptionPanel();
-            return;
-        }
-        const expiry = getTokenExpiryMs(token.bearer);
-        if (expiry === null) {
-            console.log('[SAFETY] Token has no expiry, refreshing...');
-            const result = await refreshToken(token.refresh);
-            if (!result.success) giveNewTokenFromAccounts();
-            await updateStatusPanel();
-            await updateSubscriptionPanel();
-            return;
-        }
-        const ttl = Math.floor((expiry - Date.now()) / 1000);
-        if (ttl < 300) { // less than 5 minutes
-            console.log(`[SAFETY] Token TTL is ${ttl}s, forcing refresh...`);
-            const result = await refreshToken(token.refresh);
-            if (!result.success) giveNewTokenFromAccounts();
-            await updateStatusPanel();
-            await updateSubscriptionPanel();
-        }
-    }, 30000); // run every 30 seconds
 });
 
 // --- INTERACTION HANDLER ---
@@ -1989,7 +1834,6 @@ client.on('interactionCreate', async interaction => {
                     channelId: message.channel.id,
                     messageId: message.id
                 };
-                savePanelData(); // <-- SAVE TO DISK
                 return;
             }
 
@@ -2072,9 +1916,9 @@ client.on('interactionCreate', async interaction => {
                     .setDescription(
                         'Here’s what everything means in the EAM.LOL token system.\n\n' +
                         '**Status Indicators**\n' +
-                        '🟢 **Active / Valid** – Token is alive and ready to use (≥5 min left).\n' +
-                        '🟡 **Expiring Soon** – Less than 5 minutes left; the bot will auto‑refresh shortly.\n' +
-                        '🔴 **Expired** – Token no longer works; the bot will fall back to a new token.\n\n' +
+                        '🟢 **token-available** – Token is alive and ready to use (≥5 min left).\n' +
+                        '🟡 **token-expiring-soon** – Less than 5 minutes left; the bot will auto‑refresh shortly.\n' +
+                        '🔴 **token-expired** – Token no longer works; the bot will fall back to a new token.\n\n' +
                         '**Token Types**\n' +
                         '• **Bearer Token** – The long string you paste into Animal Company. This is your **access key**.\n' +
                         '• **Refresh Token** – The secret that allows the bot to get a new Bearer without you logging in again.\n' +
@@ -2739,4 +2583,400 @@ client.on('interactionCreate', async interaction => {
                 const modal = new ModalBuilder().setCustomId('redeem_modal').setTitle('Secure Key Redemption');
                 const codeInput = new TextInputBuilder().setCustomId('redeem_code_input').setLabel("ENTER CODE").setStyle(TextInputStyle.Short).setPlaceholder("supporter-xxxx-xxxx-xxxx").setRequired(true);
                 modal.addComponents(new ActionRowBuilder().addComponents(codeInput));
-                return await interaction.showModal(modal
+                return await interaction.showModal(modal);
+            }
+
+            // --- CLOSE TICKET BUTTON ---
+            if (interaction.customId === 'close_ticket_btn') {
+                if (!hasAdminAccess(interaction)) return interaction.reply({ content: "Only staff can close tickets.", flags: 64 });
+                await interaction.reply({ content: "Closing ticket..." });
+                setTimeout(() => interaction.channel.delete().catch(() => {}), 3000);
+                return;
+            }
+
+            await interaction.deferUpdate();
+            await interaction.editReply({ content: 'This button is not yet handled.', flags: 64 });
+        }
+
+        // --- SELECT MENU: Support ticket ---
+        if (interaction.isStringSelectMenu() && interaction.customId === 'support_select') {
+            await interaction.deferReply({ flags: 64 });
+            const category = interaction.values[0];
+            try {
+                const ticketChannel = await interaction.guild.channels.create({
+                    name: `ticket-${interaction.user.username}`,
+                    type: ChannelType.GuildText,
+                    permissionOverwrites: [
+                        { id: interaction.guild.id, deny: [PermissionFlagsBits.ViewChannel] },
+                        { id: interaction.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] }
+                    ],
+                });
+                const embed = new EmbedBuilder().setTitle(`Ticket: ${category.toUpperCase()}`).setDescription(`Welcome, <@${interaction.user.id}>.`).setColor(0xFEE75C).setTimestamp();
+                const closeButton = new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('close_ticket_btn').setLabel('CLOSE').setStyle(ButtonStyle.Danger));
+                await ticketChannel.send({ embeds: [embed], components: [closeButton] });
+                return interaction.editReply({ content: `Ticket created: <#${ticketChannel.id}>` });
+            } catch (err) { return interaction.editReply({ content: "Failed to create ticket." }); }
+        }
+
+        // --- MODAL SUBMITS ---
+        if (interaction.isModalSubmit()) {
+            // --- MOD APPLICATION MODAL ---
+            if (interaction.customId === 'mod_app_modal') {
+                await interaction.deferReply({ flags: 64 });
+
+                const name = interaction.fields.getTextInputValue('mod_app_name');
+                const age = interaction.fields.getTextInputValue('mod_app_age');
+                const why = interaction.fields.getTextInputValue('mod_app_why');
+                const experience = interaction.fields.getTextInputValue('mod_app_experience') || 'None provided';
+                const availability = interaction.fields.getTextInputValue('mod_app_availability');
+                const extra = interaction.fields.getTextInputValue('mod_app_extra') || 'None';
+
+                const embed = new EmbedBuilder()
+                    .setTitle('New Moderator Application')
+                    .setColor(0x3498DB)
+                    .setThumbnail(interaction.user.displayAvatarURL({ dynamic: true }))
+                    .addFields(
+                        { name: 'Applicant', value: `${interaction.user.tag} (${interaction.user.id})`, inline: false },
+                        { name: 'Full Name', value: name, inline: true },
+                        { name: 'Age', value: age, inline: true },
+                        { name: 'Why do you want to be a mod?', value: why, inline: false },
+                        { name: 'Experience', value: experience, inline: false },
+                        { name: 'Availability', value: availability, inline: false },
+                        { name: 'Additional Info', value: extra, inline: false }
+                    )
+                    .setTimestamp()
+                    .setFooter({ text: 'Please review this application.' });
+
+                try {
+                    await interaction.guild.members.fetch();
+                } catch (fetchErr) {
+                    console.error('[ERROR] Failed to fetch members:', fetchErr);
+                }
+
+                const staffRoleId = REQUIRED_ROLE_ID;
+                const staffMembers = interaction.guild.members.cache.filter(m => m.roles.cache.has(staffRoleId) && !m.user.bot);
+                let sentCount = 0;
+                let failedCount = 0;
+
+                if (staffMembers.size === 0) {
+                    await interaction.editReply({ content: 'No staff members found with the required role to DM. Please contact an admin.', flags: 64 });
+                    return;
+                }
+
+                for (const [id, member] of staffMembers) {
+                    try {
+                        await member.send({ embeds: [embed] });
+                        sentCount++;
+                    } catch (err) {
+                        failedCount++;
+                        console.error(`[ERROR] Failed to DM staff ${member.user.tag}:`, err.message);
+                    }
+                    await new Promise(r => setTimeout(r, 200));
+                }
+
+                const channel = interaction.guild.channels.cache.get(MOD_APP_CHANNEL_ID);
+                if (channel) {
+                    await channel.send({ embeds: [embed] }).catch(() => {});
+                }
+
+                await interaction.editReply({ 
+                    content: `✅ Application submitted! Sent to **${sentCount}** staff via DM (${failedCount} failed).`,
+                    flags: 64 
+                });
+
+                try {
+                    await interaction.user.send({ embeds: [new EmbedBuilder().setTitle('Application Received').setDescription('Your moderator application has been submitted. Staff will review it shortly.').setColor(0x2ECC71)] });
+                } catch (_) {}
+                return;
+            }
+
+            // --- STOCK MODAL ---
+            if (interaction.customId === 'stock_modal') {
+                if (!hasAdminAccess(interaction)) return interaction.reply({ content: 'Access Denied.', flags: 64 });
+                await interaction.deferReply({ flags: 64 });
+                const bearer = interaction.fields.getTextInputValue('stock_bearer_input').trim();
+                const refresh = interaction.fields.getTextInputValue('stock_refresh_input').trim();
+                if (!bearer || !refresh) return interaction.editReply({ content: 'Both tokens required.' });
+                const jwtCheck = validateTokenJWT(bearer, refresh);
+                if (!jwtCheck.valid) {
+                    return interaction.editReply({ content: 'Token JWT is invalid or expired.' });
+                }
+                const newNumber = generateTokenNumber();
+                tokenStock.push({ bearer, refresh, addedAt: Date.now(), expiresAt: getTokenExpiryMs(bearer), displayNumber: newNumber });
+                await updateStatusPanel();
+                await updateSubscriptionPanel();
+                return interaction.editReply({ content: `Added token! Total: ${tokenStock.length} (Token #${newNumber})` });
+            }
+
+            // --- REDEEM MODAL ---
+            if (interaction.customId === 'redeem_modal') {
+                await interaction.deferReply({ flags: 64 });
+                const code = interaction.fields.getTextInputValue('redeem_code_input').trim();
+                if (validCodes.has(code)) {
+                    validCodes.delete(code);
+                    const supporterRole = interaction.guild.roles.cache.get(SUPPORTER_ROLE_ID);
+                    if (!supporterRole) return interaction.editReply({ content: 'Code valid but role missing.' });
+                    try { await interaction.member.roles.add(supporterRole); return interaction.editReply({ content: `Redeemed! Code \`${code}\` verified.` }); } catch (err) { return interaction.editReply({ content: 'Code valid but role assignment failed.' }); }
+                } else return interaction.editReply({ content: `Invalid code: \`${code}\`` });
+            }
+
+            // --- DONATE TOKEN MODAL ---
+            if (interaction.customId === 'donate_token_modal') {
+                await interaction.deferReply({ flags: 64 });
+                const jsonRaw = interaction.fields.getTextInputValue('donate_json_input').trim();
+                let parsed;
+                try { parsed = JSON.parse(jsonRaw); } catch (e) { return interaction.editReply({ content: 'Invalid JSON. Please check the format.' }); }
+                let bearer, refresh;
+                if (parsed.token && typeof parsed.token === 'object') {
+                    bearer = parsed.token.bearer || parsed.token.token || parsed.token.access_token;
+                    refresh = parsed.token.refresh_token;
+                } else {
+                    bearer = parsed.token || parsed.bearer || parsed.access_token;
+                    refresh = parsed.refresh_token;
+                }
+                if (!bearer || !refresh) return interaction.editReply({ content: 'Missing `token` (or bearer) and/or `refresh_token` in the JSON.' });
+                const expiry = getTokenExpiryMs(bearer);
+                if (expiry !== null && Date.now() >= expiry) {
+                    const refreshResult = await refreshTokenOnly(refresh);
+                    if (!refreshResult.success) return interaction.editReply({ content: `Token expired and refresh failed: ${refreshResult.error}` });
+                    const newBearer = refreshResult.bearer;
+                    const newRefresh = refreshResult.refresh;
+                    const newExpiry = refreshResult.expiresAt;
+                    const jwtCheck = validateTokenJWT(newBearer, newRefresh);
+                    if (!jwtCheck.valid) return interaction.editReply({ content: `Refreshed token JWT is invalid.` });
+                    const genId = generateGenerationId();
+                    const newNumber = generateTokenNumber();
+                    tokenStock.push({ bearer: newBearer, refresh: newRefresh, addedAt: Date.now(), expiresAt: newExpiry, id: genId, userId: interaction.user.id, username: interaction.user.tag, displayNumber: newNumber });
+                    if (!accounts.find(a => a.refresh_token === newRefresh)) accounts.push({ token: newBearer, refresh_token: newRefresh, label: `donated_${Date.now()}` });
+                    await updateStatusPanel();
+                    await updateSubscriptionPanel();
+                    return interaction.editReply({ content: `Token donated and refreshed successfully! New token added to stock (${tokenStock.length} total). ID: \`${genId}\` Expires: ${humanExpiry(newExpiry)}` });
+                } else {
+                    const jwtCheck = validateTokenJWT(bearer, refresh);
+                    if (!jwtCheck.valid) return interaction.editReply({ content: `Token JWT is invalid.` });
+                    const genId = generateGenerationId();
+                    const newNumber = generateTokenNumber();
+                    tokenStock.push({ bearer: bearer, refresh: refresh, addedAt: Date.now(), expiresAt: expiry, id: genId, userId: interaction.user.id, username: interaction.user.tag, displayNumber: newNumber });
+                    if (!accounts.find(a => a.refresh_token === refresh)) accounts.push({ token: bearer, refresh_token: refresh, label: `donated_${Date.now()}` });
+                    await updateStatusPanel();
+                    await updateSubscriptionPanel();
+                    return interaction.editReply({ content: `Token donated successfully! Added to stock (${tokenStock.length} total). ID: \`${genId}\` Expires: ${humanExpiry(expiry)}` });
+                }
+            }
+
+            // --- CHECK TOKEN MODAL ---
+            if (interaction.customId === 'check_token_modal') {
+                await interaction.deferReply({ flags: 64 });
+                const jsonRaw = interaction.fields.getTextInputValue('check_json_input').trim();
+                let parsed;
+                try { parsed = JSON.parse(jsonRaw); } catch (e) { return interaction.editReply({ content: 'Invalid JSON. Please check the format.' }); }
+                let bearer, refresh;
+                if (parsed.token && typeof parsed.token === 'object') {
+                    bearer = parsed.token.bearer || parsed.token.token || parsed.token.access_token;
+                    refresh = parsed.token.refresh_token;
+                } else {
+                    bearer = parsed.token || parsed.bearer || parsed.access_token;
+                    refresh = parsed.refresh_token;
+                }
+                if (!bearer || !refresh) return interaction.editReply({ content: 'Missing `token` (or bearer) and/or `refresh_token` in the JSON.' });
+                const validation = validateTokenJWT(bearer, refresh);
+                let embed = new EmbedBuilder()
+                    .setTitle('Token Check Result')
+                    .setColor(validation.valid ? 0x2ECC71 : 0xED4245)
+                    .addFields(
+                        { name: 'Bearer', value: `\`${bearer.slice(0, 30)}...\` (${bearer.length} chars)`, inline: false },
+                        { name: 'Refresh', value: `\`${refresh.slice(0, 30)}...\` (${refresh.length} chars)`, inline: false },
+                        { name: 'Bearer Status', value: validation.valid ? '✔ VALID' : '✕ INVALID', inline: true },
+                        { name: 'Refresh Status', value: validation.refreshHasExpiry && !validation.refreshExpired ? '✔ VALID' : (validation.refreshHasExpiry ? '✕ EXPIRED' : '✕ UNKNOWN'), inline: true },
+                        { name: 'Bearer Expires', value: validation.hasExpiry ? new Date(validation.expiry).toUTCString() : 'UNKNOWN', inline: true },
+                        { name: 'Bearer Remaining', value: validation.hasExpiry ? (validation.secondsRemaining > 0 ? `${validation.secondsRemaining}s` : 'Expired') : 'UNKNOWN', inline: true },
+                        { name: 'Refresh Expires', value: validation.refreshHasExpiry ? new Date(validation.refreshExpiry).toUTCString() : 'UNKNOWN', inline: true },
+                        { name: 'Refresh Remaining', value: validation.refreshHasExpiry ? (validation.refreshSecondsRemaining > 0 ? `${validation.refreshSecondsRemaining}s` : 'Expired') : 'UNKNOWN', inline: true }
+                    )
+                    .setFooter({ text: getLiveUIStats(interaction) });
+
+                if (!validation.hasExpiry || !validation.refreshHasExpiry) embed.setDescription('This token does not have a valid expiry claim. It is likely malformed or invalid.');
+                else if (!validation.valid) embed.setDescription('This token is invalid – it may be expired, revoked, or the refresh token is dead.');
+                else embed.setDescription('Token is valid and ready for use.');
+
+                embed.addFields(
+                    { name: 'Full Bearer', value: `\`\`\`\n${bearer}\n\`\`\``, inline: false },
+                    { name: 'Full Refresh', value: `\`\`\`\n${refresh}\n\`\`\``, inline: false }
+                );
+                const row2 = new ActionRowBuilder().addComponents(
+                    new ButtonBuilder().setCustomId(`copy_bearer_${Date.now()}`).setLabel('Copy Bearer').setStyle(ButtonStyle.Primary),
+                    new ButtonBuilder().setCustomId(`copy_refresh_${Date.now()}`).setLabel('Copy Refresh').setStyle(ButtonStyle.Success)
+                );
+
+                const reply = await interaction.editReply({ embeds: [embed], components: [row2] });
+                const msg = await interaction.fetchReply();
+                tokenCache.set(msg.id, { bearer, refresh });
+                setTimeout(() => tokenCache.delete(msg.id), 10 * 60 * 1000);
+                return;
+            }
+
+            // --- SPLIT TOKEN MODAL ---
+            if (interaction.customId === 'split_token_modal') {
+                await interaction.deferReply({ flags: 64 });
+                const jsonRaw = interaction.fields.getTextInputValue('split_json_input').trim();
+                let parsed;
+                try { parsed = JSON.parse(jsonRaw); } catch (e) { return interaction.editReply({ content: 'Invalid JSON. Please check the format.' }); }
+                let bearer, refresh;
+                if (parsed.token && typeof parsed.token === 'object') {
+                    bearer = parsed.token.bearer || parsed.token.token || parsed.token.access_token;
+                    refresh = parsed.token.refresh_token;
+                } else {
+                    bearer = parsed.token || parsed.bearer || parsed.access_token;
+                    refresh = parsed.refresh_token;
+                }
+                if (!bearer || !refresh) return interaction.editReply({ content: 'Missing `token` (or bearer) and/or `refresh_token` in the JSON.' });
+                const embed = new EmbedBuilder()
+                    .setTitle('Token Split')
+                    .setDescription('Extracted Bearer and Refresh tokens – copy them individually below.')
+                    .setColor(0x2ECC71)
+                    .addFields(
+                        { name: 'Bearer', value: `\`\`\`\n${bearer}\n\`\`\``, inline: false },
+                        { name: 'Refresh', value: `\`\`\`\n${refresh}\n\`\`\``, inline: false }
+                    )
+                    .setFooter({ text: getLiveUIStats(interaction) });
+                const row = new ActionRowBuilder().addComponents(
+                    new ButtonBuilder().setCustomId(`copy_bearer_${Date.now()}`).setLabel('Copy Bearer').setStyle(ButtonStyle.Primary),
+                    new ButtonBuilder().setCustomId(`copy_refresh_${Date.now()}`).setLabel('Copy Refresh').setStyle(ButtonStyle.Success)
+                );
+                const reply = await interaction.editReply({ embeds: [embed], components: [row] });
+                const msg = await interaction.fetchReply();
+                tokenCache.set(msg.id, { bearer, refresh });
+                setTimeout(() => tokenCache.delete(msg.id), 10 * 60 * 1000);
+                return;
+            }
+        }
+    } catch (err) {
+        console.error(`[ERROR] [EAM.LOL] Interaction Error:`, err);
+        if (!interaction.replied && !interaction.deferred) {
+            try {
+                await interaction.reply({ content: "An error occurred. Please try again.", flags: 64 });
+            } catch (_) {
+                console.error('[ERROR] Could not send error reply.');
+            }
+        } else {
+            try {
+                await interaction.editReply({ content: "An error occurred. Please try again.", flags: 64 });
+            } catch (_) {}
+        }
+    }
+});
+
+// --- COPY BUTTON HANDLER ---
+client.on('interactionCreate', async interaction => {
+    if (interaction.isButton() && interaction.customId.startsWith('copy_')) {
+        const parts = interaction.customId.split('_');
+        const type = parts[1];
+        const msgId = interaction.message.id;
+        let token = '';
+
+        const cached = tokenCache.get(msgId);
+        if (cached) {
+            token = type === 'bearer' ? cached.bearer : cached.refresh;
+        } else {
+            const embed = interaction.message.embeds[0];
+            if (embed) {
+                for (const field of embed.fields) {
+                    if (field.name.includes('Bearer') && type === 'bearer') {
+                        const match = field.value.match(/```\n([\s\S]*?)\n```/);
+                        token = match ? match[1].trim() : field.value.replace(/```\n/g, '').replace(/\n```/g, '').trim();
+                        break;
+                    }
+                    if (field.name.includes('Refresh') && type === 'refresh') {
+                        const match = field.value.match(/```\n([\s\S]*?)\n```/);
+                        token = match ? match[1].trim() : field.value.replace(/```\n/g, '').replace(/\n```/g, '').trim();
+                        break;
+                    }
+                }
+            }
+        }
+
+        if (!token) return interaction.reply({ content: 'No token found.', flags: 64 });
+
+        await interaction.deferReply({ flags: 64 });
+        try {
+            await interaction.user.send({ content: `**${type.charAt(0).toUpperCase() + type.slice(1)} Token**\n\`\`\`\n${token}\n\`\`\`` });
+        } catch (_) {}
+
+        return interaction.editReply({ content: `**${type.charAt(0).toUpperCase() + type.slice(1)} Token copied!**\n\`\`\`\n${token}\n\`\`\`` });
+    }
+});
+
+// --- HEALTH CHECK ---
+const server = http.createServer((req, res) => {
+    if (req.url === '/health') { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ status: 'ok', bot: 'online', timestamp: Date.now() })); return; }
+    res.writeHead(200, { 'Content-Type': 'text/plain' });
+    res.end('EAM.LOL Token Generator Bot is active.\nAuto-refreshes smartly.\nCredits to @elliott\n');
+});
+const PORT = process.env.PORT || 10000;
+server.listen(PORT, '0.0.0.0', () => console.log(`[SYSTEM] [EAM.LOL] HTTP server on port ${PORT}`));
+
+// --- LOGIN ---
+if (!process.env.DISCORD_TOKEN) {
+    console.error('[ERROR] [EAM.LOL] DISCORD_TOKEN environment variable is missing.');
+    process.exit(1);
+} else {
+    (async () => {
+        try {
+            console.log('[INFO] [EAM.LOL] Testing DNS resolution for gateway.discord.gg...');
+            const address = await dnsLookup('gateway.discord.gg');
+            console.log(`[INFO] [EAM.LOL] Gateway resolves to: ${address.address}`);
+        } catch (err) {
+            console.error('[ERROR] [EAM.LOL] DNS lookup failed:', err.message);
+        }
+    })();
+
+    client.on('debug', (info) => console.log('[DEBUG]', info));
+    client.on('shardError', (error, shardId) => {
+        console.error(`[SHARD ERROR] Shard ${shardId}:`, error);
+    });
+    client.on('shardReady', (shardId) => {
+        console.log(`[SHARD READY] Shard ${shardId} is ready.`);
+    });
+    client.on('shardDisconnect', (event, shardId) => {
+        console.log(`[SHARD DISCONNECT] Shard ${shardId}:`, event);
+    });
+    client.on('shardReconnecting', (shardId) => {
+        console.log(`[SHARD RECONNECT] Shard ${shardId} is reconnecting...`);
+    });
+    client.on('shardResume', (shardId, replayed) => {
+        console.log(`[SHARD RESUME] Shard ${shardId} resumed, replayed ${replayed} events.`);
+    });
+
+    async function loginWithRetry(attempts = 3) {
+        for (let i = 1; i <= attempts; i++) {
+            try {
+                console.log(`[INFO] [EAM.LOL] Login attempt ${i}/${attempts}...`);
+                const loginPromise = client.login(process.env.DISCORD_TOKEN);
+                const timeoutPromise = new Promise((_, reject) =>
+                    setTimeout(() => reject(new Error('Login timed out after 90 seconds')), 90000)
+                );
+                await Promise.race([loginPromise, timeoutPromise]);
+                console.log('[SUCCESS] [EAM.LOL] Login successful!');
+                return true;
+            } catch (err) {
+                console.error(`[ERROR] [EAM.LOL] Attempt ${i} failed:`, err.message || err);
+                if (i === attempts) {
+                    console.error('[ERROR] [EAM.LOL] All login attempts failed.');
+                    return false;
+                }
+                await new Promise(r => setTimeout(r, 15000));
+            }
+        }
+        return false;
+    }
+
+    loginWithRetry().then(success => {
+        if (!success) {
+            console.error('[ERROR] [EAM.LOL] Failed to connect. Exiting.');
+            process.exit(1);
+        }
+    });
+}
+
+process.on('unhandledRejection', (reason) => console.error('[ERROR] [EAM.LOL] Unhandled Rejection:', reason));
+process.on('uncaughtException', (err) => console.error('[ERROR] [EAM.LOL] Uncaught Exception:', err));
