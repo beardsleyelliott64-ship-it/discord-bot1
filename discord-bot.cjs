@@ -12,12 +12,16 @@ import aiohttp
 import asyncpg
 
 # --- ENVIRONMENT & CONFIGURATION ---
-BOT_TOKEN = os.getenv("BOT_TOKEN", "")
-SERVER_KEY = "defaultkey"
-ALLOWED_GUILD_IDS = [int(x.strip()) for x in os.getenv("ALLOWED_GUILD_IDS", "1536788735616876698").split(",") if x.strip()]
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+if not BOT_TOKEN:
+    print("[ERROR] BOT_TOKEN environment variable is not set.")
+    exit(1)
+
+SERVER_KEY = os.getenv("SERVER_KEY", "defaultkey")
+ALLOWED_GUILD_IDS = [int(x.strip()) for x in os.getenv("ALLOWED_GUILD_IDS", "").split(",") if x.strip()]
 DATABASE_URL = os.getenv("DATABASE_URL")
 
-# FIXED: Correct Nakama refresh endpoint
+# FIXED: Correct Nakama refresh endpoint (same as EAM bot)
 API_URL = "https://animalcompany.us-east1.nakamacloud.io/v2/account/session/refresh"
 
 # --- DISCORD CONFIGURATION & ROLES ---
@@ -166,7 +170,7 @@ async def validate_audio_file(attachment: discord.Attachment) -> tuple[bool, str
         
     return True, "Validation successful."
 
-# --- NAKAMA TOKEN VALIDATION & SESSION REFRESH (FIXED) ---
+# --- NAKAMA TOKEN VALIDATION & SESSION REFRESH (FIXED – like EAM) ---
 async def test_token_validity(session: aiohttp.ClientSession, raw_token: str) -> tuple[bool, str, dict]:
     """
     Test a token by refreshing it using the Nakama refresh endpoint.
