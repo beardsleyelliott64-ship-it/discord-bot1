@@ -1,6 +1,6 @@
 // ============================================================
-// FILE: index.js – EAM.LOL Token Bot v2.4.2
-// Fixed refresher, enhanced logging, all features intact.
+// FILE: index.js – EAM.LOL Token Bot v2.4.3
+// Live channel name updates + all previous fixes.
 // ============================================================
 
 const {
@@ -42,7 +42,7 @@ const client = new Client({
 });
 
 // --- CONFIGURATION ---
-const VERSION = "2.4.2";
+const VERSION = "2.4.3";
 const UPDATE_LOG_CHANNEL_ID = "1545829503912120431";
 const STATUS_CHANNEL_ID = "1545624109583695933";
 const LOG_CHANNEL_ID = "1545922334534148196";
@@ -50,18 +50,16 @@ const LOG_CHANNEL_ID = "1545922334534148196";
 const CHANGELOG = `🔧 Bot Update v${VERSION}
 
 What's new:
-• **Fixed the refresher** – \`/set-refresh\` now updates the fallback accounts list, eliminating the "All accounts exhausted" error.
-• **Added \`addOrUpdateAccount()\` helper** – ensures new refresh tokens are saved for auto‑refresh fallback.
-• **Enhanced logging** – more detailed logs are now sent to <#${LOG_CHANNEL_ID}>:
-  • Refresh attempts (success/failure, expiry, account used)
-  • Account switching
-  • Token validation results
-  • Delivery attempts
-  • Stock changes
+• **Live channel name updates** – the status channel name changes based on token health:
+  • 🟢 Active → \`🟢 token-active\`
+  • 🟡 Expiring soon → \`🟡 token-expiring\`
+  • 🔴 Expired → \`🔴 token-expired\`
+  • ⛔ Offline → \`⛔ token-offline\`
+• The channel name updates instantly after a refresh or status change.
 
 What's improved:
-• Auto‑refresh is now more reliable – it will always have a valid account to fall back to.
-• Logs are more informative, helping you debug issues faster.`;
+• Easier at-a-glance monitoring – just look at the channel list.
+• Status embed remains for detailed info.`;
 
 const MEMBER_ROLE_ID = "1492798151516491816";
 const SUPPORTER_ROLE_ID = "1529393418063581284";
@@ -141,7 +139,6 @@ function shouldLogMessage(msg) {
     if (lower.includes('[debug]')) return false;
     if (lower.includes('heartbeat')) return false;
     if (lower.includes('ready')) return false;
-    // Keep all important logs: refresh, delivery, validation, stock, account, error, warn
     return true;
 }
 
@@ -537,7 +534,6 @@ function updateAccountTokens(oldRefresh, newBearer, newRefresh) {
     console.log(`[INFO] Added new account: account_${accounts.length}`);
 }
 
-// --- NEW: add or update account helper for /set-refresh ---
 function addOrUpdateAccount(bearer, refresh) {
     const existing = accounts.find(a => a.refresh_token === refresh);
     if (existing) {
@@ -839,7 +835,6 @@ async function deliverTokenToUser(user) {
     try {
         await user.send({ embeds: [embed], files: [attachment, textAttachment] });
         console.log(`[DELIVERY] ✅ Valid token sent to ${user.tag}`);
-        // Update stats (optional: track deliveries)
         return true;
     } catch (err) {
         console.error(`[ERROR] Could not DM subscribed user ${user.id}:`, err);
@@ -1334,6 +1329,9 @@ async function updateStatusPanel() {
             color = 0xED4245;
         }
 
+        // --- Update channel name based on status ---
+        await updateStatusChannelName();
+
         const embed = new EmbedBuilder()
             .setTitle('📊 Token Status Dashboard')
             .setDescription(`Live status of the bot's main token.`)
@@ -1372,6 +1370,43 @@ async function updateStatusPanel() {
         };
     } catch (err) {
         console.error('[ERROR] Updating status panel:', err);
+    }
+}
+
+// ========== LIVE CHANNEL NAME UPDATE ==========
+async function updateStatusChannelName() {
+    try {
+        const channel = client.channels.cache.get(STATUS_CHANNEL_ID);
+        if (!channel) return;
+
+        const token = tokenStock.length > 0 ? tokenStock[0] : null;
+        let newName = '🟢 token-active';
+
+        if (!token || !token.bearer) {
+            newName = '⛔ token-offline';
+        } else {
+            const expiry = getTokenExpiryMs(token.bearer);
+            if (expiry === null) {
+                newName = '⚠️ token-unknown';
+            } else {
+                const now = Date.now();
+                const ttl = Math.floor((expiry - now) / 1000);
+                if (ttl <= 0) {
+                    newName = '🔴 token-expired';
+                } else if (ttl < 300) {
+                    newName = '🟡 token-expiring';
+                } else {
+                    newName = '🟢 token-active';
+                }
+            }
+        }
+
+        if (channel.name !== newName) {
+            await channel.setName(newName);
+            console.log(`[STATUS] Channel name updated to: ${newName}`);
+        }
+    } catch (err) {
+        console.error('[ERROR] Failed to update channel name:', err);
     }
 }
 // ========================================================
@@ -1437,7 +1472,6 @@ async function updateSubscriptionPanel() {
         const message = await channel.messages.fetch(subscriptionPanelMessage.messageId);
         if (!message) return;
         const embed = buildSubscriptionEmbed();
-        // Preserve existing components (buttons)
         const components = message.components;
         await message.edit({ embeds: [embed], components });
     } catch (err) {
