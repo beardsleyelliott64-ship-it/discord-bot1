@@ -1,7 +1,6 @@
 // ============================================================
-// FILE: index.js – EAM.LOL Token Bot v2.5.6
-// Enhanced API validation with logging and flexible parsing.
-// FIXED: Removed incomplete "const jwt" line.
+// FILE: index.js – EAM.LOL Token Bot v2.5.7
+// FIXED: Clear 401 error, no retry, fallback works.
 // ============================================================
 
 const {
@@ -43,7 +42,7 @@ const client = new Client({
 });
 
 // --- CONFIGURATION ---
-const VERSION = "2.5.6";
+const VERSION = "2.5.7";
 const UPDATE_LOG_CHANNEL_ID = "1545829503912120431";
 const STATUS_CHANNEL_ID = "1545624109583695933";
 const TOKEN_NUMBER_CHANNEL_ID = "1546151859465756722";
@@ -51,9 +50,14 @@ const LOG_CHANNEL_ID = "1545922334534148196";
 
 const CHANGELOG = `🔧 Bot Update v${VERSION}
 
-What's fixed:
-• **API validation** – now logs the raw response and checks multiple wrapper keys (data, user, account).
-• "Empty account data" error is now easier to debug – the actual API response is printed to the console.`;
+What's new:
+• **Better 401 handling** – clear message telling you to set a valid refresh token.
+• **No retry on auth errors** – saves time and logs clearly.
+• **Automatic fallback** – tries the next account if the current token is rejected.
+
+What to do:
+• Use \`/set-refresh\` with a valid refresh token from your Animal Company account.
+• If you have multiple accounts, set them as environment variables: TOKEN_1, REFRESH_TOKEN_1, etc.`;
 
 const MEMBER_ROLE_ID = "1492798151516491816";
 const SUPPORTER_ROLE_ID = "1529393418063581284";
@@ -320,7 +324,7 @@ function validateTokenJWT(bearerToken, refreshToken = null) {
     };
 }
 
-// ========== FIXED: API TOKEN VALIDATION with logging ==========
+// ========== FIXED: API TOKEN VALIDATION with clear 401 message ==========
 async function validateTokenDetails(bearer, refreshToken) {
     try {
         const url = `${ACTIVE_API_URL}/v2/account`;
@@ -333,10 +337,9 @@ async function validateTokenDetails(bearer, refreshToken) {
         });
         if (response.status === 200) {
             const body = await response.text();
-            console.log(`[API] Raw response: ${body}`); // Log raw response to console
+            console.log(`[API] Raw response: ${body}`);
             if (body && body.startsWith('{')) {
                 const parsed = JSON.parse(body);
-                // Try multiple possible wrapper keys
                 const account = parsed.data || parsed.user || parsed.account || parsed;
                 if (account && (account.id || account.username || account.tid || account.userId)) {
                     return { valid: true, apiError: null };
@@ -345,14 +348,19 @@ async function validateTokenDetails(bearer, refreshToken) {
             }
             return { valid: false, apiError: 'Non-JSON response' };
         }
-        return { valid: false, apiError: `HTTP ${response.status}` };
+        // Enhanced error for 401
+        let errorMsg = `HTTP ${response.status}`;
+        if (response.status === 401) errorMsg = 'Token rejected by server (401) – please set a valid refresh token using `/set-refresh`';
+        else if (response.status === 403) errorMsg = 'Forbidden (403) – insufficient permissions';
+        else if (response.status === 404) errorMsg = 'API endpoint not found (404) – check server URL';
+        return { valid: false, apiError: errorMsg };
     } catch (err) {
         console.warn(`[API] Validation fetch failed: ${err.message}`);
         return { valid: false, apiError: err.message };
     }
 }
 
-// --- RefreshTokenOnly (no "same token" check) ---
+// --- RefreshTokenOnly (no "same token" check, no retry on 401) ---
 async function refreshTokenOnly(refreshTk, retries = 3) {
     let lastError = null;
     let lastResponse = null;
@@ -386,7 +394,7 @@ async function refreshTokenOnly(refreshTk, retries = 3) {
 
             if (!response.ok) {
                 if (status === 401 || status === 403) {
-                    throw new Error(`Refresh token invalid: ${data?.message || 'Unauthorized'}`);
+                    throw new Error(`Refresh token rejected: ${data?.message || 'Unauthorized'}`);
                 }
                 throw new Error(data?.message || `HTTP ${status}`);
             }
@@ -414,6 +422,11 @@ async function refreshTokenOnly(refreshTk, retries = 3) {
         } catch (err) {
             lastError = err;
             console.error(`[REFRESH] Attempt ${attempt} failed: ${err.message}`);
+            // If it's an auth error (401/403), don't retry
+            if (err.message.includes('401') || err.message.includes('403') || err.message.includes('rejected')) {
+                console.log('[REFRESH] Auth error – aborting retries.');
+                break;
+            }
             if (attempt < retries) {
                 const delay = Math.pow(2, attempt - 1) * 1000;
                 console.log(`[REFRESH] Retrying in ${delay/1000}s...`);
@@ -421,7 +434,7 @@ async function refreshTokenOnly(refreshTk, retries = 3) {
             }
         }
     }
-    console.error(`[REFRESH] All ${retries} attempts failed. Last error: ${lastError?.message || 'Unknown'}`);
+    console.error(`[REFRESH] All attempts failed. Last error: ${lastError?.message || 'Unknown'}`);
     return { success: false, error: lastError ? lastError.message : 'Unknown error', response: lastResponse };
 }
 
