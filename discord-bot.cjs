@@ -1,1629 +1,3093 @@
-import json
-import os
-import re
-import asyncio
-import time
-import io
-import base64
-from datetime import datetime, timezone
-import discord
-from discord import app_commands
-import aiohttp
-import asyncpg
+// ============================================================
+// FILE: index.js – EAM.LOL Token Bot v2.5.7
+// FIXED: Clear 401 error, no retry, fallback works.
+// ============================================================
 
-# --- ENVIRONMENT & CONFIGURATION ---
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-if not BOT_TOKEN:
-    print("[ERROR] BOT_TOKEN environment variable is not set.")
-    exit(1)
+const {
+    Client,
+    GatewayIntentBits,
+    EmbedBuilder,
+    ActionRowBuilder,
+    ButtonBuilder,
+    ButtonStyle,
+    StringSelectMenuBuilder,
+    ModalBuilder,
+    TextInputBuilder,
+    TextInputStyle,
+    ChannelType,
+    PermissionFlagsBits,
+    SlashCommandBuilder,
+    REST,
+    Routes,
+    AttachmentBuilder
+} = require('discord.js');
 
-SERVER_KEY = os.getenv("SERVER_KEY", "defaultkey")
-ALLOWED_GUILD_IDS = [int(x.strip()) for x in os.getenv("ALLOWED_GUILD_IDS", "").split(",") if x.strip()]
-DATABASE_URL = os.getenv("DATABASE_URL")
+const http = require('http');
+const dns = require('dns');
+const { promisify } = require('util');
+const dnsLookup = promisify(dns.lookup);
 
-# FIXED: Correct Nakama refresh endpoint (same as EAM bot)
-API_URL = "https://animalcompany.us-east1.nakamacloud.io/v2/account/session/refresh"
+dns.setServers(['8.8.8.8', '1.1.1.1']);
+console.log('[INFO] [EAM.LOL] DNS set to Google DNS (8.8.8.8, 1.1.1.1)');
 
-# --- DISCORD CONFIGURATION & ROLES ---
-OWNER_IDS = {1537176834708602889, 1399841773555023893}
+const client = new Client({
+    intents: [
+        GatewayIntentBits.Guilds,
+        GatewayIntentBits.GuildMembers,
+        GatewayIntentBits.GuildMessages,
+        GatewayIntentBits.MessageContent
+    ],
+    rest: { timeout: 60000 },
+    failIfNotExists: false
+});
 
-# --- COOLDOWN & ROLE CONFIGURATION ---
-NORMAL_COOLDOWN = 450           # Default 7 minutes 30 seconds (450 seconds)
-PREMIUM_COOLDOWN = 120          # 2 minutes for Buyer/VIP role tier
-HEROIC_COOLDOWN = 420           # Cooldown for Heroic token generation
-AUDIO_COOLDOWN = 300            # Cooldown for Audio generation
+// --- CONFIGURATION ---
+const VERSION = "2.5.7";
+const UPDATE_LOG_CHANNEL_ID = "1545829503912120431";
+const STATUS_CHANNEL_ID = "1545624109583695933";
+const TOKEN_NUMBER_CHANNEL_ID = "1546151859465756722";
+const LOG_CHANNEL_ID = "1545922334534148196";
 
-BOOSTER_ROLE_ID = 1537055300618817557
-BUYER_ROLE_ID = 1538939158070825090
-VIP_ROLE_ID = 1541168775720599602       
-BLACKLIST_ROLE_ID = 1541516221462351954  
+const CHANGELOG = `🔧 Bot Update v${VERSION}
 
-DATA_FILE = "data.json"
-IMAGE_FILENAME = "panel.jpg"
-IMAGE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), IMAGE_FILENAME)
+What's new:
+• **Better 401 handling** – clear message telling you to set a valid refresh token.
+• **No retry on auth errors** – saves time and logs clearly.
+• **Automatic fallback** – tries the next account if the current token is rejected.
 
+What to do:
+• Use \`/set-refresh\` with a valid refresh token from your Animal Company account.
+• If you have multiple accounts, set them as environment variables: TOKEN_1, REFRESH_TOKEN_1, etc.`;
 
-def parse_token_expiration(token: str):
-    """
-    Decodes the payload of a JWT token and extracts the expiration timestamp.
-    Returns: (datetime_object or None, is_expired: bool)
-    """
-    if not token or not token.strip():
-        return None, True
+const MEMBER_ROLE_ID = "1492798151516491816";
+const SUPPORTER_ROLE_ID = "1529393418063581284";
+const ANNOUNCEMENT_ROLE_ID = "123456789012345678";
+const BOT_OWNER_ID = "1300117296844509227";
+const ELLIOTT_ID = "1363240484818128926";
+const ADMIN_ROLE_ID = "1542956153166626856";
+const BUYER_ROLE_ID = "1542337976917434428";
+const VIP_ROLE_ID = "1542337978016469093";
+const BOOSTER_ROLE_ID = "1542337979807178832";
+const NO_COOLDOWN_ROLE_ID = ADMIN_ROLE_ID;
+const GENERATION_COOLDOWN = 0;
+const REQUIRED_ROLE_ID = "1544637223058542642";
+const MOD_ROLE_ID = "1544645742373765151";
+const MOD_APP_CHANNEL_ID = "1545515386328326256";
 
-    try:
-        parts = token.split('.')
-        if len(parts) < 2:
-            return None, True
+const DONATION_LINKS = {
+    paypal: 'https://paypal.me/yourusername',
+    cashapp: 'https://cash.app/$yourusername',
+    crypto: 'https://example.com/crypto'
+};
 
-        payload_b64 = parts[1]
-        payload_b64 += '=' * (-len(payload_b64) % 4)  # Add base64 padding
-        payload_bytes = base64.urlsafe_b64decode(payload_b64)
-        payload = json.loads(payload_bytes)
+// --- API CONFIG ---
+const NAKAMA_SERVER = 'https://animalcompany.us-east1.nakamacloud.io';
+const NAKAMA_SERVER_KEY = '6URuTSlDKKfYbuDW';
+const API_URLS = [ NAKAMA_SERVER ];
+let ACTIVE_API_URL = API_URLS[0];
+let apiWorking = false;
 
-        exp_ts = payload.get("exp")
-        if not exp_ts:
-            return None, False  # Token has no expiration timestamp claim
+// --- TOKEN STORAGE ---
+let DEFAULT_TOKEN = {
+  "bearer": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0aWQiOiI3YWQ2YjZkZS01MTk4LTRhYmMtYjk0ZC1kODZkZGI3OTRjNDciLCJ1aWQiOiI2ZmQ2MTBmNS1hMDcxLTQyZDgtYTdhMS0zZmE2MDdlNTZhNWIiLCJ1c24iOiJCS1c3dkRVUDJLT1FuUWxGIiwidnJzIjp7ImF1dGhJRCI6IjdhNTUxNjVmZGVjOTQ4YjQ5NTg5MmY5ODFkM2RkNjRlIiwiY2xpZW50VXNlckFnZW50IjoiU3RlYW1WUiA5Ljk5LjkuOTk5OV9mZmZmZmZmZiIsImRldmljZUlEIjoiMTgzNTc2MWMyYThiNmM2MjliOTlmZmY5ZWRmZjI4OWQ3ZjNlYTEyOCJ9LCJleHAiOjE3ODg0NjQwMjgsImlhdCI6MTc4ODQ1NTQwNX0.NYuM_TD_K5H74Gs-nLgb4Z7hhQ2BYXlU5Z36Ga4hgMw",
+  "refresh_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0aWQiOiI3YWQ2YjZkZS01MTk4LTRhYmMtYjk0ZC1kODZkZGI3OTRjNDciLCJ1aWQiOiI2ZmQ2MTBmNS1hMDcxLTQyZDgtYTdhMS0zZmE2MDdlNTZhNWIiLCJ1c24iOiJCS1c3dkRVUDJLT1FuUWxGIiwidnJzIjp7ImF1dGhJRCI6IjdhNTUxNjVmZGVjOTQ4YjQ5NTg5MmY5ODFkM2RkNjRlIiwiY2xpZW50VXNlckFnZW50IjoiU3RlYW1WUiA5Ljk5LjkuOTk5OV9mZmZmZmZmZiIsImRldmljZUlEIjoiMTgzNTc2MWMyYThiNmM2MjliOTlmZmY5ZWRmZjI4OWQ3ZjNlYTEyOCJ9LCJleHAiOjE3ODg0ODIwMjgsImlhdCI6MTc4ODQ1NTQwNX0.UKNLJKCb_1QaKGpAYKGrEh1wyKuEtxatr_rxhC5c0vc"
+};
+let tokenStock = [];
+const cooldowns = new Map();
+const activeGenerations = new Map();
+let isGenerating = false;
+const validCodes = new Set();
+const userWarnings = new Map();
+const logChannels = new Map();
+let refreshBatchCounter = 0;
+const removeStockMessages = new Map();
+let refreshAttempts = 0;
+let lastRefreshExpiry = 0;
+const MAX_FAILS = 5;
+let consecutiveFails = 0;
 
-        exp_dt = datetime.fromtimestamp(exp_ts, tz=timezone.utc)
-        is_expired = time.time() >= exp_ts
-        return exp_dt, is_expired
+// --- Cache for full tokens (for copy buttons) ---
+const tokenCache = new Map();
+let isRefreshing = false;
 
-    except Exception:
-        return None, True
+// --- SUBSCRIPTION SYSTEM ---
+const subscribedUsers = new Set();
+const AUTO_DELIVERY_INTERVAL = 5 * 60 * 1000;
+let deliveryInterval = null;
 
+// --- Panel message tracking ---
+let subscriptionPanelMessage = null;
+let statusPanelMessage = null;
 
-def load_data():
-    if not os.path.exists(DATA_FILE):
-        initial_pool = []
-        r_tok_1 = os.getenv("REFRESH_TOKEN_1")
-        tok_1 = os.getenv("TOKEN_1")
-        if r_tok_1: 
-            initial_pool.append(r_tok_1)
-        if tok_1 and tok_1 not in initial_pool: 
-            initial_pool.append(tok_1)
-            
-        return {
-            "token_pool": initial_pool, 
-            "backup_tokens": [],
-            "premium_token_pool": list(initial_pool),
-            "premium_backup_tokens": [],
-            "heroic_token_pool": list(initial_pool),
-            "heroic_backup_tokens": [],
-            "audio_pool": [],
-            "audio_backup_tokens": [],
-            "user_audio_history": {},
-            "log_channel": None,
-            "maintenance": False,
-            "user_stats": {}
+// --- Stats tracking ---
+let totalTokensGenerated = 0;
+const userTokenCounts = new Map();
+const userHistory = new Map();
+const lotteryPool = new Set();
+
+// --- Token number helper ---
+function generateTokenNumber() {
+    return Math.floor(Math.random() * 100) + 1;
+}
+
+// --- Log queue to Discord ---
+let logQueue = [];
+let logQueueInterval = null;
+
+function shouldLogMessage(msg) {
+    if (!msg) return false;
+    const lower = msg.toLowerCase();
+    if (lower.includes('gateway')) return false;
+    if (lower.includes('dns')) return false;
+    if (lower.includes('[debug]')) return false;
+    if (lower.includes('heartbeat')) return false;
+    if (lower.includes('ready')) return false;
+    return true;
+}
+
+function processLogQueue() {
+    if (logQueue.length === 0) return;
+    const channel = client.channels.cache.get(LOG_CHANNEL_ID);
+    if (!channel) return;
+    const batch = logQueue.splice(0, 5);
+    for (const item of batch) {
+        const embed = new EmbedBuilder()
+            .setTitle(`📋 ${item.type.toUpperCase()}`)
+            .setDescription(item.message.length > 1900 ? item.message.slice(0, 1900) + '...' : item.message)
+            .setColor(item.type === 'error' ? 0xED4245 : item.type === 'warn' ? 0xF1C40F : 0x2ECC71)
+            .setTimestamp()
+            .setFooter({ text: 'EAM.LOL Logs' });
+        channel.send({ embeds: [embed] }).catch(() => {});
+    }
+}
+
+function enqueueLog(message, type = 'info') {
+    if (!shouldLogMessage(message)) return;
+    logQueue.push({ message, type });
+}
+
+// Override console methods
+const origLog = console.log;
+const origError = console.error;
+const origWarn = console.warn;
+const origInfo = console.info;
+
+console.log = function(...args) {
+    const msg = args.join(' ');
+    origLog.apply(console, args);
+    enqueueLog(msg, 'info');
+};
+
+console.error = function(...args) {
+    const msg = args.join(' ');
+    origError.apply(console, args);
+    enqueueLog(msg, 'error');
+};
+
+console.warn = function(...args) {
+    const msg = args.join(' ');
+    origWarn.apply(console, args);
+    enqueueLog(msg, 'warn');
+};
+
+console.info = function(...args) {
+    const msg = args.join(' ');
+    origInfo.apply(console, args);
+    enqueueLog(msg, 'info');
+};
+
+// --- MULTI-ACCOUNT SUPPORT ---
+function loadAccounts() {
+    const accounts = [];
+    let i = 1;
+    while (true) {
+        const token = (process.env[`TOKEN_${i}`] || '').trim();
+        const refresh = (process.env[`REFRESH_TOKEN_${i}`] || '').trim();
+        if (!token || !refresh) break;
+        accounts.push({ token, refresh_token: refresh, label: `account_${i}` });
+        i++;
+    }
+    if (accounts.length === 0) {
+        const token = (process.env.INITIAL_TOKEN || '').trim();
+        const refresh = (process.env.INITIAL_REFRESH_TOKEN || '').trim();
+        if (token && refresh) {
+            accounts.push({ token, refresh_token: refresh, label: 'account_1 (legacy)' });
         }
-    with open(DATA_FILE, "r") as f:
-        data = json.load(f)
-        if "token_pool" not in data:
-            data["token_pool"] = []
-        if "backup_tokens" not in data:
-            data["backup_tokens"] = []
-        if "premium_token_pool" not in data:
-            data["premium_token_pool"] = []
-        if "premium_backup_tokens" not in data:
-            data["premium_backup_tokens"] = []
-        if "heroic_token_pool" not in data:
-            data["heroic_token_pool"] = []
-        if "heroic_backup_tokens" not in data:
-            data["heroic_backup_tokens"] = []
-        if "audio_pool" not in data:
-            data["audio_pool"] = []
-        if "audio_backup_tokens" not in data:
-            data["audio_backup_tokens"] = []
-        if "user_audio_history" not in data:
-            data["user_audio_history"] = {}
-        if "log_channel" not in data:
-            data["log_channel"] = None
-        if "maintenance" not in data:
-            data["maintenance"] = False
-        if "user_stats" not in data:
-            data["user_stats"] = {}
-        return data
+    }
+    return accounts;
+}
+let accounts = loadAccounts();
+let activeAccountLabel = accounts.length > 0 ? accounts[0].label : 'default';
 
-data = load_data()
-cooldowns = {}
-premium_cooldowns = {}
-heroic_cooldowns = {}
-audio_cooldowns = {}
-token_lock = asyncio.Lock()
+function getActiveAccount() {
+    for (const acc of accounts) {
+        if (!isTokenExpiredObj({ bearer: acc.refresh_token })) return acc;
+    }
+    return null;
+}
+function switchToNextAccount(currentLabel) {
+    const ordered = [...accounts].sort((a, b) => (a.label === currentLabel ? 1 : b.label === currentLabel ? -1 : 0));
+    for (const acc of ordered) {
+        if (acc.label === currentLabel) continue;
+        if (!isTokenExpiredObj({ bearer: acc.refresh_token })) {
+            console.log(`[INFO] [EAM.LOL] Switching to ${acc.label}`);
+            return acc;
+        }
+    }
+    return null;
+}
 
-def save_data():
-    with open(DATA_FILE, "w") as f:
-        json.dump(data, f, indent=4)
+// --- JWT HELPERS ---
+function decodeJwt(token) {
+    try {
+        const part = (token || '').split('.')[1];
+        if (!part) return null;
+        const normalized = part.replace(/-/g, '+').replace(/_/g, '/');
+        const json = Buffer.from(normalized + '===', 'base64').toString('utf-8');
+        return JSON.parse(json);
+    } catch (e) { return null; }
+}
 
-# --- STRICT AUDIO VALIDATION FUNCTION ---
-async def validate_audio_file(attachment: discord.Attachment) -> tuple[bool, str]:
-    if not attachment.filename.lower().endswith('.mp3'):
-        return False, "Invalid file format. Only `.mp3` files are permitted."
-    
-    if attachment.size == 0:
-        return False, "The uploaded audio file is empty."
-    if attachment.size > 25 * 1024 * 1024:
-        return False, "The audio file exceeds the 25MB size limit."
-        
-    if attachment.content_type and not any(t in attachment.content_type.lower() for t in ['audio', 'mpeg', 'mp3', 'octet-stream']):
-        return False, "The file's content type is not a valid audio format."
-        
-    try:
-        file_bytes = await attachment.read()
-        if len(file_bytes) < 4:
-            return False, "The file is too short to be a valid MP3."
-            
-        has_id3 = file_bytes.startswith(b'ID3')
-        has_mpeg_sync = False
-        
-        for i in range(len(file_bytes) - 1):
-            if file_bytes[i] == 0xFF and (file_bytes[i+1] & 0xE0) == 0xE0:
-                has_mpeg_sync = True
-                break
-                
-        if not (has_id3 or has_mpeg_sync):
-            return False, "File structure validation failed. Not a valid MP3 audio file."
-            
-    except Exception as e:
-        return False, f"Error processing file data: {str(e)}"
-        
-    return True, "Validation successful."
+function getTokenExpiryMs(token) {
+    const p = decodeJwt(token);
+    if (p && typeof p.exp === 'number') {
+        return p.exp * 1000;
+    }
+    console.warn('[WARN] [EAM.LOL] Token has no valid expiry claim, returning null.');
+    return null;
+}
 
-# --- NAKAMA TOKEN VALIDATION & SESSION REFRESH (FIXED – like EAM) ---
-async def test_token_validity(session: aiohttp.ClientSession, raw_token: str) -> tuple[bool, str, dict]:
-    """
-    Test a token by refreshing it using the Nakama refresh endpoint.
-    The raw_token should be a refresh token (JWT). It will attempt to refresh it.
-    Returns (success, message, result_data) where result_data contains
-    "token" (new bearer) and "refresh_token" (new refresh token) if successful.
-    """
-    if not raw_token or not raw_token.strip():
-        return False, "Token is invalid.", {}
+function isTokenExpiredObj(tokenObj) {
+    if (!tokenObj || !tokenObj.bearer) return true;
+    const expiry = getTokenExpiryMs(tokenObj.bearer);
+    if (expiry === null) return true;
+    return Date.now() >= expiry;
+}
 
-    # Extract the first JWT from the input (if it's a block with extra text)
-    jwt_tokens = re.findall(r'eyJ[a-zA-Z0-9_.-]+', raw_token)
-    if not jwt_tokens:
-        jwt_tokens = [raw_token.strip(" `\n\t")]
-    
-    refresh_tok = jwt_tokens[0]  # Use the first JWT as refresh token
+function secondsUntilExpiry(tokenStr) {
+    const expiry = getTokenExpiryMs(tokenStr);
+    if (expiry === null) return null;
+    return Math.floor((expiry - Date.now()) / 1000);
+}
 
-    # Build auth header for server key
-    auth_header = ""
-    if SERVER_KEY:
-        auth_bytes = f"{SERVER_KEY}:".encode("utf-8")
-        auth_header = f"Basic {base64.b64encode(auth_bytes).decode('utf-8')}"
+function formatRemainingTime(expiresAt) {
+    if (expiresAt === null || isNaN(expiresAt)) return 'UNKNOWN';
+    const diff = expiresAt - Date.now();
+    if (diff <= 0) return 'EXPIRED';
+    const seconds = Math.floor(diff / 1000);
+    const minutes = Math.floor(seconds / 60);
+    const hours = Math.floor(minutes / 60);
+    const days = Math.floor(hours / 24);
+    if (days > 0) return `${days}d ${hours % 24}h`;
+    if (hours > 0) return `${hours}h ${minutes % 60}m`;
+    if (minutes > 0) return `${minutes}m ${seconds % 60}s`;
+    return `${seconds}s`;
+}
 
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": auth_header,
-        "server-key": SERVER_KEY
+function humanExpiry(expiresAt) {
+    if (expiresAt === null || isNaN(expiresAt)) return 'UNKNOWN';
+    const diff = expiresAt - Date.now();
+    if (diff <= 0) return 'EXPIRED';
+    return `expires in ${formatRemainingTime(expiresAt)} (${new Date(expiresAt).toUTCString()})`;
+}
+
+// --- JWT‑ONLY VALIDATION (no API call) ---
+function validateTokenJWT(bearerToken, refreshToken = null) {
+    const expiry = getTokenExpiryMs(bearerToken);
+    const hasExpiry = expiry !== null;
+    const expired = hasExpiry && Date.now() >= expiry;
+
+    let refreshExpiry = null;
+    let refreshExpired = false;
+    let refreshHasExpiry = false;
+    let refreshSecondsRemaining = null;
+
+    if (refreshToken) {
+        refreshExpiry = getTokenExpiryMs(refreshToken);
+        refreshHasExpiry = refreshExpiry !== null;
+        refreshExpired = refreshHasExpiry && Date.now() >= refreshExpiry;
+        refreshSecondsRemaining = refreshHasExpiry ? Math.floor((refreshExpiry - Date.now()) / 1000) : null;
     }
 
-    # Correct payload: only the refresh token
-    payload = {"token": refresh_tok}
+    return {
+        valid: hasExpiry && !expired,
+        expired,
+        expiry,
+        hasExpiry,
+        apiValid: true,
+        apiError: null,
+        secondsRemaining: hasExpiry ? Math.floor((expiry - Date.now()) / 1000) : null,
+        refreshExpiry,
+        refreshExpired,
+        refreshHasExpiry,
+        refreshSecondsRemaining
+    };
+}
 
-    try:
-        async with session.post(API_URL, json=payload, headers=headers, timeout=10) as resp:
-            resp_text = await resp.text()
-            if resp.status == 200:
-                try:
-                    res_json = json.loads(resp_text)
-                    # New bearer token
-                    bearer = res_json.get("token") or res_json.get("access_token")
-                    # New refresh token (may be the same if the server doesn't rotate, but we use the one returned)
-                    new_refresh = res_json.get("refresh_token") or refresh_tok
-                    if bearer:
-                        return True, "Valid", {
-                            "token": bearer,
-                            "refresh_token": new_refresh,
-                            "raw": res_json
-                        }
-                    else:
-                        return False, "No bearer token in response", {}
-                except json.JSONDecodeError:
-                    return False, "Non-JSON response from refresh endpoint", {}
-            elif resp.status in (429, 500, 502, 503, 504):
-                return False, f"Network error / Server busy (HTTP {resp.status})", {}
-            else:
-                return False, f"Token invalid (HTTP {resp.status})", {}
-    except Exception as e:
-        return False, f"Network error during Nakama refresh: {e}", {}
+// ========== FIXED: API TOKEN VALIDATION with clear 401 message ==========
+async function validateTokenDetails(bearer, refreshToken) {
+    try {
+        const url = `${ACTIVE_API_URL}/v2/account`;
+        const response = await fetch(url, {
+            headers: {
+                'Authorization': `Bearer ${bearer}`,
+                'Content-Type': 'application/json',
+                'User-Agent': 'SteamVR 1.88.1.3421_a3df6ce5'
+            }
+        });
+        if (response.status === 200) {
+            const body = await response.text();
+            console.log(`[API] Raw response: ${body}`);
+            if (body && body.startsWith('{')) {
+                const parsed = JSON.parse(body);
+                const account = parsed.data || parsed.user || parsed.account || parsed;
+                if (account && (account.id || account.username || account.tid || account.userId)) {
+                    return { valid: true, apiError: null };
+                }
+                return { valid: false, apiError: `Empty account data (parsed: ${JSON.stringify(parsed).slice(0, 200)})` };
+            }
+            return { valid: false, apiError: 'Non-JSON response' };
+        }
+        // Enhanced error for 401
+        let errorMsg = `HTTP ${response.status}`;
+        if (response.status === 401) errorMsg = 'Token rejected by server (401) – please set a valid refresh token using `/set-refresh`';
+        else if (response.status === 403) errorMsg = 'Forbidden (403) – insufficient permissions';
+        else if (response.status === 404) errorMsg = 'API endpoint not found (404) – check server URL';
+        return { valid: false, apiError: errorMsg };
+    } catch (err) {
+        console.warn(`[API] Validation fetch failed: ${err.message}`);
+        return { valid: false, apiError: err.message };
+    }
+}
 
-# --- DISCORD BOT SETUP ---
-intents = discord.Intents.default()
-intents.members = True
-intents.message_content = True
+// --- RefreshTokenOnly (no "same token" check, no retry on 401) ---
+async function refreshTokenOnly(refreshTk, retries = 3) {
+    let lastError = null;
+    let lastResponse = null;
 
-class EICBot(discord.Client):
-    def __init__(self):
-        super().__init__(intents=intents)
-        self.tree = app_commands.CommandTree(self)
-        self.session = None
-        self.db = None
+    for (let attempt = 1; attempt <= retries; attempt++) {
+        try {
+            console.log(`[REFRESH] Attempt ${attempt} to refresh token...`);
+            const refreshUrl = `${ACTIVE_API_URL}/v2/account/session/refresh`;
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 15000);
+            const serverKeyAuth = 'Basic ' + Buffer.from(NAKAMA_SERVER_KEY + ':').toString('base64');
+            const response = await fetch(refreshUrl, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'User-Agent': 'SteamVR 1.88.1.3421_a3df6ce5',
+                    'Authorization': serverKeyAuth
+                },
+                body: JSON.stringify({ token: refreshTk }),
+                signal: controller.signal
+            });
+            clearTimeout(timeoutId);
 
-    async def setup_hook(self):
-        conn = aiohttp.TCPConnector(limit=10, keepalive_timeout=30)
-        self.session = aiohttp.ClientSession(connector=conn)
-        
-        # --- RAILWAY POSTGRESQL INITIALIZATION ---
-        if DATABASE_URL:
-            try:
-                self.db = await asyncpg.create_pool(DATABASE_URL)
-                async with self.db.acquire() as db_conn:
-                    await db_conn.execute("""
-                        CREATE TABLE IF NOT EXISTS tokens (
-                            discord_id TEXT PRIMARY KEY,
-                            access_token TEXT NOT NULL,
-                            refresh_token TEXT NOT NULL,
-                            expires_at TIMESTAMPTZ NOT NULL
-                        )
-                    """)
-                    await db_conn.execute("""
-                        CREATE TABLE IF NOT EXISTS bot_pools (
-                            pool_name TEXT PRIMARY KEY,
-                            tokens JSONB NOT NULL
-                        )
-                    """)
-                print("[SUCCESS] Connected to Railway PostgreSQL & verified dynamic tables!")
-            except Exception as e:
-                print(f"[DATABASE ERROR] Failed to initialize PostgreSQL pool: {e}")
+            const status = response.status;
+            const contentType = response.headers.get('content-type');
+            if (!contentType || !contentType.includes('application/json')) {
+                throw new Error(`Non-JSON response (status ${status})`);
+            }
+            const data = await response.json();
+            lastResponse = data;
 
-        self.add_view(GenerateView())
-        self.add_view(PremiumGenerateView())
-        self.add_view(DonateView())
-        self.add_view(CheckerView())
-        self.add_view(TicketView())
-        self.add_view(TicketCloseView())
-        self.loop.create_task(self.auto_refresh_loop())
-        self.loop.create_task(self.database_member_token_background_loop())
+            if (!response.ok) {
+                if (status === 401 || status === 403) {
+                    throw new Error(`Refresh token rejected: ${data?.message || 'Unauthorized'}`);
+                }
+                throw new Error(data?.message || `HTTP ${status}`);
+            }
 
-        for gid in ALLOWED_GUILD_IDS:
-            guild = discord.Object(id=gid)
-            self.tree.clear_commands(guild=guild)
-            await self.tree.sync(guild=guild)
-        await self.tree.sync()
-        print("[SUCCESS] Cleared old commands and registered global/guild commands!")
+            const newBearer = data.token || data.access_token || data.bearer;
+            const newRefresh = data.refresh_token || refreshTk;
+            if (!newBearer) throw new Error('No token in response');
 
-    async def close(self):
-        if self.db:
-            await self.db.close()
-        if self.session:
-            await self.session.close()
-        await super().close()
+            const apiCheck = await validateTokenDetails(newBearer, newRefresh);
+            if (!apiCheck.valid) {
+                throw new Error(`API validation failed: ${apiCheck.apiError}`);
+            }
 
-    async def auto_refresh_loop(self):
-        await self.wait_until_ready()
-        while not self.is_closed():
-            await asyncio.sleep(300) # Check every 5 minutes
-            if data.get("maintenance"):
-                continue
-            
-            async with token_lock:
-                refreshed_map = {}
+            const newExpiry = getTokenExpiryMs(newBearer);
+            if (newExpiry === null) throw new Error('No expiry claim in new token');
+            if (newExpiry <= Date.now()) throw new Error('New token already expired');
 
-                for pool_key, backup_key in [
-                    ("token_pool", "backup_tokens"), 
-                    ("premium_token_pool", "premium_backup_tokens"),
-                    ("heroic_token_pool", "heroic_backup_tokens")
-                ]:
-                    pool = data.get(pool_key, [])
-                    if not pool:
-                        continue
-                    
-                    new_pool = []
-                    for raw_stock in pool:
-                        if raw_stock in refreshed_map:
-                            new_pool.append(refreshed_map[raw_stock])
-                            continue
+            const jwtCheck = validateTokenJWT(newBearer, newRefresh);
+            if (!jwtCheck.valid) {
+                throw new Error('New token JWT is invalid or expired');
+            }
 
-                        exp_dt, is_expired = parse_token_expiration(raw_stock)
-                        
-                        if exp_dt and not is_expired:
-                            time_left = (exp_dt - datetime.now(timezone.utc)).total_seconds()
-                            if time_left > 600:  # more than 10 minutes left, skip refresh
-                                new_pool.append(raw_stock)
-                                continue
+            console.log(`[REFRESH] Successfully refreshed. Expiry: ${new Date(newExpiry).toUTCString()}`);
+            return { success: true, bearer: newBearer, refresh: newRefresh, expiresAt: newExpiry };
+        } catch (err) {
+            lastError = err;
+            console.error(`[REFRESH] Attempt ${attempt} failed: ${err.message}`);
+            // If it's an auth error (401/403), don't retry
+            if (err.message.includes('401') || err.message.includes('403') || err.message.includes('rejected')) {
+                console.log('[REFRESH] Auth error – aborting retries.');
+                break;
+            }
+            if (attempt < retries) {
+                const delay = Math.pow(2, attempt - 1) * 1000;
+                console.log(`[REFRESH] Retrying in ${delay/1000}s...`);
+                await new Promise(r => setTimeout(r, delay));
+            }
+        }
+    }
+    console.error(`[REFRESH] All attempts failed. Last error: ${lastError?.message || 'Unknown'}`);
+    return { success: false, error: lastError ? lastError.message : 'Unknown error', response: lastResponse };
+}
 
-                        # Refresh the token
-                        is_valid, err_msg, res_data = await test_token_validity(self.session, raw_stock)
-                        if is_valid:
-                            # res_data contains new bearer and new refresh token
-                            new_refresh = res_data.get("refresh_token") or raw_stock
-                            refreshed_map[raw_stock] = new_refresh
-                            new_pool.append(new_refresh)
-                        else:
-                            # If refresh fails due to network/server issues, keep the token
-                            if "Network error" in err_msg or "Server busy" in err_msg or "429" in err_msg:
-                                new_pool.append(raw_stock)
-                                continue
+// --- refreshToken with fallback ---
+async function refreshToken(refreshTk) {
+    if (!refreshTk) return { success: false, error: 'No refresh token' };
 
-                            # Try to replace with a backup
-                            backup_list = data.get(backup_key, [])
-                            replaced = False
-                            while backup_list:
-                                next_backup = backup_list.pop(0)
-                                b_valid, _, b_res = await test_token_validity(self.session, next_backup)
-                                if b_valid:
-                                    new_refresh = b_res.get("refresh_token") or next_backup
-                                    new_pool.append(new_refresh)
-                                    replaced = True
-                                    break
-                            if not replaced:
-                                await log_to_channel(
-                                    None,
-                                    "🔄 Token Expired & Purged",
-                                    f"Background check found an expired token in `{pool_key}` with no backups available.",
-                                    discord.Color.orange()
-                                )
-                    data[pool_key] = new_pool
-                save_data()
+    const result = await refreshTokenOnly(refreshTk, 5);
 
-    async def database_member_token_background_loop(self):
-        """Background maintenance loop to check and auto-refresh member tokens stored in Railway Postgres for 2k members."""
-        await self.wait_until_ready()
-        while not self.is_closed():
-            await asyncio.sleep(300) # Check every 5 minutes
-            if not self.db:
-                continue
-            try:
-                async with self.db.acquire() as conn:
-                    rows = await conn.fetch("SELECT discord_id, refresh_token, expires_at FROM tokens")
-                    for row in rows:
-                        discord_id = row["discord_id"]
-                        refresh_token = row["refresh_token"]
-                        expires_at = row["expires_at"]
-                        
-                        if expires_at and datetime.now(timezone.utc) >= expires_at:
-                            # Use the fixed refresh endpoint
-                            auth_bytes = f"{SERVER_KEY}:".encode("utf-8")
-                            auth_header = f"Basic {base64.b64encode(auth_bytes).decode('utf-8')}"
-                            headers = {"Content-Type": "application/json", "Authorization": auth_header, "server-key": SERVER_KEY}
-                            payload = {"token": refresh_token}
+    if (result.success) {
+        DEFAULT_TOKEN.bearer = result.bearer;
+        DEFAULT_TOKEN.refresh_token = result.refresh;
+        apiWorking = true;
+        consecutiveFails = 0;
+        lastRefreshExpiry = result.expiresAt;
 
-                            async with self.session.post(API_URL, json=payload, headers=headers, timeout=10) as resp:
-                                if resp.status == 200:
-                                    res_json = await resp.json()
-                                    new_access = res_json.get("token") or res_json.get("access_token")
-                                    new_refresh = res_json.get("refresh_token") or refresh_token
-                                    
-                                    exp_dt, _ = parse_token_expiration(new_access)
-                                    new_expiry = exp_dt if exp_dt else datetime.now(timezone.utc)
-                                    
-                                    await conn.execute(
-                                        """
-                                        UPDATE tokens 
-                                        SET access_token = $1, refresh_token = $2, expires_at = $3 
-                                        WHERE discord_id = $4
-                                        """,
-                                        new_access, new_refresh, new_expiry, discord_id
-                                    )
-                                else:
-                                    await conn.execute("DELETE FROM tokens WHERE discord_id = $1", discord_id)
-            except Exception as e:
-                print(f"[BACKGROUND DB REFRESH ERROR]: {e}")
+        updateAccountTokens(refreshTk, result.bearer, result.refresh);
 
-bot = EICBot()
-client = bot
+        if (tokenStock.length > 0) {
+            const old = tokenStock[0];
+            tokenStock[0] = {
+                bearer: result.bearer,
+                refresh: result.refresh,
+                addedAt: Date.now(),
+                expiresAt: result.expiresAt,
+                id: old.id || generateGenerationId(),
+                userId: old.userId || 'system',
+                username: old.username || 'System',
+                displayNumber: old.displayNumber || generateTokenNumber()
+            };
+        } else {
+            tokenStock.push({
+                bearer: result.bearer,
+                refresh: result.refresh,
+                addedAt: Date.now(),
+                expiresAt: result.expiresAt,
+                id: generateGenerationId(),
+                userId: 'system',
+                username: 'System',
+                displayNumber: generateTokenNumber()
+            });
+        }
+        console.log(`[SUCCESS] [EAM.LOL] Token stock updated. New expiry: ${humanExpiry(lastRefreshExpiry)}`);
+        return { success: true, bearer: result.bearer, refresh: result.refresh, expiresAt: result.expiresAt };
+    }
 
-@bot.event
-async def on_message(message: discord.Message):
-    if message.author.bot or message.author.id in OWNER_IDS:
-        return
+    console.log(`[WARN] [EAM.LOL] Refresh failed (${result.error}). Trying fallback accounts...`);
+    const nextAcc = switchToNextAccount(activeAccountLabel);
+    if (nextAcc) {
+        activeAccountLabel = nextAcc.label;
+        DEFAULT_TOKEN.bearer = nextAcc.token;
+        DEFAULT_TOKEN.refresh_token = nextAcc.refresh_token;
+        const newExpiry = getTokenExpiryMs(nextAcc.token);
+        const newNumber = generateTokenNumber();
+        if (tokenStock.length > 0) {
+            const old = tokenStock[0];
+            tokenStock[0] = {
+                bearer: nextAcc.token,
+                refresh: nextAcc.refresh_token,
+                addedAt: Date.now(),
+                expiresAt: newExpiry,
+                id: old.id || generateGenerationId(),
+                userId: old.userId || 'system',
+                username: old.username || 'System',
+                displayNumber: newNumber
+            };
+        } else {
+            tokenStock.push({
+                bearer: nextAcc.token,
+                refresh: nextAcc.refresh_token,
+                addedAt: Date.now(),
+                expiresAt: newExpiry,
+                id: generateGenerationId(),
+                userId: 'system',
+                username: 'System',
+                displayNumber: newNumber
+            });
+        }
+        console.log(`[SUCCESS] [EAM.LOL] Switched to ${nextAcc.label} - new token ready`);
+        return { success: true, bearer: nextAcc.token, refresh: nextAcc.refresh_token, expiresAt: newExpiry };
+    }
 
-    url_pattern = re.compile(r'https?://[^\s]+|www\.[^\s]+|discord\.gg/[^\s]+|discord\.com/invite/[^\s]+', re.IGNORECASE)
+    console.log('[ERROR] [EAM.LOL] All accounts exhausted. Falling back to hardcoded default.');
+    const defaultExpiry = getTokenExpiryMs(DEFAULT_TOKEN.bearer);
+    const defaultNumber = generateTokenNumber();
+    if (tokenStock.length > 0) {
+        const old = tokenStock[0];
+        tokenStock[0] = {
+            bearer: DEFAULT_TOKEN.bearer,
+            refresh: DEFAULT_TOKEN.refresh_token,
+            addedAt: Date.now(),
+            expiresAt: defaultExpiry,
+            id: old.id || generateGenerationId(),
+            userId: old.userId || 'system',
+            username: old.username || 'System',
+            displayNumber: defaultNumber
+        };
+    } else {
+        tokenStock.push({
+            bearer: DEFAULT_TOKEN.bearer,
+            refresh: DEFAULT_TOKEN.refresh_token,
+            addedAt: Date.now(),
+            expiresAt: defaultExpiry,
+            id: generateGenerationId(),
+            userId: 'system',
+            username: 'System',
+            displayNumber: defaultNumber
+        });
+    }
+    console.log(`[WARN] [EAM.LOL] Using hardcoded default token - expires ${new Date(defaultExpiry).toUTCString()}`);
+    return { success: true, bearer: DEFAULT_TOKEN.bearer, refresh: DEFAULT_TOKEN.refresh_token, expiresAt: defaultExpiry };
+}
 
-    if url_pattern.search(message.content):
-        try:
-            await message.delete()
-            warning = await message.channel.send(f"{message.author.mention}, posting links is not allowed here!")
-            await asyncio.sleep(5)
-            await warning.delete()
-        except discord.Forbidden:
-            pass
-        except discord.HTTPException:
-            pass
+function updateAccountTokens(oldRefresh, newBearer, newRefresh) {
+    for (let i = 0; i < accounts.length; i++) {
+        if (accounts[i].refresh_token === oldRefresh) {
+            accounts[i].token = newBearer;
+            accounts[i].refresh_token = newRefresh;
+            console.log(`[INFO] [EAM.LOL] Updated ${accounts[i].label}`);
+            return;
+        }
+    }
+    accounts.push({ token: newBearer, refresh_token: newRefresh, label: `account_${accounts.length + 1} (refreshed)` });
+    console.log(`[INFO] Added new account: account_${accounts.length}`);
+}
 
-async def log_to_channel(guild: discord.Guild, title: str, description: str, color: discord.Color):
-    log_ch_id = data.get("log_channel")
-    if not log_ch_id:
-        return
+function addOrUpdateAccount(bearer, refresh) {
+    const existing = accounts.find(a => a.refresh_token === refresh);
+    if (existing) {
+        existing.token = bearer;
+        existing.refresh_token = refresh;
+        console.log(`[INFO] Updated existing account: ${existing.label}`);
+        return;
+    }
+    const label = `account_${accounts.length + 1}`;
+    accounts.push({ token: bearer, refresh_token: refresh, label });
+    console.log(`[INFO] Added new account: ${label}`);
+}
+
+function giveNewTokenFromAccounts() {
+    const acc = getActiveAccount();
+    if (acc) {
+        DEFAULT_TOKEN.bearer = acc.token;
+        DEFAULT_TOKEN.refresh_token = acc.refresh_token;
+        activeAccountLabel = acc.label;
+        const newExpiry = getTokenExpiryMs(acc.token);
+        const newNumber = generateTokenNumber();
+        if (tokenStock.length > 0) {
+            const old = tokenStock[0];
+            tokenStock[0] = {
+                bearer: acc.token,
+                refresh: acc.refresh_token,
+                addedAt: Date.now(),
+                expiresAt: newExpiry,
+                id: old.id || generateGenerationId(),
+                userId: old.userId || 'system',
+                username: old.username || 'System',
+                displayNumber: newNumber
+            };
+        } else {
+            tokenStock.push({
+                bearer: acc.token,
+                refresh: acc.refresh_token,
+                addedAt: Date.now(),
+                expiresAt: newExpiry,
+                id: generateGenerationId(),
+                userId: 'system',
+                username: 'System',
+                displayNumber: newNumber
+            });
+        }
+        console.log(`[SUCCESS] [EAM.LOL] New token loaded from ${acc.label} - expires ${new Date(newExpiry).toUTCString()}`);
+    } else {
+        console.log('[ERROR] [EAM.LOL] No valid accounts left! Falling back to hardcoded default token.');
+        DEFAULT_TOKEN.bearer = DEFAULT_TOKEN.bearer;
+        DEFAULT_TOKEN.refresh_token = DEFAULT_TOKEN.refresh_token;
+        const newExpiry = getTokenExpiryMs(DEFAULT_TOKEN.bearer);
+        const newNumber = generateTokenNumber();
+        if (tokenStock.length > 0) {
+            const old = tokenStock[0];
+            tokenStock[0] = {
+                bearer: DEFAULT_TOKEN.bearer,
+                refresh: DEFAULT_TOKEN.refresh_token,
+                addedAt: Date.now(),
+                expiresAt: newExpiry,
+                id: old.id || generateGenerationId(),
+                userId: old.userId || 'system',
+                username: old.username || 'System',
+                displayNumber: newNumber
+            };
+        } else {
+            tokenStock.push({
+                bearer: DEFAULT_TOKEN.bearer,
+                refresh: DEFAULT_TOKEN.refresh_token,
+                addedAt: Date.now(),
+                expiresAt: newExpiry,
+                id: generateGenerationId(),
+                userId: 'system',
+                username: 'System',
+                displayNumber: newNumber
+            });
+        }
+        console.log(`[WARN] [EAM.LOL] Using hardcoded default token - expires ${new Date(newExpiry).toUTCString()}`);
+    }
+}
+
+// --- REFRESHER (called every 2:30) ---
+async function refreshTokenInStock() {
+    console.log('[REFRESHER] Starting refresh cycle...');
+    if (tokenStock.length === 0) {
+        console.log('[INFO] [EAM.LOL] Stock empty - loading from accounts...');
+        giveNewTokenFromAccounts();
+        await updateStatusPanel();
+        await updateSubscriptionPanel();
+        return;
+    }
     
-    channel = bot.get_channel(log_ch_id)
-    if not channel and guild:
-        channel = guild.get_channel(log_ch_id)
-        
-    if not channel:
-        try:
-            channel = await bot.fetch_channel(log_ch_id)
-        except Exception:
-            pass
-            
-    if channel:
-        embed = discord.Embed(title=title, description=description, color=color, timestamp=discord.utils.utcnow())
-        try:
-            await channel.send(embed=embed)
-        except Exception as e:
-            print(f"[LOG ERROR] Failed to send log to channel: {e}")
-
-async def notify_owners_donation(item_type: str, user: discord.User, passed: bool, details: str, stocked: bool):
-    for owner_id in OWNER_IDS:
-        try:
-            owner_user = await bot.fetch_user(owner_id)
-            if owner_user:
-                embed = discord.Embed(
-                    title="🎁 Donation Notification" if "Token" in item_type or "Audio" in item_type else "🔍 Checker Notification",
-                    description=(
-                        f"👤 **User:** {user.mention} (`{user.id}`)\n"
-                        f"📦 **Item Type:** `{item_type}`\n"
-                        f"🧪 **Validation Passed:** `{'Yes ✅' if passed else 'No ❌'}`\n"
-                        f"📥 **Added to Stock:** `{'Yes ✅' if stocked else 'No ❌'}`\n"
-                        f"📝 **Details:** {details}"
-                    ),
-                    color=discord.Color.purple() if passed else discord.Color.red(),
-                    timestamp=discord.utils.utcnow()
-                )
-                await owner_user.send(embed=embed)
-        except Exception as e:
-            print(f"[DM ERROR] Failed to send donation notification to owner {owner_id}: {e}")
-
-async def give_token(interaction: discord.Interaction, token_type: str = "public"):
-    user_id = interaction.user.id
-    now = time.time()
-
-    if isinstance(interaction.user, discord.Member):
-        role_ids = {role.id for role in interaction.user.roles}
-        if BLACKLIST_ROLE_ID in role_ids:
-            return await interaction.response.send_message("You are blacklisted from using this generator.", ephemeral=True)
-
-    is_premium = (token_type == "premium")
-    is_heroic = (token_type == "heroic")
-
-    if is_premium:
-        is_authorized = user_id in OWNER_IDS
-        if isinstance(interaction.user, discord.Member):
-            role_ids = {role.id for role in interaction.user.roles}
-            if VIP_ROLE_ID in role_ids or BUYER_ROLE_ID in role_ids:
-                is_authorized = True
-        if not is_authorized:
-            return await interaction.response.send_message("❌ **Permission Denied:** This command is for Buyers and VIPs only.", ephemeral=True)
-        
-        cooldown_time = PREMIUM_COOLDOWN
-        tier_name = "Premium (Buyer/VIP)"
-        cd_dict = premium_cooldowns
-        pool_key = "premium_token_pool"
-        backup_key = "premium_backup_tokens"
-    elif is_heroic:
-        cooldown_time = 0 if user_id in OWNER_IDS else HEROIC_COOLDOWN
-        tier_name = "Heroic"
-        cd_dict = heroic_cooldowns
-        pool_key = "heroic_token_pool"
-        backup_key = "heroic_backup_tokens"
-    else:
-        cooldown_time = 0 if user_id in OWNER_IDS else NORMAL_COOLDOWN
-        tier_name = "Public"
-        cd_dict = cooldowns
-        pool_key = "token_pool"
-        backup_key = "backup_tokens"
-
-    if cooldown_time > 0 and user_id in cd_dict:
-        rem = int(cooldown_time - (now - cd_dict[user_id]))
-        if rem > 0:
-            mins = rem // 60
-            secs = rem % 60
-            time_str = f"{mins}m {secs}s" if mins > 0 else f"{secs} seconds"
-            return await interaction.response.send_message(f"⏳ You are on cooldown. Try again in **{time_str}**.", ephemeral=True)
-
-    if data.get("maintenance"):
-        return await interaction.response.send_message("Generator is currently under maintenance.", ephemeral=True)
-
-    async with token_lock:
-        res_data = None
-        b_tok = None
-        r_tok = None
-        pool = data.get(pool_key, [])
-
-        attempts = 0
-        max_attempts = 5
-        while pool and attempts < max_attempts:
-            attempts += 1
-            raw_stock = pool.pop(0)
-            is_valid, err_msg, res_data = await test_token_validity(bot.session, raw_stock)
-
-            if is_valid:
-                b_tok = res_data.get("token")      # new bearer
-                r_tok = res_data.get("refresh_token") or raw_stock  # new refresh
-                if r_tok:
-                    pool.append(r_tok)  # store the new refresh token back
-                elif raw_stock:
-                    pool.append(raw_stock)
-                break
-            else:
-                if "Network error" in err_msg or "timeout" in err_msg.lower() or ("HTTP" in err_msg and ("5" in err_msg or "429" in err_msg)) or "Server busy" in err_msg:
-                    pool.append(raw_stock)
-                    continue
-                else:
-                    await log_to_channel(
-                        interaction.guild,
-                        "🗑️ Token Purged from Pool",
-                        f"👤 **User:** {interaction.user.mention} (`{interaction.user.id}`)\n"
-                        f"⚠️ Pool token was invalid and purged. Rotating to next token (Attempt {attempts}/{max_attempts})...",
-                        discord.Color.orange()
-                    )
-
-        if not is_heroic and not b_tok:
-            backup_list = data.get(backup_key, [])
-            while backup_list:
-                next_backup = backup_list.pop(0)
-                b_valid, _, b_res = await test_token_validity(bot.session, next_backup)
-                if b_valid:
-                    b_tok = b_res.get("token")
-                    r_tok = b_res.get("refresh_token") or next_backup
-                    if r_tok:
-                        pool.append(r_tok)
-                    break
-        elif is_heroic and not r_tok:
-            backup_list = data.get(backup_key, [])
-            while backup_list:
-                next_backup = backup_list.pop(0)
-                b_valid, _, b_res = await test_token_validity(bot.session, next_backup)
-                if b_valid:
-                    r_tok = b_res.get("refresh_token") or next_backup
-                    if r_tok:
-                        pool.append(r_tok)
-                    break
-
-        data[pool_key] = pool
-        save_data()
-
-        if is_heroic and not r_tok:
-            return await interaction.response.send_message("❌ **Out of stock:** No valid heroic tokens available in pool or backups. Please restock or donate using `/donate`.", ephemeral=True)
-        elif not is_heroic and not b_tok:
-            return await interaction.response.send_message("❌ **Out of stock:** No valid tokens available in pool or backups. Please restock or donate using `/donate`.", ephemeral=True)
-
-        if cooldown_time > 0:
-            cd_dict[user_id] = time.time()
-
-        user_id_str = str(user_id)
-        if "user_stats" not in data:
-            data["user_stats"] = {}
-        
-        user_gen_count = data["user_stats"].get(user_id_str, 0) + 1
-        data["user_stats"][user_id_str] = user_gen_count
-        save_data()
-
-    await interaction.response.send_message("🔄 **Starting generation...**", ephemeral=True)
-    await asyncio.sleep(0.8)
-    
-    await interaction.edit_original_response(content="🔄 **Loading token... 3**")
-    await asyncio.sleep(1)
-    
-    await interaction.edit_original_response(content="🔄 **Loading token... 2**")
-    await asyncio.sleep(1)
-    
-    await interaction.edit_original_response(content="🔄 **Loading token... 1**")
-    await asyncio.sleep(1)
-
-    try:
-        exp_dt, is_exp = parse_token_expiration(b_tok or r_tok)
-        exp_str = exp_dt.strftime("%Y-%m-%d %H:%M:%S UTC") if exp_dt else "No Expiration Timestamp Found"
-
-        file_content = (
-            "=========================================\n"
-            "           ENVOS TOKENS DATA             \n"
-            "=========================================\n"
-            f"Token Tier:  {tier_name.upper()}\n"
-            f"Generated:   {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}\n"
-            f"Expires At:  {exp_str}\n"
-            "-----------------------------------------\n"
-            "BEARER TOKEN:\n"
-            f"{b_tok if b_tok else 'N/A'}\n\n"
-            "REFRESH TOKEN:\n"
-            f"{r_tok if r_tok else 'N/A'}\n"
-            "=========================================\n"
-        )
-
-        token_file = discord.File(
-            fp=io.BytesIO(file_content.encode('utf-8')),
-            filename=f"{token_type.lower()}_token.txt"
-        )
-
-        if is_premium:
-            message_content = f"🔑 **Here is your premium eic token 💎**\n\n**Bearer Token:**\n```{b_tok}```"
-            if r_tok:
-                message_content += f"\n**Refresh Token:**\n```{r_tok}```"
-            message_content += "\n\n*made by envo*"
-        elif is_heroic:
-            message_content = f"🔑 **Here is your Heroic token 💎**\n\n**Refresh Token:**\n```{r_tok}```\n\n*made by envo*"
-        else:
-            message_content = f"🔑 **Here is your generated EIC token 💎**\n\n**Bearer Token:**\n```{b_tok}```"
-            if r_tok:
-                message_content += f"\n**Refresh Token:**\n```{r_tok}```"
-            message_content += "\n\n*made by envo*"
-
-        await interaction.user.send(content=message_content, file=token_file)
-
-    except discord.Forbidden:
-        return await interaction.edit_original_response(content="❌ I couldn't send you a DM. Please enable your direct messages.")
-
-    await interaction.edit_original_response(content="✅ **Token successfully delivered to your DMs!**")
-
-    pool_remaining = len(data.get(pool_key, []))
-    token_preview = f"`...{r_tok[-12:]}`" if r_tok else (f"`...{b_tok[-12:]}`" if b_tok else "`N/A`")
-    await log_to_channel(
-        interaction.guild,
-        "✨ Token Generated Successfully" if not is_premium else "💎 Premium Token Generated",
-        f"👤 **User:** {interaction.user.mention} (`{interaction.user.id}`)\n"
-        f"🏷️ **Tier:** `{tier_name}`\n"
-        f"🔑 **Generated Token Suffix:** {token_preview}\n"
-        f"📊 **Pool Status:** `{pool_remaining}` active tokens remaining in pool\n"
-        f"📈 **User Total Gens:** `{user_gen_count}`",
-        discord.Color.green() if not is_premium else discord.Color.gold()
-    )
-
-async def give_audio(interaction: discord.Interaction):
-    user_id = interaction.user.id
-    now = time.time()
-
-    if isinstance(interaction.user, discord.Member):
-        role_ids = {role.id for role in interaction.user.roles}
-        if BLACKLIST_ROLE_ID in role_ids:
-            return await interaction.response.send_message("You are blacklisted from using this generator.", ephemeral=True)
-
-    cooldown_time = 0 if user_id in OWNER_IDS else AUDIO_COOLDOWN
-    if cooldown_time > 0 and user_id in audio_cooldowns:
-        rem = int(cooldown_time - (now - audio_cooldowns[user_id]))
-        if rem > 0:
-            mins = rem // 60
-            secs = rem % 60
-            time_str = f"{mins}m {secs}s" if mins > 0 else f"{secs} seconds"
-            return await interaction.response.send_message(f"⏳ You are on cooldown for audio generation. Try again in **{time_str}**.", ephemeral=True)
-
-    if data.get("maintenance"):
-        return await interaction.response.send_message("Generator is currently under maintenance.", ephemeral=True)
-
-    user_id_str = str(user_id)
-    if "user_audio_history" not in data:
-        data["user_audio_history"] = {}
-    
-    user_history = data["user_audio_history"].get(user_id_str, [])
-    pool = data.get("audio_pool", [])
-    
-    if not pool:
-        return await interaction.response.send_message("❌ **Out of stock:** No audio files available in the pool.", ephemeral=True)
-
-    available_audios = [audio for audio in pool if audio not in user_history]
-    
-    if not available_audios:
-        user_history = []
-        available_audios = pool
-
-    audio_url = available_audios[0]
-    
-    async with token_lock:
-        user_history.append(audio_url)
-        data["user_audio_history"][user_id_str] = user_history
-        save_data()
-
-        if cooldown_time > 0:
-            audio_cooldowns[user_id] = time.time()
-
-    await interaction.response.send_message("🎵 **Generating audio file...**", ephemeral=True)
-    await asyncio.sleep(1)
-
-    try:
-        async with bot.session.get(audio_url) as resp:
-            if resp.status == 200:
-                file_bytes = await resp.read()
-                fp = io.BytesIO(file_bytes)
-                discord_file = discord.File(fp, filename="audio.mp3")
-                await interaction.user.send(content="🎵 **Here is your generated audio file:**\n\n*made by envo*", file=discord_file)
-            else:
-                return await interaction.edit_original_response(content="❌ Failed to fetch the audio file from storage.")
-    except discord.Forbidden:
-        return await interaction.edit_original_response(content="❌ I couldn't send you a DM. Please enable your direct messages.")
-    except Exception as e:
-        return await interaction.edit_original_response(content=f"❌ Error sending audio file: {e}")
-
-    await interaction.edit_original_response(content="✅ **Audio file successfully delivered to your DMs!**")
-    
-    await log_to_channel(
-        interaction.guild,
-        "🎶 Audio File Generated",
-        f"👤 **User:** {interaction.user.mention} (`{interaction.user.id}`)\n"
-        f"🔗 **Asset URL:** `{audio_url}`\n"
-        f"📊 **Audio Pool Status:** `{len(data.get('audio_pool', []))}` files total (Forever Stock)",
-        discord.Color.purple()
-    )
-
-class GenerateView(discord.ui.View):
-    def __init__(self): 
-        super().__init__(timeout=None)
-
-    @discord.ui.button(label="Generate EIC Token", emoji="🔑", style=discord.ButtonStyle.success, custom_id="gen_eic_token_btn")
-    async def generate_eic(self, interaction: discord.Interaction, button: discord.ui.Button): 
-        await give_token(interaction, token_type="public")
-
-    @discord.ui.button(label="Generate Heroic Token", emoji="💎", style=discord.ButtonStyle.primary, custom_id="gen_heroic_token_btn")
-    async def generate_heroic(self, interaction: discord.Interaction, button: discord.ui.Button): 
-        await give_token(interaction, token_type="heroic")
-
-    @discord.ui.button(label="Generate Audio File", emoji="🎵", style=discord.ButtonStyle.secondary, custom_id="gen_audio_btn")
-    async def generate_audio(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await give_audio(interaction)
-
-class PremiumGenerateView(discord.ui.View):
-    def __init__(self): 
-        super().__init__(timeout=None)
-
-    @discord.ui.button(label="Generate Premium Token", emoji="💎", style=discord.ButtonStyle.success, custom_id="gen_premium_token_btn")
-    async def generate_premium(self, interaction: discord.Interaction, button: discord.ui.Button): 
-        await give_token(interaction, token_type="premium")
-
-    @discord.ui.button(label="Generate Heroic Token", emoji="💎", style=discord.ButtonStyle.primary, custom_id="gen_premium_heroic_token_btn")
-    async def generate_heroic(self, interaction: discord.Interaction, button: discord.ui.Button): 
-        await give_token(interaction, token_type="heroic")
-
-    @discord.ui.button(label="Generate Audio File", emoji="🎵", style=discord.ButtonStyle.secondary, custom_id="gen_premium_audio_btn")
-    async def generate_audio(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await give_audio(interaction)
-
-class DonateView(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=None)
-
-    @discord.ui.button(label="Donate EIC Token", emoji="🎁", style=discord.ButtonStyle.success, custom_id="donate_token_btn")
-    async def donate_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if isinstance(interaction.user, discord.Member):
-            role_ids = {role.id for role in interaction.user.roles}
-            if BLACKLIST_ROLE_ID in role_ids:
-                return await interaction.response.send_message("You are blacklisted from donating.", ephemeral=True)
-        await interaction.response.send_modal(DonateModal())
-
-    @discord.ui.button(label="Donate Heroic Token", emoji="💎", style=discord.ButtonStyle.primary, custom_id="donate_heroic_btn")
-    async def donate_heroic_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if isinstance(interaction.user, discord.Member):
-            role_ids = {role.id for role in interaction.user.roles}
-            if BLACKLIST_ROLE_ID in role_ids:
-                return await interaction.response.send_message("You are blacklisted from donating.", ephemeral=True)
-        await interaction.response.send_modal(HeroicDonateModal())
-
-    @discord.ui.button(label="Donate Audio File (.mp3)", emoji="🎵", style=discord.ButtonStyle.secondary, custom_id="donate_audio_btn")
-    async def donate_audio_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_message("Please use the `/donate_audio` slash command to upload your `.mp3` file directly!", ephemeral=True)
-
-class CheckerModal(discord.ui.Modal, title="Token Checker & Auto-Stock"):
-    token_input = discord.ui.TextInput(
-        label="Paste Token to Check",
-        style=discord.TextStyle.paragraph,
-        placeholder="Paste token or refresh token here...",
-        required=True,
-        max_length=4000
-    )
-
-    async def on_submit(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
-        if interaction.user.id not in OWNER_IDS:
-            return await interaction.followup.send("Permission denied.", ephemeral=True)
-
-        raw_text = self.token_input.value.strip()
-        if not raw_text:
-            return await interaction.followup.send("❌ **Validation Failed:** Provided input is empty.", ephemeral=True)
-
-        is_valid, err_msg, res_data = await test_token_validity(bot.session, raw_text)
-        
-        if not is_valid:
-            await notify_owners_donation("Checked Token", interaction.user, False, err_msg, False)
-            return await interaction.followup.send(f"❌ **Token is Invalid:**\n```{err_msg}```", ephemeral=True)
-
-        r_tok = res_data.get("refresh_token") or raw_text
-        
-        added_pools = []
-        if r_tok not in data.get("token_pool", []):
-            data["token_pool"].append(r_tok)
-            added_pools.append("Public Pool")
-        if r_tok not in data.get("premium_token_pool", []):
-            data["premium_token_pool"].append(r_tok)
-            added_pools.append("Premium Pool")
-        if r_tok not in data.get("heroic_token_pool", []):
-            data["heroic_token_pool"].append(r_tok)
-            added_pools.append("Heroic Pool")
-        save_data()
-
-        status_msg = f"Secretly added to: `{', '.join(added_pools)}`" if added_pools else "Token is valid (already present in all pools)"
-        await notify_owners_donation(
-            "Checked Token",
-            interaction.user,
-            True,
-            f"Suffix: `...{r_tok[-12:]}` ({status_msg})",
-            len(added_pools) > 0
-        )
-
-        await interaction.followup.send(
-            f"✅ **Token is Valid!**\n"
-            f"{status_msg}\n"
-            f"🔑 **Suffix:** `...{r_tok[-12:]}`",
-            ephemeral=True
-        )
-        await log_to_channel(
-            interaction.guild,
-            "🔍 Token Checked & Auto-Stocked",
-            f"**Admin:** {interaction.user.mention} (`{interaction.user.id}`) checked a valid token via `/checker panel` and auto-stocked it across pools.",
-            discord.Color.green()
-        )
-
-class CheckerView(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=None)
-
-    @discord.ui.button(label="Check & Stock Token", emoji="🔍", style=discord.ButtonStyle.primary, custom_id="checker_panel_btn")
-    async def checker_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(CheckerModal())
-
-checker_group = app_commands.Group(name="checker", description="Token checker management commands")
-
-@checker_group.command(name="panel", description="[Owner Only] Post the token checker panel message with button")
-async def checker_panel(interaction: discord.Interaction):
-    await interaction.response.defer(ephemeral=True)
-    if interaction.user.id not in OWNER_IDS:
-        return await interaction.followup.send("Permission denied.", ephemeral=True)
-        
-    embed = discord.Embed(
-        title="🔍 Token Checker & Auto-Stock Panel",
-        description=(
-            "**Test tokens instantly!**\n\n"
-            "Click the button below to check if a token is valid. If valid, it will be secretly and automatically stocked into the public, premium, and heroic pools!"
-        ),
-        color=discord.Color.blue()
-    )
-    
-    await interaction.followup.send("Checker panel posted successfully!", ephemeral=True)
-    await interaction.channel.send(embed=embed, view=CheckerView())
-
-bot.tree.add_command(checker_group)
-
-class StockModal(discord.ui.Modal, title="Add Token to Public Pool"):
-    token_input = discord.ui.TextInput(
-        label="Paste Token Block Here",
-        style=discord.TextStyle.paragraph,
-        placeholder="Paste your token or block here...",
-        required=True,
-        max_length=4000
-    )
-
-    async def on_submit(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
-        if interaction.user.id not in OWNER_IDS:
-            return await interaction.followup.send("Permission denied.", ephemeral=True)
-            
-        raw_text = self.token_input.value.strip()
-        if not raw_text:
-            return await interaction.followup.send("❌ **Validation Failed:** Provided input is empty.", ephemeral=True)
-
-        is_valid, err_msg, res_data = await test_token_validity(bot.session, raw_text)
-        
-        if not is_valid:
-            return await interaction.followup.send(f"❌ **Validation Failed:**\n```{err_msg}```", ephemeral=True)
-            
-        r_tok = res_data.get("refresh_token") or raw_text
-        if r_tok in data["token_pool"]:
-            return await interaction.followup.send(f"⚠️ **Duplicate Token:** This token is already in the public pool.\n🔑 Suffix: `...{r_tok[-12:]}`", ephemeral=True)
-
-        data["token_pool"].append(r_tok)
-        save_data()
-
-        await interaction.followup.send(f"✅ Token successfully verified with Nakama and added to public pool!\n🔑 **Suffix:** `...{r_tok[-12:]}`", ephemeral=True)
-        await log_to_channel(
-            interaction.guild,
-            "📦 Public Pool Restocked",
-            f"**Admin:** {interaction.user.mention} (`{interaction.user.id}`) added a token to the public pool. Total pool size: `{len(data['token_pool'])}`",
-            discord.Color.blue()
-        )
-
-class PremiumStockModal(discord.ui.Modal, title="Add Token to Premium Pool"):
-    token_input = discord.ui.TextInput(
-        label="Paste Premium Token Block Here",
-        style=discord.TextStyle.paragraph,
-        placeholder="Paste your token or block here...",
-        required=True,
-        max_length=4000
-    )
-
-    async def on_submit(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
-        if interaction.user.id not in OWNER_IDS:
-            return await interaction.followup.send("Permission denied.", ephemeral=True)
-            
-        raw_text = self.token_input.value.strip()
-        if not raw_text:
-            return await interaction.followup.send("❌ **Validation Failed:** Provided input is empty.", ephemeral=True)
-
-        is_valid, err_msg, res_data = await test_token_validity(bot.session, raw_text)
-        
-        if not is_valid:
-            return await interaction.followup.send(f"❌ **Validation Failed:**\n```{err_msg}```", ephemeral=True)
-            
-        r_tok = res_data.get("refresh_token") or raw_text
-        if r_tok in data["premium_token_pool"]:
-            return await interaction.followup.send(f"⚠️ **Duplicate Token:** This token is already in the premium pool.\n🔑 Suffix: `...{r_tok[-12:]}`", ephemeral=True)
-
-        data["premium_token_pool"].append(r_tok)
-        save_data()
-
-        await interaction.followup.send(f"✅ Token successfully verified with Nakama and added to premium pool!\n🔑 **Suffix:** `...{r_tok[-12:]}`", ephemeral=True)
-        await log_to_channel(
-            interaction.guild,
-            "📦 Premium Pool Restocked",
-            f"**Admin:** {interaction.user.mention} (`{interaction.user.id}`) added a token to the premium pool. Total pool size: `{len(data['premium_token_pool'])}`",
-            discord.Color.gold()
-        )
-
-class HeroicStockModal(discord.ui.Modal, title="Add Token to Heroic Pool"):
-    token_input = discord.ui.TextInput(
-        label="Paste Heroic Token Block Here",
-        style=discord.TextStyle.paragraph,
-        placeholder="Paste your token or block here...",
-        required=True,
-        max_length=4000
-    )
-
-    async def on_submit(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
-        if interaction.user.id not in OWNER_IDS:
-            return await interaction.followup.send("Permission denied.", ephemeral=True)
-            
-        raw_text = self.token_input.value.strip()
-        if not raw_text:
-            return await interaction.followup.send("❌ **Validation Failed:** Provided input is empty.", ephemeral=True)
-
-        is_valid, err_msg, res_data = await test_token_validity(bot.session, raw_text)
-        
-        if not is_valid:
-            return await interaction.followup.send(f"❌ **Validation Failed:**\n```{err_msg}```", ephemeral=True)
-            
-        r_tok = res_data.get("refresh_token") or raw_text
-        if r_tok in data["heroic_token_pool"]:
-            return await interaction.followup.send(f"⚠️ **Duplicate Token:** This token is already in the heroic pool.\n🔑 Suffix: `...{r_tok[-12:]}`", ephemeral=True)
-
-        data["heroic_token_pool"].append(r_tok)
-        save_data()
-
-        await interaction.followup.send(f"✅ Token successfully verified with Nakama and added to heroic pool!\n🔑 **Suffix:** `...{r_tok[-12:]}`", ephemeral=True)
-        await log_to_channel(
-            interaction.guild,
-            "📦 Heroic Pool Restocked",
-            f"**Admin:** {interaction.user.mention} (`{interaction.user.id}`) added a token to the heroic pool. Total pool size: `{len(data['heroic_token_pool'])}`",
-            discord.Color.dark_purple()
-        )
-
-class DonateModal(discord.ui.Modal, title="Donate an EIC Token"):
-    token_input = discord.ui.TextInput(
-        label="Paste EIC Token to Donate",
-        style=discord.TextStyle.paragraph,
-        placeholder="Paste your token here...",
-        required=True,
-        max_length=4000
-    )
-
-    async def on_submit(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
-        
-        if isinstance(interaction.user, discord.Member):
-            role_ids = {role.id for role in interaction.user.roles}
-            if BLACKLIST_ROLE_ID in role_ids:
-                return await interaction.followup.send("You are blacklisted from using this generator.", ephemeral=True)
-
-        raw_text = self.token_input.value.strip()
-        if not raw_text:
-            await notify_owners_donation("EIC Token", interaction.user, False, "Empty token input submitted.", False)
-            return await interaction.followup.send("❌ **Donation Rejected:** Provided token is empty.", ephemeral=True)
-
-        is_valid, err_msg, res_data = await test_token_validity(bot.session, raw_text)
-        if not is_valid:
-            await notify_owners_donation("EIC Token", interaction.user, False, err_msg, False)
-            return await interaction.followup.send(f"❌ **Donation Rejected:**\n```{err_msg}```", ephemeral=True)
-
-        r_tok = res_data.get("refresh_token") or raw_text
-        
-        already_exists = (
-            r_tok in data["token_pool"] and 
-            r_tok in data["premium_token_pool"] and 
-            r_tok in data["heroic_token_pool"]
-        )
-        
-        if already_exists:
-            await notify_owners_donation("EIC Token", interaction.user, True, f"Suffix: `...{r_tok[-12:]}` (Already in all pools)", False)
-            return await interaction.followup.send("⚠️ **Notice:** This token is already present in our active pools! Thank you for contributing.", ephemeral=True)
-
-        stocked = False
-        if r_tok not in data["token_pool"]:
-            data["token_pool"].append(r_tok)
-            stocked = True
-            
-        if r_tok not in data["premium_token_pool"]:
-            data["premium_token_pool"].append(r_tok)
-
-        if r_tok not in data["heroic_token_pool"]:
-            data["heroic_token_pool"].append(r_tok)
-        
-        save_data()
-        
-        await notify_owners_donation("EIC Token", interaction.user, True, f"Suffix: `...{r_tok[-12:]}`", stocked)
-        await interaction.followup.send("🎉 **Thank you!** Your EIC token passed Nakama validation and was successfully added to pools.", ephemeral=True)
-        
-        await log_to_channel(
-            interaction.guild,
-            "🎁 Token Donated",
-            f"**User:** {interaction.user.mention} (`{interaction.user.id}`) successfully donated a working token to all pools!\n"
-            f"🔑 **Token Suffix:** `...{r_tok[-12:]}`",
-            discord.Color.purple()
-        )
-
-class HeroicDonateModal(discord.ui.Modal, title="Donate a Heroic Token"):
-    token_input = discord.ui.TextInput(
-        label="Paste Heroic Token to Donate",
-        style=discord.TextStyle.paragraph,
-        placeholder="Paste your heroic token here...",
-        required=True,
-        max_length=4000
-    )
-
-    async def on_submit(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
-        
-        if isinstance(interaction.user, discord.Member):
-            role_ids = {role.id for role in interaction.user.roles}
-            if BLACKLIST_ROLE_ID in role_ids:
-                return await interaction.followup.send("You are blacklisted from using this generator.", ephemeral=True)
-
-        raw_text = self.token_input.value.strip()
-        if not raw_text:
-            await notify_owners_donation("Heroic Token", interaction.user, False, "Empty token input submitted.", False)
-            return await interaction.followup.send("❌ **Donation Rejected:** Provided token is empty.", ephemeral=True)
-
-        is_valid, err_msg, res_data = await test_token_validity(bot.session, raw_text)
-        if not is_valid:
-            await notify_owners_donation("Heroic Token", interaction.user, False, err_msg, False)
-            return await interaction.followup.send(f"❌ **Donation Rejected:**\n```{err_msg}```", ephemeral=True)
-
-        r_tok = res_data.get("refresh_token") or raw_text
-        
-        if "heroic_token_pool" not in data:
-            data["heroic_token_pool"] = []
-
-        if r_tok in data["heroic_token_pool"]:
-            await notify_owners_donation("Heroic Token", interaction.user, True, f"Suffix: `...{r_tok[-12:]}` (Already in Heroic Pool)", False)
-            return await interaction.followup.send("⚠️ **Notice:** This heroic token is already present in our pool! Thank you for contributing.", ephemeral=True)
-
-        data["heroic_token_pool"].append(r_tok)
-        save_data()
-        
-        await notify_owners_donation("Heroic Token", interaction.user, True, f"Suffix: `...{r_tok[-12:]}`", True)
-        await interaction.followup.send("🎉 **Thank you!** Your heroic token passed Nakama validation and was successfully added to the heroic pool.", ephemeral=True)
-        
-        await log_to_channel(
-            interaction.guild,
-            "🎁 Heroic Token Donated",
-            f"**User:** {interaction.user.mention} (`{interaction.user.id}`) successfully donated a working heroic token!\n"
-            f"💎 **Token Suffix:** `...{r_tok[-12:]}`",
-            discord.Color.dark_purple()
-        )
-
-class TicketCloseView(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=None)
-
-    @discord.ui.button(label="Close Ticket", emoji="🔒", style=discord.ButtonStyle.danger, custom_id="close_ticket_btn")
-    async def close_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_message("Closing ticket...", ephemeral=True)
-        await asyncio.sleep(2)
-        try:
-            await interaction.channel.delete()
-        except Exception:
-            pass
-
-class TicketView(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=None)
-
-    @discord.ui.button(label="Create Ticket", emoji="🎫", style=discord.ButtonStyle.primary, custom_id="create_ticket_btn")
-    async def create_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
-        guild = interaction.guild
-        user = interaction.user
-
-        existing_channel = discord.utils.get(guild.text_channels, name=f"ticket-{user.name.lower()}")
-        if existing_channel:
-            return await interaction.response.send_message(f"You already have an open ticket: {existing_channel.mention}", ephemeral=True)
-
-        await interaction.response.defer(ephemeral=True)
-        overwrites = {
-            guild.default_role: discord.PermissionOverwrite(read_messages=False),
-            user: discord.PermissionOverwrite(read_messages=True, send_messages=True, read_message_history=True),
-            guild.me: discord.PermissionOverwrite(read_messages=True, send_messages=True, manage_channels=True)
+    const tokenObj = tokenStock[0];
+    if (!tokenObj.refresh) {
+        console.log('[ERROR] [EAM.LOL] No refresh token in stock - loading new token...');
+        giveNewTokenFromAccounts();
+        await updateStatusPanel();
+        await updateSubscriptionPanel();
+        return;
+    }
+
+    console.log('[REFRESH] [EAM.LOL] 2:30 interval reached - Refreshing token...');
+    console.log(`[REFRESH] Current token expires at ${new Date(tokenObj.expiresAt).toUTCString()}`);
+    try {
+        const result = await refreshToken(tokenObj.refresh);
+        if (result.success) {
+            console.log(`[SUCCESS] [EAM.LOL] Token refreshed! New expiry: ${humanExpiry(result.expiresAt)}`);
+            consecutiveFails = 0;
+            await updateStatusPanel();
+            await updateSubscriptionPanel();
+        } else {
+            console.log('[ERROR] [EAM.LOL] Refresh failed - getting new token from accounts...');
+            giveNewTokenFromAccounts();
+            await updateStatusPanel();
+            await updateSubscriptionPanel();
+        }
+    } catch (err) {
+        console.error('[ERROR] [EAM.LOL] Error during refresh:', err);
+        giveNewTokenFromAccounts();
+        await updateStatusPanel();
+        await updateSubscriptionPanel();
+    }
+}
+
+function checkAndRemoveExpiredStock() {
+    if (tokenStock.length === 0) return;
+    const now = Date.now();
+    const expiredTokens = tokenStock.filter(t => now >= t.expiresAt);
+    if (expiredTokens.length > 0) {
+        console.log(`[INFO] [EAM.LOL] Removing ${expiredTokens.length} expired token(s) from stock.`);
+        tokenStock = tokenStock.filter(t => now < t.expiresAt);
+        if (tokenStock.length === 0) giveNewTokenFromAccounts();
+        updateStatusPanel();
+        updateSubscriptionPanel();
+    }
+}
+
+const AUTO_REFRESH_INTERVAL = 150 * 1000;
+let refreshInterval = null;
+function startAutoRefresh() {
+    console.log('[SYSTEM] [EAM.LOL] AUTO-REFRESH STARTED (interval: 2m 30s)');
+    if (refreshInterval) clearInterval(refreshInterval);
+    refreshInterval = setInterval(async () => {
+        console.log('[AUTO-REFRESH] Tick at', new Date().toISOString());
+        if (isRefreshing) {
+            console.log('[INFO] [EAM.LOL] Refresh already in progress, skipping...');
+            return;
+        }
+        isRefreshing = true;
+        try {
+            checkAndRemoveExpiredStock();
+            await refreshTokenInStock();
+        } catch (err) {
+            console.error('[ERROR] [EAM.LOL] Auto-refresh error:', err);
+        } finally {
+            isRefreshing = false;
+        }
+    }, AUTO_REFRESH_INTERVAL);
+}
+
+// --- DELIVERY ---
+async function deliverTokenToUser(user) {
+    console.log(`[DELIVERY] Starting delivery to ${user.tag}`);
+    let tokenObj = null;
+    let valid = false;
+    let attempts = 0;
+    const maxAttempts = 5;
+    const MIN_TTL = 900; // 15 minutes in seconds
+
+    while (!valid && attempts < maxAttempts) {
+        attempts++;
+        console.log(`[DELIVERY] Attempt ${attempts} to get a valid token`);
+        if (tokenStock.length === 0) giveNewTokenFromAccounts();
+        if (tokenStock.length === 0) {
+            console.error('[DELIVERY] No stock token available.');
+            break;
+        }
+        tokenObj = tokenStock[0];
+        const currentTtl = tokenObj.expiresAt ? Math.floor((tokenObj.expiresAt - Date.now()) / 1000) : 0;
+        console.log(`[DELIVERY] Current TTL: ${currentTtl}s`);
+        if (currentTtl > MIN_TTL) {
+            console.log(`[DELIVERY] Current token has ${currentTtl}s left (>${MIN_TTL}s), using it.`);
+            const validation = validateTokenJWT(tokenObj.bearer, tokenObj.refresh);
+            if (validation.valid) {
+                const apiCheck = await validateTokenDetails(tokenObj.bearer, tokenObj.refresh);
+                if (apiCheck.valid) {
+                    valid = true;
+                    console.log('[DELIVERY] Current token passed JWT and API validation.');
+                    break;
+                } else {
+                    console.log(`[DELIVERY] Current token failed API validation: ${apiCheck.apiError}, refreshing.`);
+                }
+            } else {
+                console.log(`[DELIVERY] Current token failed JWT validation, refreshing.`);
+            }
+        } else {
+            console.log(`[DELIVERY] Current token has only ${currentTtl}s left (<${MIN_TTL}s), refreshing.`);
         }
 
-        for owner_id in OWNER_IDS:
-            owner_member = guild.get_member(owner_id)
-            if owner_member:
-                overwrites[owner_member] = discord.PermissionOverwrite(read_messages=True, send_messages=True)
+        try {
+            console.log('[DELIVERY] Calling refresh...');
+            const refreshResult = await refreshToken(tokenObj.refresh);
+            if (refreshResult.success) {
+                tokenObj = tokenStock[0];
+                console.log(`[DELIVERY] Refresh succeeded. New expiry: ${humanExpiry(tokenObj.expiresAt)}`);
+                const validation = validateTokenJWT(tokenObj.bearer, tokenObj.refresh);
+                if (validation.valid) {
+                    const apiCheck = await validateTokenDetails(tokenObj.bearer, tokenObj.refresh);
+                    if (apiCheck.valid) {
+                        const newTtl = Math.floor((tokenObj.expiresAt - Date.now()) / 1000);
+                        if (newTtl > MIN_TTL) {
+                            valid = true;
+                            console.log('[DELIVERY] Refreshed token passed JWT, API, and has enough TTL.');
+                            break;
+                        } else {
+                            console.log(`[DELIVERY] Refreshed token TTL (${newTtl}s) still below threshold, retrying...`);
+                        }
+                    } else {
+                        console.log(`[DELIVERY] Refreshed token failed API validation: ${apiCheck.apiError}, retrying...`);
+                    }
+                } else {
+                    console.log('[DELIVERY] Refreshed token JWT invalid, retrying...');
+                }
+            } else {
+                console.log(`[DELIVERY] Refresh failed: ${refreshResult.error || 'unknown'}`);
+                giveNewTokenFromAccounts();
+                tokenObj = tokenStock[0];
+                if (tokenObj) {
+                    const validation = validateTokenJWT(tokenObj.bearer, tokenObj.refresh);
+                    if (validation.valid) {
+                        const apiCheck = await validateTokenDetails(tokenObj.bearer, tokenObj.refresh);
+                        if (apiCheck.valid) {
+                            const fallbackTtl = Math.floor((tokenObj.expiresAt - Date.now()) / 1000);
+                            if (fallbackTtl > MIN_TTL) {
+                                valid = true;
+                                console.log('[DELIVERY] Fallback token passed JWT, API, and has enough TTL.');
+                                break;
+                            } else {
+                                console.log(`[DELIVERY] Fallback token TTL (${fallbackTtl}s) too low, retrying...`);
+                            }
+                        } else {
+                            console.log(`[DELIVERY] Fallback token failed API validation: ${apiCheck.apiError}`);
+                        }
+                    } else {
+                        console.log('[DELIVERY] Fallback token JWT invalid.');
+                    }
+                }
+            }
+        } catch (e) {
+            console.error('[DELIVERY] Error during refresh:', e);
+            giveNewTokenFromAccounts();
+            tokenObj = tokenStock[0];
+        }
+        await new Promise(r => setTimeout(r, 500));
+    }
 
-        try:
-            ticket_channel = await guild.create_text_channel(name=f"ticket-{user.name}", overwrites=overwrites)
-            embed = discord.Embed(title="Support Ticket", description=f"Hello {user.mention}, describe your issue below.", color=discord.Color.blurple())
-            await ticket_channel.send(content=f"{user.mention}", embed=embed, view=TicketCloseView())
-            await interaction.followup.send(f"Created your ticket: {ticket_channel.mention}", ephemeral=True)
-        except Exception as e:
-            await interaction.followup.send(f"Failed to create ticket: {e}", ephemeral=True)
+    if (!valid && tokenStock.length > 0) {
+        const current = tokenStock[0];
+        if (current && current.expiresAt) {
+            const timeLeft = (current.expiresAt - Date.now()) / 1000;
+            if (timeLeft > 60) {
+                console.log(`[DELIVERY] Final fallback: using current token (${Math.floor(timeLeft/60)} min left).`);
+                const validation = validateTokenJWT(current.bearer, current.refresh);
+                if (validation.valid) {
+                    const apiCheck = await validateTokenDetails(current.bearer, current.refresh);
+                    if (apiCheck.valid) {
+                        tokenObj = current;
+                        valid = true;
+                        console.log('[DELIVERY] Final fallback passed JWT and API.');
+                    } else {
+                        console.log(`[DELIVERY] Final fallback failed API: ${apiCheck.apiError}`);
+                    }
+                } else {
+                    console.log('[DELIVERY] Final fallback JWT validation failed.');
+                }
+            } else {
+                console.log(`[DELIVERY] Final fallback token has only ${Math.floor(timeLeft)} seconds left – not using.`);
+            }
+        }
+    }
 
-# --- PREMIUM COMMAND GROUP ---
-premium_group = app_commands.Group(name="premium", description="Exclusive commands for buyers and VIPs")
+    if (!valid || !tokenObj) {
+        console.error('[DELIVERY] Could not obtain a valid token after all attempts.');
+        return false;
+    }
 
-@premium_group.command(name="generatepanel", description="[Owner Only] Post premium generator panel with button")
-async def premium_generatepanel(interaction: discord.Interaction):
-    await interaction.response.defer(ephemeral=True)
-    if interaction.user.id not in OWNER_IDS:
-        return await interaction.followup.send("Permission denied.", ephemeral=True)
-        
-    embed = discord.Embed(
-        title="💎 Premium Generation Dashboard",
-        description=(
-            "Generate your tokens/files below\n\n"
-            "✨ *Powered by envo*"
-        ),
-        color=discord.Color.dark_gold()  # FIXED: was dark_embed() which is invalid
-    )
-    embed.set_thumbnail(url=f"attachment://{IMAGE_FILENAME}")
-    
-    if os.path.exists(IMAGE_PATH):
-        file = discord.File(IMAGE_PATH, filename=IMAGE_FILENAME)
-        await interaction.channel.send(file=file, embed=embed, view=PremiumGenerateView())
-    else:
-        await interaction.channel.send(embed=embed, view=PremiumGenerateView())
-        print(f"[ERROR] Could not find image at: {IMAGE_PATH}")
+    const ttl = Math.floor((tokenObj.expiresAt - Date.now()) / 1000);
+    if (ttl <= 60) {
+        console.error(`[DELIVERY] Token TTL is only ${ttl}s, skipping.`);
+        return false;
+    }
 
-    await interaction.followup.send("Premium generator panel posted successfully!", ephemeral=True)
+    const genId = generateGenerationId();
+    const expiryText = humanExpiry(tokenObj.expiresAt);
 
-@premium_group.command(name="stock", description="Check current premium pool stock (Buyers/VIPs only)")
-async def premium_stock(interaction: discord.Interaction):
-    user_id = interaction.user.id
-    is_authorized = user_id in OWNER_IDS
-    if isinstance(interaction.user, discord.Member):
-        role_ids = {role.id for role in interaction.user.roles}
-        if VIP_ROLE_ID in role_ids or BUYER_ROLE_ID in role_ids:
-            is_authorized = True
-            
-    if not is_authorized:
-        return await interaction.response.send_message("❌ **Permission Denied:** This command is for Buyers and VIPs only.", ephemeral=True)
-        
-    pool_count = len(data.get("premium_token_pool", []))
-    backup_count = len(data.get("premium_backup_tokens", []))
-    
-    embed = discord.Embed(
-        title="📊 Premium Stock Status",
-        description=f"📦 **Active Premium Pool:** `{pool_count}` tokens\n🔄 **Premium Backups:** `{backup_count}` tokens",
-        color=discord.Color.gold()
-    )
-    await interaction.response.send_message(embed=embed, ephemeral=True)
+    const tokenData = {
+        token: {
+            bearer: tokenObj.bearer,
+            refresh_token: tokenObj.refresh,
+            expires_at: new Date(tokenObj.expiresAt).toISOString(),
+            seconds_remaining: ttl,
+            added_at: new Date().toISOString(),
+            generation_id: genId
+        },
+        message: "EAM.LOL Auto-Delivery (every 5 min)",
+        credits: "@elliott",
+        auto_refresh: "Refreshed automatically"
+    };
+    const jsonString = JSON.stringify(tokenData, null, 2);
+    const jsonBuffer = Buffer.from(jsonString, 'utf-8');
+    const attachment = new AttachmentBuilder(jsonBuffer, { name: 'token.json' });
+    const textVersion = `EAM.LOL TOKEN GENERATOR\n----------------------------------------\nBEARER TOKEN:\n${tokenObj.bearer}\nREFRESH TOKEN:\n${tokenObj.refresh}\nGENERATION ID:\n${genId}\n----------------------------------------\nExpires: ${expiryText}\nSeconds left: ${ttl}s\nAuto-Refresh: Constantly\n----------------------------------------\n\n📌 IMPORTANT: Copy the BEARER TOKEN (the long string) and paste it into Animal Company.\nDo NOT add any spaces, quotes, or the word "Bearer".`;
+    const textBuffer = Buffer.from(textVersion, 'utf-8');
+    const textAttachment = new AttachmentBuilder(textBuffer, { name: 'token.txt' });
 
-@premium_group.command(name="add", description="[Owner Only] Open form to add a token to the premium pool")
-async def premium_add(interaction: discord.Interaction):
-    if interaction.user.id not in OWNER_IDS:
-        return await interaction.response.send_message("Permission denied.", ephemeral=True)
-    await interaction.response.send_modal(PremiumStockModal())
-
-bot.tree.add_command(premium_group)
-
-# --- HEROIC COMMAND GROUP ---
-heroic_group = app_commands.Group(name="heroic", description="Heroic token management commands")
-
-@heroic_group.command(name="stock", description="[Owner Only] Check current heroic pool stock")
-async def heroic_stock(interaction: discord.Interaction):
-    if interaction.user.id not in OWNER_IDS:
-        return await interaction.response.send_message("Permission denied.", ephemeral=True)
-        
-    pool_count = len(data.get("heroic_token_pool", []))
-    backup_count = len(data.get("heroic_backup_tokens", []))
-    
-    embed = discord.Embed(
-        title="📊 Heroic Stock Status",
-        description=f"📦 **Active Heroic Pool:** `{pool_count}` tokens\n🔄 **Heroic Backups:** `{backup_count}` tokens",
-        color=discord.Color.dark_purple()
-    )
-    await interaction.response.send_message(embed=embed, ephemeral=True)
-
-@heroic_group.command(name="add", description="[Owner Only] Open form to add a token to the heroic pool")
-async def heroic_add(interaction: discord.Interaction):
-    if interaction.user.id not in OWNER_IDS:
-        return await interaction.response.send_message("Permission denied.", ephemeral=True)
-    await interaction.response.send_modal(HeroicStockModal())
-
-bot.tree.add_command(heroic_group)
-
-# --- COOLDOWN COMMAND GROUP ---
-cooldown_group = app_commands.Group(name="cooldown", description="Manage global generation cooldowns")
-
-@cooldown_group.command(name="set", description="[Owner Only] Set everyone's permanent generation cooldown in seconds")
-@app_commands.describe(seconds="Cooldown duration in seconds (e.g., 450 for 7m 30s)")
-async def cooldown_set(interaction: discord.Interaction, seconds: int):
-    if interaction.user.id not in OWNER_IDS:
-        return await interaction.response.send_message("Permission denied.", ephemeral=True)
-    
-    global NORMAL_COOLDOWN
-    NORMAL_COOLDOWN = seconds
-    
-    await interaction.response.send_message(f"✅ Public generation cooldown permanently updated to **{seconds} seconds** (`{seconds // 60}m {seconds % 60}s`).", ephemeral=True)
-    await log_to_channel(
-        interaction.guild,
-        "⏱️ Global Cooldown Modified",
-        f"**Admin:** {interaction.user.mention} updated the global normal cooldown to `{seconds} seconds`.",
-        discord.Color.orange()
-    )
-
-@cooldown_group.command(name="reset", description="[Owner Only] Reset everyone's cooldown back to default (7m 30s)")
-async def cooldown_reset(interaction: discord.Interaction):
-    if interaction.user.id not in OWNER_IDS:
-        return await interaction.response.send_message("Permission denied.", ephemeral=True)
-    
-    global NORMAL_COOLDOWN
-    NORMAL_COOLDOWN = 450  # 7m 30s default
-    cooldowns.clear()
-    
-    await interaction.response.send_message("🔄 Public cooldown has been reset back to **7m 30s** (450 seconds), and active user cooldowns were cleared.", ephemeral=True)
-    await log_to_channel(
-        interaction.guild,
-        "🔄 Global Cooldown Reset",
-        f"**Admin:** {interaction.user.mention} reset the cooldown back to 7m 30s and cleared active timers.",
-        discord.Color.orange()
-    )
-
-bot.tree.add_command(cooldown_group)
-
-# --- SAY COMMAND ---
-@bot.tree.command(name="say", description="[Owner Only] Make the bot say a specified message in the current channel")
-@app_commands.describe(message="The message you want the bot to repeat")
-async def say_command(interaction: discord.Interaction, message: str):
-    if interaction.user.id not in OWNER_IDS:
-        return await interaction.response.send_message("Permission denied.", ephemeral=True)
-    
-    await interaction.response.send_message("Message sent.", ephemeral=True)
-    await interaction.channel.send(message)
-
-# --- AUDIO STOCK COMMAND (.MP3 ONLY WITH VALIDATION) ---
-@bot.tree.command(name="stock_audio", description="[Owner Only] Upload and stock an validated .mp3 audio file")
-@app_commands.describe(file="Upload the .mp3 audio file you want to stock")
-async def stock_audio(interaction: discord.Interaction, file: discord.Attachment):
-    if interaction.user.id not in OWNER_IDS:
-        return await interaction.response.send_message("Permission denied.", ephemeral=True)
-        
-    is_valid, err_msg = await validate_audio_file(file)
-    if not is_valid:
-        return await interaction.response.send_message(f"❌ **Audio Validation Failed:** {err_msg}", ephemeral=True)
-        
-    if file.url in data.get("audio_pool", []):
-        return await interaction.response.send_message("⚠️ **Duplicate Audio:** This audio file is already in the audio pool.", ephemeral=True)
-
-    data["audio_pool"].append(file.url)
-    save_data()
-    
-    await interaction.response.send_message(f"✅ Validated audio file `{file.filename}` successfully added to the audio pool!", ephemeral=True)
-    await log_to_channel(
-        interaction.guild,
-        "🎵 Audio Pool Restocked",
-        f"**Admin:** {interaction.user.mention} added validated audio file `{file.filename}` to the audio pool. Total pool size: `{len(data['audio_pool'])}`",
-        discord.Color.blue()
-    )
-
-# --- STANDARD COMMANDS (PUBLIC DONATIONS & USAGE) ---
-@bot.tree.command(name="donate", description="Donate a working token to the generator (requires validation)")
-async def donate_command(interaction: discord.Interaction):
-    if isinstance(interaction.user, discord.Member):
-        role_ids = {role.id for role in interaction.user.roles}
-        if BLACKLIST_ROLE_ID in role_ids:
-            return await interaction.response.send_message("You are blacklisted from using this generator.", ephemeral=True)
-    await interaction.response.send_modal(DonateModal())
-
-@bot.tree.command(name="donate_audio", description="Donate an .mp3 audio file to the generator with strict validation")
-@app_commands.describe(file="Upload the .mp3 audio file you want to donate")
-async def donate_audio_command(interaction: discord.Interaction, file: discord.Attachment):
-    await interaction.response.defer(ephemeral=True)
-    
-    if isinstance(interaction.user, discord.Member):
-        role_ids = {role.id for role in interaction.user.roles}
-        if BLACKLIST_ROLE_ID in role_ids:
-            return await interaction.followup.send("You are blacklisted from using this generator.", ephemeral=True)
-
-    is_valid, err_msg = await validate_audio_file(file)
-    if not is_valid:
-        await notify_owners_donation("Audio File", interaction.user, False, err_msg, False)
-        return await interaction.followup.send(f"❌ **Audio Validation Failed:** {err_msg}", ephemeral=True)
-
-    if "audio_pool" not in data:
-        data["audio_pool"] = []
-        
-    if file.url in data["audio_pool"]:
-        await notify_owners_donation("Audio File", interaction.user, True, f"Filename: `{file.filename}` (Already in pool)", False)
-        return await interaction.followup.send("⚠️ **Notice:** This audio file is already present in our audio pool! Thank you for contributing.", ephemeral=True)
-
-    data["audio_pool"].append(file.url)
-    save_data()
-        
-    await notify_owners_donation("Audio File", interaction.user, True, f"Filename: `{file.filename}`", True)
-    await interaction.followup.send(f"✅ Validated audio file `{file.filename}` successfully donated and added to the audio pool!", ephemeral=True)
-    
-    await log_to_channel(
-        interaction.guild,
-        "🎶 Audio Donated",
-        f"**User:** {interaction.user.mention} (`{interaction.user.id}`) donated validated audio file `{file.filename}`\n"
-        f"🔗 **URL:** {file.url}",
-        discord.Color.purple()
-    )
-
-@bot.tree.command(name="donatepanel", description="[Owner Only] Post the donate panel message with button")
-async def donatepanel_command(interaction: discord.Interaction):
-    await interaction.response.defer(ephemeral=True)
-    if interaction.user.id not in OWNER_IDS:
-        return await interaction.followup.send("Permission denied.", ephemeral=True)
-        
-    embed = discord.Embed(
-        title="🎁 Token & Audio Donation Panel",
-        description=(
-            "**Help support the generator!**\n\n"
-            "Click the buttons below to donate an EIC token, donate a heroic token, or donate an audio file (.mp3). "
-            "All tokens and uploaded audio files are strictly tested and validated before being accepted!"
-        ),
-        color=discord.Color.purple()
-    )
-    
-    await interaction.followup.send("Donate panel posted successfully!", ephemeral=True)
-    await interaction.channel.send(embed=embed, view=DonateView())
-
-@bot.tree.command(name="ticketpanel", description="[Owner Only] Post the support ticket panel message with button")
-async def ticketpanel_command(interaction: discord.Interaction):
-    await interaction.response.defer(ephemeral=True)
-    if interaction.user.id not in OWNER_IDS:
-        return await interaction.followup.send("Permission denied.", ephemeral=True)
-        
-    embed = discord.Embed(
-        title="🎫 Support Tickets",
-        description=(
-            "**Need help or have a question?**\n\n"
-            "Click the button below to open a private support ticket with our staff team!"
-        ),
-        color=discord.Color.blurple()
-    )
-    
-    await interaction.followup.send("Ticket panel posted successfully!", ephemeral=True)
-    await interaction.channel.send(embed=embed, view=TicketView())
-
-@bot.tree.command(name="stock", description="[Owner Only] Open form to add a token to the public pool")
-async def stock_command(interaction: discord.Interaction):
-    if interaction.user.id not in OWNER_IDS:
-        return await interaction.response.send_message("Permission denied.", ephemeral=True)
-    await interaction.response.send_modal(StockModal())
-
-@bot.tree.command(name="maintenance", description="[Owner Only] Toggle generator maintenance mode on/off")
-async def maintenance_command(interaction: discord.Interaction):
-    if interaction.user.id not in OWNER_IDS:
-        return await interaction.response.send_message("Permission denied.", ephemeral=True)
-    
-    current_state = data.get("maintenance", False)
-    data["maintenance"] = not current_state
-    save_data()
-    
-    new_state_str = "🟢 **Disabled (Online)**" if data["maintenance"] is False else "🔴 **Enabled (Maintenance Active)**"
-    await interaction.response.send_message(f"🛠️ Maintenance mode status changed: {new_state_str}", ephemeral=True)
-    
-    await log_to_channel(
-        interaction.guild,
-        "🛠️ Maintenance Mode Toggled",
-        f"**Admin:** {interaction.user.mention} set maintenance mode to: `{data['maintenance']}`",
-        discord.Color.gold()
-    )
-
-@bot.tree.command(name="system", description="[Owner Only] View detailed pool statistics and diagnostics")
-async def system_command(interaction: discord.Interaction):
-    if interaction.user.id not in OWNER_IDS:
-        return await interaction.response.send_message("Permission denied.", ephemeral=True)
-        
-    pool_count = len(data.get("token_pool", []))
-    backup_count = len(data.get("backup_tokens", []))
-    prem_pool_count = len(data.get("premium_token_pool", []))
-    prem_backup_count = len(data.get("premium_backup_tokens", []))
-    heroic_pool_count = len(data.get("heroic_token_pool", []))
-    heroic_backup_count = len(data.get("heroic_backup_tokens", []))
-    audio_pool_count = len(data.get("audio_pool", []))
-    total_gens = sum(data.get("user_stats", {}).values())
-    unique_users = len(data.get("user_stats", {}))
-    is_maint = data.get("maintenance", False)
-    
-    embed = discord.Embed(
-        title="📊 Pool Diagnostics & Statistics",
-        color=discord.Color.blue()
-    )
-    embed.add_field(name="Public Pool Size", value=f"`{pool_count}` tokens", inline=True)
-    embed.add_field(name="Public Backups", value=f"`{backup_count}` tokens", inline=True)
-    embed.add_field(name="Premium Pool Size", value=f"`{prem_pool_count}` tokens", inline=True)
-    embed.add_field(name="Premium Backups", value=f"`{prem_backup_count}` tokens", inline=True)
-    embed.add_field(name="Heroic Pool Size", value=f"`{heroic_pool_count}` tokens", inline=True)
-    embed.add_field(name="Heroic Backups", value=f"`{heroic_backup_count}` tokens", inline=True)
-    embed.add_field(name="Audio Pool Size", value=f"`{audio_pool_count}` files (Forever Stock)", inline=True)
-    embed.add_field(name="Maintenance", value="Active" if is_maint else "Inactive", inline=True)
-    embed.add_field(name="Total Generations", value=f"`{total_gens}`", inline=True)
-    embed.add_field(name="Unique Users", value=f"`{unique_users}`", inline=True)
-    embed.set_footer(text="EIC Bot • Powered by envo")
-    
-    await interaction.response.send_message(embed=embed, ephemeral=True)
-
-remove_group = app_commands.Group(name="remove", description="Stock and pool clearing commands")
-
-@remove_group.command(name="pool", description="[Owner Only] Clear the entire public token pool")
-async def remove_pool(interaction: discord.Interaction):
-    if interaction.user.id not in OWNER_IDS:
-        return await interaction.response.send_message("Permission denied.", ephemeral=True)
-    data["token_pool"] = []
-    save_data()
-    await interaction.response.send_message("🗑️ **Pool Removed:** Cleared all tokens from the public active pool.", ephemeral=True)
-    await log_to_channel(
-        interaction.guild,
-        "🗑️ Public Pool Cleared",
-        f"**Admin:** {interaction.user.mention} (`{interaction.user.id}`) cleared the public token pool.",
-        discord.Color.red()
-    )
-
-@remove_group.command(name="backups", description="[Owner Only] Clear all public backup tokens")
-async def remove_backups(interaction: discord.Interaction):
-    if interaction.user.id not in OWNER_IDS:
-        return await interaction.response.send_message("Permission denied.", ephemeral=True)
-    data["backup_tokens"] = []
-    save_data()
-    await interaction.response.send_message("🗑️ **Stock Removed:** Cleared all public backup tokens.", ephemeral=True)
-    await log_to_channel(
-        interaction.guild,
-        "🗑️ Public Stock Cleared",
-        f"**Admin:** {interaction.user.mention} (`{interaction.user.id}`) cleared all public backup tokens.",
-        discord.Color.red()
-    )
-
-@remove_group.command(name="all", description="[Owner Only] Clear all pools and backups entirely")
-async def remove_all(interaction: discord.Interaction):
-    if interaction.user.id not in OWNER_IDS:
-        return await interaction.response.send_message("Permission denied.", ephemeral=True)
-    data["token_pool"] = []
-    data["backup_tokens"] = []
-    data["premium_token_pool"] = []
-    data["premium_backup_tokens"] = []
-    data["heroic_token_pool"] = []
-    data["heroic_backup_tokens"] = []
-    data["audio_pool"] = []
-    data["audio_backup_tokens"] = []
-    data["user_audio_history"] = {}
-    save_data()
-    await interaction.response.send_message("🗑️ **Stock Removed:** Cleared all public, premium, heroic, and audio pools entirely.", ephemeral=True)
-    await log_to_channel(
-        interaction.guild,
-        "🗑️ Stock Cleared",
-        f"**Admin:** {interaction.user.mention} (`{interaction.user.id}`) cleared all pools entirely.",
-        discord.Color.red()
-    )
-
-bot.tree.add_command(remove_group)
-
-@bot.tree.command(name="announce", description="[Owner Only] Send a fast DM announcement to past generator users")
-@app_commands.describe(message="The message content to broadcast")
-async def announce_command(interaction: discord.Interaction, message: str):
-    await interaction.response.defer(ephemeral=True)
-    if interaction.user.id not in OWNER_IDS:
-        return await interaction.followup.send("Permission denied.", ephemeral=True)
-    
-    user_stats = data.get("user_stats", {})
-    if not user_stats:
-        return await interaction.followup.send("❌ No users have recorded generator usage yet.", ephemeral=True)
-    
-    success_count = 0
-    fail_count = 0
-    semaphore = asyncio.Semaphore(10)
-
-    async def send_dm(user_id_str):
-        nonlocal success_count, fail_count
-        async with semaphore:
-            try:
-                user = await bot.fetch_user(int(user_id_str))
-                if user:
-                    await user.send(f"📢 **Server Announcement:**\n\n{message}")
-                    success_count += 1
-            except Exception:
-                fail_count += 1
-
-    tasks = [send_dm(uid) for uid in user_stats.keys()]
-    await asyncio.gather(*tasks)
-            
-    await interaction.followup.send(f"✅ **Fast Announcement Complete!**\n- Sent: `{success_count}`\n- Failed: `{fail_count}`", ephemeral=True)
-    await log_to_channel(
-        interaction.guild,
-        "📢 Announcement Broadcasted",
-        f"**Admin:** {interaction.user.mention} (`{interaction.user.id}`) sent a high-speed announcement to `{success_count}` users.",
-        discord.Color.blurple()
-    )
-
-@bot.tree.command(name="refresh", description="[Owner Only] Reset everyone's cooldown or a specific user's cooldown")
-@app_commands.describe(user="Optional: Specific user to refresh. Leave blank to refresh everyone.")
-async def refresh_command(interaction: discord.Interaction, user: discord.Member = None):
-    if interaction.user.id not in OWNER_IDS:
-        return await interaction.response.send_message("Permission denied.", ephemeral=True)
-    
-    if user is None:
-        cooldowns.clear()
-        premium_cooldowns.clear()
-        heroic_cooldowns.clear()
-        audio_cooldowns.clear()
-        await interaction.response.send_message("envo has refreshed everyone's cooldown", ephemeral=False)
-        await log_to_channel(
-            interaction.guild,
-            "🔄 Cooldowns Reset",
-            f"**Admin:** {interaction.user.mention} (`{interaction.user.id}`) refreshed cooldowns for **everyone**.",
-            discord.Color.orange()
+    const embed = new EmbedBuilder()
+        .setTitle('◆ AUTO-DELIVERED TOKEN ◆')
+        .setDescription(`Fresh token – valid for ~${Math.floor(ttl/60)} minutes.`)
+        .setColor(0x00FFAA)
+        .addFields(
+            { name: 'Generation ID', value: genId, inline: true },
+            { name: 'Expires', value: expiryText, inline: true },
+            { name: 'How to use', value: 'Open the **token.txt** file, copy the **BEARER TOKEN** (the long string) and paste it into Animal Company. **Do not add extra spaces or quotes.**', inline: false }
         )
-    else:
-        cooldowns.pop(user.id, None)
-        premium_cooldowns.pop(user.id, None)
-        heroic_cooldowns.pop(user.id, None)
-        audio_cooldowns.pop(user.id, None)
-        await interaction.response.send_message(f"envo has refreshed cooldown for {user.mention}", ephemeral=True)
-        await log_to_channel(
-            interaction.guild,
-            "🔄 User Cooldown Reset",
-            f"**Admin:** {interaction.user.mention} (`{interaction.user.id}`) refreshed cooldown for {user.mention} (`{user.id}`).",
-            discord.Color.orange()
+        .setFooter({ text: 'EAM.LOL | Auto-Subscription (5 min interval) – 100% free' });
+
+    try {
+        await user.send({ embeds: [embed], files: [attachment, textAttachment] });
+        console.log(`[DELIVERY] ✅ Valid token sent to ${user.tag}`);
+        return true;
+    } catch (err) {
+        console.error(`[ERROR] Could not DM subscribed user ${user.id}:`, err.message);
+        if (err.code === 50007) {
+            console.log(`[DELIVERY] User ${user.tag} has DMs disabled.`);
+        }
+        return false;
+    }
+}
+
+// --- Bulk subscribe / unsubscribe ---
+async function subscribeAllMembers(guild) {
+    const members = await guild.members.fetch();
+    let count = 0;
+    for (const [id, member] of members) {
+        if (member.user.bot) continue;
+        if (!subscribedUsers.has(id)) {
+            subscribedUsers.add(id);
+            count++;
+        }
+    }
+    console.log(`[SUBSCRIBE] Subscribed ${count} members.`);
+    return count;
+}
+
+async function unsubscribeAllMembers() {
+    const count = subscribedUsers.size;
+    subscribedUsers.clear();
+    console.log(`[UNSUBSCRIBE] Unsubscribed ${count} members.`);
+    return count;
+}
+
+async function sendTokenToAllSubscribers() {
+    let successCount = 0;
+    let failCount = 0;
+    for (const userId of subscribedUsers) {
+        const user = await client.users.fetch(userId).catch(() => null);
+        if (user) {
+            const ok = await deliverTokenToUser(user);
+            if (ok) successCount++; else failCount++;
+            await new Promise(r => setTimeout(r, 200));
+        }
+    }
+    console.log(`[DELIVERY] Sent to ${successCount} subscribers, ${failCount} failed.`);
+    return { successCount, failCount };
+}
+
+// --- Update log embed ---
+async function postUpdateLog() {
+    const channel = client.channels.cache.get(UPDATE_LOG_CHANNEL_ID);
+    if (!channel) {
+        console.error(`[ERROR] Update log channel ${UPDATE_LOG_CHANNEL_ID} not found.`);
+        return;
+    }
+    const embed = new EmbedBuilder()
+        .setTitle(`📦 Bot Update – v${VERSION}`)
+        .setDescription(CHANGELOG)
+        .setColor(0x5865F2)
+        .setTimestamp()
+        .setFooter({ text: 'Run /update-log to see this again' });
+
+    await channel.send({ embeds: [embed] });
+}
+
+function startDeliveryLoop() {
+    if (deliveryInterval) clearInterval(deliveryInterval);
+    deliveryInterval = setInterval(async () => {
+        if (subscribedUsers.size === 0) return;
+        console.log(`[DELIVERY] Sending tokens to ${subscribedUsers.size} subscriber(s)...`);
+        for (const userId of subscribedUsers) {
+            const user = await client.users.fetch(userId).catch(() => null);
+            if (user) {
+                const success = await deliverTokenToUser(user);
+                if (!success) {
+                    console.log(`[DELIVERY] Failed to deliver to ${user.tag}, will retry next cycle.`);
+                }
+            }
+        }
+    }, AUTO_DELIVERY_INTERVAL);
+}
+
+async function catchUpSubscribers() {
+    if (subscribedUsers.size === 0) return;
+    console.log(`[STARTUP] Catching up ${subscribedUsers.size} subscribers...`);
+    for (const userId of subscribedUsers) {
+        const user = await client.users.fetch(userId).catch(() => null);
+        if (user) await deliverTokenToUser(user);
+    }
+}
+
+// --- HELPERS ---
+function generateGenerationId() {
+    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+    let id = 'GEN-';
+    for (let i = 0; i < 6; i++) id += chars.charAt(Math.floor(Math.random() * chars.length));
+    return id;
+}
+
+function removeTokenById(id) {
+    const idx = tokenStock.findIndex(t => t.id === id);
+    if (idx === -1) return { success: false, message: 'No token found with that ID.' };
+    tokenStock.splice(idx, 1);
+    console.log(`[STOCK] Removed token ${id}. Remaining: ${tokenStock.length}`);
+    return { success: true, message: `Token \`${id}\` removed. Remaining: ${tokenStock.length}` };
+}
+
+function hasRequiredRole(interaction) {
+    return interaction.member?.roles?.cache?.has(REQUIRED_ROLE_ID) || false;
+}
+
+function hasAdminAccess(interaction) {
+    if (interaction.member?.permissions.has(PermissionFlagsBits.Administrator)) return true;
+    if (interaction.member?.roles?.cache?.has(ADMIN_ROLE_ID)) return true;
+    return false;
+}
+
+async function findWorkingApiUrl() {
+    for (const url of API_URLS) {
+        try {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 5000);
+            const response = await fetch(url, { method: 'GET', headers: { 'Content-Type': 'application/json' }, signal: controller.signal });
+            clearTimeout(timeoutId);
+            if (response.status < 500) {
+                ACTIVE_API_URL = url;
+                apiWorking = true;
+                console.log(`[API] Working API URL: ${url}`);
+                return url;
+            }
+        } catch (e) {}
+    }
+    apiWorking = false;
+    console.warn('[API] No working API URL found, using default.');
+    return API_URLS[0];
+}
+
+function forceSetOwnToken(bearer, refresh) {
+    DEFAULT_TOKEN.bearer = bearer;
+    DEFAULT_TOKEN.refresh_token = refresh;
+    lastRefreshExpiry = getTokenExpiryMs(bearer);
+    const newNumber = generateTokenNumber();
+    tokenStock = [{ bearer, refresh, addedAt: Date.now(), expiresAt: lastRefreshExpiry, displayNumber: newNumber }];
+    console.log(`[SUCCESS] [EAM.LOL] Token manually set! Expires: ${new Date(lastRefreshExpiry).toUTCString()}`);
+    updateStatusPanel();
+    updateSubscriptionPanel();
+}
+
+// --- UI HELPERS ---
+function buildSleekProgress(step, total = 4, width = 16) {
+    const filled = Math.round((step / total) * width);
+    const empty = width - filled;
+    return '█'.repeat(filled) + '░'.repeat(empty);
+}
+
+function getLiveUIStats(interaction) {
+    const time = new Date().toLocaleString();
+    const userName = interaction.user.tag;
+    return `System Time: ${time} | Requested by: ${userName}`;
+}
+
+async function updateGenerationEmbed(interaction, step, message, ttl = null) {
+    const stepLabels = ['DM Verification', 'Token Refresh', 'Finalizing', 'Delivery'];
+    const statusIcons = stepLabels.map((label, idx) => {
+        if (idx < step) return '●';
+        if (idx === step) return '○';
+        return '○';
+    });
+    const statusLines = stepLabels.map((label, idx) => {
+        const icon = statusIcons[idx];
+        let suffix = '';
+        if (idx === step) suffix = '  ⟳';
+        else if (idx < step) suffix = '  ✔';
+        return `${icon} ${label}${suffix}`;
+    }).join('\n');
+
+    const progress = buildSleekProgress(step, 4);
+    const percent = Math.round((step / 4) * 100);
+
+    const embed = new EmbedBuilder()
+        .setTitle('◆ EAM.LOL TOKEN GENERATOR ◆')
+        .setDescription(
+            `\`${progress}  ${percent}%\`\n\n` +
+            `${statusLines}`
         )
+        .addFields(
+            { name: 'STATUS', value: '● OPERATIONAL', inline: true },
+            { name: 'STOCK', value: `${tokenStock.length} tokens`, inline: true },
+            { name: 'TTL', value: `${ttl ? ttl+'s' : '...'}`, inline: true }
+        )
+        .setColor(0x44AAFF)
+        .setFooter({ text: getLiveUIStats(interaction) });
 
-@bot.tree.command(name="token", description="Generate a fresh EIC token to your DMs")
-async def token_command(interaction: discord.Interaction):
-    await give_token(interaction, token_type="public")
+    const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+            .setCustomId('cancel_gen')
+            .setLabel('✕ CANCEL')
+            .setStyle(ButtonStyle.Danger)
+    );
+    await interaction.editReply({ embeds: [embed], components: [row] });
+}
 
-@bot.tree.command(name="logs", description="[Owner Only] Set log channel")
-async def logs(interaction: discord.Interaction, channel: discord.TextChannel = None):
-    await interaction.response.defer(ephemeral=True)
-    if interaction.user.id not in OWNER_IDS:
-        return await interaction.followup.send("Permission denied.", ephemeral=True)
-    
-    if channel is None:
-        current = bot.get_channel(data.get("log_channel")) if data.get("log_channel") else None
-        return await interaction.followup.send(f"Current log channel: {current.mention if current else 'Not Set'}", ephemeral=True)
-    
-    data["log_channel"] = channel.id
-    save_data()
-    await interaction.followup.send(f"Log channel set to {channel.mention}.", ephemeral=True)
-    await log_to_channel(
-        interaction.guild,
-        "📋 Log Channel Updated",
-        f"**Admin:** {interaction.user.mention} set this channel as the official bot audit log destination.",
-        discord.Color.teal()
-    )
+// --- PROCESS TOKEN GENERATION ---
+async function processTokenGeneration(interaction, tierName) {
+    const userId = interaction.user.id;
+    const member = interaction.member;
+    await interaction.deferReply({ flags: 64 });
 
-@bot.tree.command(name="generator", description="[Owner Only] Post dashboard generator panel")
-async def generator(interaction: discord.Interaction):
-    await interaction.response.defer(ephemeral=True)
-    if interaction.user.id not in OWNER_IDS:
-        return await interaction.followup.send("Permission denied.", ephemeral=True)
-        
-    embed = discord.Embed(
-        title="⚡ Generation Dashboard",
-        description=(
-            "Generate your tokens/files below\n\n"
-            "✨ *Powered by envo*"
-        ),
-        color=discord.Color.blue()  # FIXED: was dark_embed() which is invalid
-    )
-    embed.set_thumbnail(url=f"attachment://{IMAGE_FILENAME}")
-    
-    if os.path.exists(IMAGE_PATH):
-        file = discord.File(IMAGE_PATH, filename=IMAGE_FILENAME)
-        await interaction.channel.send(file=file, embed=embed, view=GenerateView())
-    else:
-        await interaction.channel.send(embed=embed, view=GenerateView())
-        print(f"[ERROR] Could not find image at: {IMAGE_PATH}")
+    const hasNoCooldown = member?.roles?.cache?.has(NO_COOLDOWN_ROLE_ID) || false;
+    if (!hasNoCooldown) {
+        const cooldownKey = `public_${userId}`;
+        if (cooldowns.has(cooldownKey)) {
+            const cooldownEnd = cooldowns.get(cooldownKey);
+            if (Date.now() < cooldownEnd) {
+                const remaining = cooldownEnd - Date.now();
+                const minutes = Math.floor(remaining / 60000);
+                const seconds = Math.floor((remaining % 60000) / 1000);
+                console.log(`[COOLDOWN] ${interaction.user.tag} is on cooldown (${minutes}m ${seconds}s)`);
+                return interaction.editReply({ content: `Please wait ${minutes}m ${seconds}s.`, components: [] });
+            }
+        }
+    }
+    if (activeGenerations.has(userId)) {
+        const gen = activeGenerations.get(userId);
+        if (Date.now() - gen.startTime < 60000) {
+            console.log(`[GENERATION] ${interaction.user.tag} already has an active generation.`);
+            return interaction.editReply({ content: 'Generation already in progress.', components: [] });
+        } else activeGenerations.delete(userId);
+    }
+    const genContext = { startTime: Date.now(), interaction, cancelFlag: false };
+    activeGenerations.set(userId, genContext);
+    console.log(`[GENERATION] ${interaction.user.tag} started a token generation.`);
 
-    await interaction.followup.send("Generator panel posted successfully!", ephemeral=True)  # fixed typo "saved"
+    await updateGenerationEmbed(interaction, 1, 'Verifying DM connection...');
+    try {
+        const testDM = await interaction.user.send({ content: 'EAM.LOL — DM verified.' });
+        await testDM.delete();
+        console.log(`[GENERATION] DM verified for ${interaction.user.tag}.`);
+    } catch (dmError) {
+        activeGenerations.delete(userId);
+        console.warn(`[GENERATION] DM failed for ${interaction.user.tag}: ${dmError.message}`);
+        return interaction.editReply({ content: 'DM Error: Please enable DMs.', components: [] });
+    }
 
-if __name__ == "__main__":
-    bot.run(BOT_TOKEN)
+    await updateGenerationEmbed(interaction, 2, 'Fetching fresh token...');
+    if (tokenStock.length === 0) giveNewTokenFromAccounts();
+    if (tokenStock.length === 0) {
+        activeGenerations.delete(userId);
+        console.error(`[GENERATION] No tokens available for ${interaction.user.tag}.`);
+        return interaction.editReply({ content: 'No tokens available.', components: [] });
+    }
+    isGenerating = true;
+    let tokenObj = tokenStock[0];
+    try {
+        const refreshResult = await refreshToken(tokenObj.refresh);
+        if (refreshResult.success) tokenObj = tokenStock[0];
+        else { giveNewTokenFromAccounts(); if (tokenStock.length > 0) tokenObj = tokenStock[0]; }
+    } catch (e) { giveNewTokenFromAccounts(); if (tokenStock.length > 0) tokenObj = tokenStock[0]; }
+    if (!tokenObj || Date.now() >= tokenObj.expiresAt) {
+        isGenerating = false;
+        activeGenerations.delete(userId);
+        console.error(`[GENERATION] Token expired for ${interaction.user.tag}.`);
+        return interaction.editReply({ content: 'Token expired, no replacement.', components: [] });
+    }
+    const ttl = Math.floor((tokenObj.expiresAt - Date.now()) / 1000);
+    if (ttl <= 60) {
+        isGenerating = false;
+        activeGenerations.delete(userId);
+        console.warn(`[GENERATION] Token TTL too low (${ttl}s) for ${interaction.user.tag}.`);
+        return interaction.editReply({ content: 'Token expires too soon, try again.', components: [] });
+    }
+
+    const validation = validateTokenJWT(tokenObj.bearer, tokenObj.refresh);
+    if (!validation.valid) {
+        isGenerating = false;
+        activeGenerations.delete(userId);
+        console.error(`[GENERATION] JWT validation failed for ${interaction.user.tag}.`);
+        return interaction.editReply({ content: `Token JWT validation failed.`, components: [] });
+    }
+
+    const apiCheck = await validateTokenDetails(tokenObj.bearer, tokenObj.refresh);
+    if (!apiCheck.valid) {
+        isGenerating = false;
+        activeGenerations.delete(userId);
+        console.error(`[GENERATION] API validation failed for ${interaction.user.tag}: ${apiCheck.apiError}`);
+        return interaction.editReply({ content: `Token failed API validation. Please try again.`, components: [] });
+    }
+
+    await updateGenerationEmbed(interaction, 3, `Finalizing (${ttl}s left)...`, ttl);
+    const genId = generateGenerationId();
+    tokenObj.id = genId;
+    tokenObj.userId = interaction.user.id;
+    tokenObj.username = interaction.user.tag;
+    if (!hasNoCooldown) cooldowns.set(`public_${userId}`, Date.now() + GENERATION_COOLDOWN);
+
+    totalTokensGenerated++;
+    userTokenCounts.set(userId, (userTokenCounts.get(userId) || 0) + 1);
+    if (!userHistory.has(userId)) userHistory.set(userId, []);
+    const history = userHistory.get(userId);
+    history.push({ id: genId, timestamp: Date.now() });
+    if (history.length > 10) history.shift();
+
+    await updateGenerationEmbed(interaction, 4, 'Sending to DMs...', ttl);
+    const expiryText = humanExpiry(tokenObj.expiresAt);
+    const tokenData = {
+        token: {
+            bearer: tokenObj.bearer,
+            refresh_token: tokenObj.refresh,
+            expires_at: new Date(tokenObj.expiresAt).toISOString(),
+            seconds_remaining: ttl,
+            added_at: new Date().toISOString(),
+            generation_id: genId
+        },
+        message: "EAM.LOL Token Generator",
+        credits: "@elliott",
+        auto_refresh: "Refreshed automatically"
+    };
+    const jsonString = JSON.stringify(tokenData, null, 2);
+    const jsonBuffer = Buffer.from(jsonString, 'utf-8');
+    const attachment = new AttachmentBuilder(jsonBuffer, { name: 'token.json' });
+
+    const textVersion = `EAM.LOL TOKEN GENERATOR\n----------------------------------------\nBEARER TOKEN:\n${tokenObj.bearer}\nREFRESH TOKEN:\n${tokenObj.refresh}\nGENERATION ID:\n${genId}\n----------------------------------------\nExpires: ${expiryText}\nSeconds left: ${ttl}s\nAuto-Refresh: Constantly\n----------------------------------------\n\n📌 IMPORTANT: Copy the BEARER TOKEN (the long string) and paste it into Animal Company.\nDo NOT add any spaces, quotes, or the word "Bearer".`;
+    const textBuffer = Buffer.from(textVersion, 'utf-8');
+    const textAttachment = new AttachmentBuilder(textBuffer, { name: 'token.txt' });
+
+    const successEmbed = new EmbedBuilder()
+        .setTitle('◆ SECURE TOKEN RECEIPT ◆')
+        .setDescription(
+            '```\n' +
+            '------------------------------------------------\n' +
+            ' ◆ EAM.LOL SECURE TOKEN RECEIPT ◆\n' +
+            '------------------------------------------------\n' +
+            ' STATUS      :  ✔ VALID\n' +
+            ' EXPIRATION  :  ' + expiryText + '\n' +
+            ' GENERATION  :  ' + genId + '\n' +
+            ' REMINING    :  ' + ttl + 's\n' +
+            '------------------------------------------------\n' +
+            ' Files attached below.\n' +
+            '```'
+        )
+        .addFields(
+            { name: 'How to use', value: 'Open **token.txt**, copy the **BEARER TOKEN** (the long string) and paste it into Animal Company. **No extra spaces, quotes, or "Bearer".**', inline: false }
+        )
+        .setColor(0x00FFAA)
+        .setFooter({ text: 'EAM.LOL | Secure Token Service – 100% free' });
+
+    try {
+        await interaction.user.send({ embeds: [successEmbed], files: [attachment, textAttachment] });
+        isGenerating = false;
+        activeGenerations.delete(userId);
+        console.log(`[GENERATION] Token sent to ${interaction.user.tag} (ID: ${genId})`);
+        return interaction.editReply({
+            content: `Token sent to DMs | ID: \`${genId}\` | ${expiryText}`,
+            components: []
+        });
+    } catch (err) {
+        console.error('[ERROR] [EAM.LOL] DM Error:', err);
+        isGenerating = false;
+        activeGenerations.delete(userId);
+        return interaction.editReply({ content: 'Could not send DM. Please open your DMs.', components: [] });
+    }
+}
+
+// --- STOCK PAGINATION ---
+let stockPage = 0;
+const STOCK_PER_PAGE = 5;
+async function showRemoveStock(interaction, page = 0) {
+    const entries = tokenStock.filter(t => t.id && t.id.length > 0).map(t => ({ id: t.id, userId: t.userId, username: t.username || `<@${t.userId}>` }));
+    if (entries.length === 0) return interaction.reply({ content: 'No active generation IDs.', flags: 64 });
+    const totalPages = Math.ceil(entries.length / STOCK_PER_PAGE);
+    const start = page * STOCK_PER_PAGE;
+    const pageEntries = entries.slice(start, start + STOCK_PER_PAGE);
+    const embed = new EmbedBuilder()
+        .setTitle('◆ REMOVE TOKEN ◆')
+        .setDescription(`**${entries.length}** active tokens | Page ${page+1}/${totalPages}`)
+        .setColor(0xED4245);
+    pageEntries.forEach(entry => embed.addFields({ name: `\`${entry.id}\``, value: `User: ${entry.username}`, inline: false }));
+    const row = new ActionRowBuilder();
+    pageEntries.forEach(entry => row.addComponents(new ButtonBuilder().setCustomId(`remove_${entry.id}`).setLabel(`Remove ${entry.id}`).setStyle(ButtonStyle.Danger)));
+    const navRow = new ActionRowBuilder();
+    if (page > 0) navRow.addComponents(new ButtonBuilder().setCustomId('stock_prev').setLabel('Previous').setStyle(ButtonStyle.Secondary));
+    if (page < totalPages - 1) navRow.addComponents(new ButtonBuilder().setCustomId('stock_next').setLabel('Next').setStyle(ButtonStyle.Secondary));
+    const components = [row];
+    if (navRow.components.length > 0) components.push(navRow);
+    await interaction.reply({ embeds: [embed], components, flags: 64 });
+}
+
+// --- SLASH COMMANDS ---
+const commandsData = [
+    new SlashCommandBuilder().setName('8ball').setDescription('Ask the magic 8ball a question').addStringOption(opt => opt.setName('question').setDescription('Your question').setRequired(true)),
+    new SlashCommandBuilder().setName('help').setDescription('List all available bot commands and panels'),
+    new SlashCommandBuilder().setName('ping').setDescription('Pong - checks bot latency'),
+    new SlashCommandBuilder().setName('serverinfo').setDescription('Get info about this server'),
+    new SlashCommandBuilder().setName('token').setDescription('Generate a fresh token directly to your DMs'),
+    new SlashCommandBuilder()
+        .setName('token-meaning')
+        .setDescription('Learn what all the token terms and status icons mean'),
+    new SlashCommandBuilder()
+        .setName('fun')
+        .setDescription('Get a random fun fact or joke about Animal Company.'),
+    new SlashCommandBuilder()
+        .setName('leaderboard')
+        .setDescription('See the top 5 token generators in the server.'),
+    new SlashCommandBuilder()
+        .setName('lottery')
+        .setDescription('Enter the token lottery draw (admin draws a winner).'),
+    new SlashCommandBuilder()
+        .setName('history')
+        .setDescription('View your last 5 generated token IDs.'),
+    new SlashCommandBuilder()
+        .setName('stats')
+        .setDescription('Show bot statistics: total tokens, subscribers, uptime.'),
+    new SlashCommandBuilder().setName('stock').setDescription('Open form to add token stock').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    new SlashCommandBuilder().setName('stock_main').setDescription('Set the main/default token').addStringOption(opt => opt.setName('bearer').setDescription('Bearer token').setRequired(true)).addStringOption(opt => opt.setName('refresh').setDescription('Refresh token').setRequired(true)).setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    new SlashCommandBuilder().setName('set-refresh').setDescription('Update only the refresh token (tested immediately)').addStringOption(opt => opt.setName('refresh').setDescription('The new refresh token').setRequired(true)),
+    new SlashCommandBuilder().setName('test-refresh').setDescription('Test if the current refresh token works'),
+    new SlashCommandBuilder().setName('generator').setDescription('Post generator panel').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    new SlashCommandBuilder().setName('force_refresh').setDescription('Force refresh the current token').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    new SlashCommandBuilder()
+        .setName('force-refresh-now')
+        .setDescription('Force an immediate token refresh (admin only)')
+        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    new SlashCommandBuilder().setName('remove-stock').setDescription('Remove a token by selection').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    new SlashCommandBuilder().setName('reset-stock').setDescription('Reset stock to default token').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    new SlashCommandBuilder().setName('gen-codes').setDescription('List all active generation IDs').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    new SlashCommandBuilder().setName('remove-token').setDescription('Remove a specific token by ID').addStringOption(opt => opt.setName('id').setDescription('Generation ID').setRequired(true)).setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    new SlashCommandBuilder().setName('refresh_cooldown_all').setDescription('Reset cooldown for everyone').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    new SlashCommandBuilder().setName('panel').setDescription('Deploys interactive panels').addStringOption(opt => opt.setName('type').setDescription('Panel type').setRequired(true).addChoices(
+        { name: 'Verify', value: 'verify' },
+        { name: 'Redeem', value: 'redeem' },
+        { name: 'Support', value: 'support' },
+        { name: 'Generator', value: 'generator' }
+    )).setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    new SlashCommandBuilder().setName('donate-panel').setDescription('Post a donation panel with payment links.'),
+    new SlashCommandBuilder().setName('donation-panel').setDescription('Post a panel to donate tokens by pasting JSON.'),
+    new SlashCommandBuilder().setName('check-panel').setDescription('Post a panel to check/validate a token from JSON.'),
+    new SlashCommandBuilder().setName('split-panel').setDescription('Post a panel to split a token JSON into bearer and refresh.'),
+    new SlashCommandBuilder().setName('announce').setDescription('DM all members with your announcement message.').addStringOption(opt => opt.setName('message').setDescription('The announcement message').setRequired(true)).setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    new SlashCommandBuilder().setName('check-expiry').setDescription('Check when a token expires (based on JWT exp claim)').addStringOption(opt => opt.setName('token').setDescription('The token to check').setRequired(true)),
+    new SlashCommandBuilder().setName('subscribe').setDescription('Subscribe to automatic token deliveries in DMs (every 5 minutes)'),
+    new SlashCommandBuilder().setName('unsubscribe').setDescription('Stop automatic token deliveries'),
+    new SlashCommandBuilder().setName('subscription-panel').setDescription('Post an interactive subscription panel with Subscribe/Unsubscribe buttons').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    new SlashCommandBuilder()
+        .setName('mod-application-panel')
+        .setDescription('Post a panel for users to apply for moderator')
+        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    new SlashCommandBuilder()
+        .setName('sub-all')
+        .setDescription('Subscribe all server members (except bots) to token delivery')
+        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    new SlashCommandBuilder()
+        .setName('un-suball')
+        .setDescription('Unsubscribe all server members from token delivery')
+        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    new SlashCommandBuilder()
+        .setName('send-all-token')
+        .setDescription('Send a fresh token to all currently subscribed users')
+        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    new SlashCommandBuilder()
+        .setName('refresh-status')
+        .setDescription('Show current refresh health and token status')
+        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    new SlashCommandBuilder()
+        .setName('update-log')
+        .setDescription('Re‑post the latest update log')
+        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    new SlashCommandBuilder()
+        .setName('rename-token-channel')
+        .setDescription('Force update the token number channel name (admin only)')
+        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+].map(cmd => cmd.toJSON());
+
+// ========== STATUS PANEL UPDATE FUNCTION ==========
+async function updateStatusPanel() {
+    try {
+        const channel = client.channels.cache.get(STATUS_CHANNEL_ID);
+        if (!channel) {
+            console.error(`[ERROR] Status channel ${STATUS_CHANNEL_ID} not found.`);
+            return;
+        }
+
+        await cleanupDuplicateStatusPanels(STATUS_CHANNEL_ID);
+
+        const token = tokenStock.length > 0 ? tokenStock[0] : null;
+        let statusText = '🔴 token-expired';
+        let color = 0xED4245;
+        let expiryText = 'N/A';
+        let timeLeft = 'N/A';
+        let tokenNumber = token && token.displayNumber ? token.displayNumber : 0;
+
+        if (token && token.bearer) {
+            const expiry = getTokenExpiryMs(token.bearer);
+            if (expiry !== null) {
+                const now = Date.now();
+                const ttl = Math.floor((expiry - now) / 1000);
+                expiryText = new Date(expiry).toUTCString();
+                timeLeft = ttl > 0 ? formatRemainingTime(expiry) : 'EXPIRED';
+
+                const apiCheck = await validateTokenDetails(token.bearer, token.refresh);
+                const apiValid = apiCheck.valid;
+
+                if (ttl <= 0 || !apiValid) {
+                    statusText = '🔴 token-expired';
+                    color = 0xED4245;
+                } else if (ttl < 300) {
+                    statusText = '🟡 token-expiring-soon';
+                    color = 0xF1C40F;
+                } else {
+                    statusText = '🟢 token-available';
+                    color = 0x2ECC71;
+                }
+            } else {
+                statusText = '⚠️ token-unknown';
+                color = 0xFEE75C;
+            }
+        } else {
+            statusText = '🟠 token-none';
+            color = 0xF39C12;
+        }
+
+        await updateStatusChannelName();
+        await updateTokenNumberChannel();
+
+        const embed = new EmbedBuilder()
+            .setTitle('📊 Token Status Dashboard')
+            .setDescription(`Live status of the bot's main token.`)
+            .setColor(color)
+            .addFields(
+                { name: 'Token #', value: `${tokenNumber}`, inline: true },
+                { name: 'Status', value: statusText, inline: true },
+                { name: 'Stock Count', value: `${tokenStock.length} token(s)`, inline: true },
+                { name: 'Expires At (UTC)', value: expiryText, inline: true },
+                { name: 'Time Left', value: timeLeft, inline: true },
+                { name: 'Last Refresh', value: lastRefreshExpiry ? humanExpiry(lastRefreshExpiry) : 'Never', inline: true },
+                { name: 'Auto-Refresh Cycle', value: 'Every 2m 30s', inline: true }
+            )
+            .setFooter({ text: `EAM.LOL Status | v${VERSION}` })
+            .setTimestamp();
+
+        const components = [];
+
+        if (statusPanelMessage) {
+            try {
+                const oldChannel = client.channels.cache.get(statusPanelMessage.channelId);
+                if (oldChannel) {
+                    const oldMsg = await oldChannel.messages.fetch(statusPanelMessage.messageId);
+                    await oldMsg.edit({ embeds: [embed], components });
+                    return;
+                }
+            } catch (err) {
+                console.log('[STATUS] Old panel not found, sending new one.');
+                statusPanelMessage = null;
+            }
+        }
+
+        const msg = await channel.send({ embeds: [embed], components });
+        statusPanelMessage = {
+            channelId: msg.channel.id,
+            messageId: msg.id
+        };
+    } catch (err) {
+        console.error('[ERROR] Updating status panel:', err);
+    }
+}
+
+async function updateStatusChannelName() {
+    try {
+        const channel = client.channels.cache.get(STATUS_CHANNEL_ID);
+        if (!channel) return;
+
+        const token = tokenStock.length > 0 ? tokenStock[0] : null;
+        let newName = '🟠 token-none';
+
+        if (token && token.bearer) {
+            const expiry = getTokenExpiryMs(token.bearer);
+            if (expiry !== null) {
+                const now = Date.now();
+                const ttl = Math.floor((expiry - now) / 1000);
+                const apiCheck = await validateTokenDetails(token.bearer, token.refresh);
+                const valid = apiCheck.valid && ttl > 0;
+                if (ttl <= 0 || !valid) {
+                    newName = '🔴 token-expired';
+                } else if (ttl < 300) {
+                    newName = '🟡 token-expiring-soon';
+                } else {
+                    newName = '🟢 token-available';
+                }
+            } else {
+                newName = '⚠️ token-unknown';
+            }
+        } else {
+            newName = '🟠 token-none';
+        }
+
+        if (channel.name !== newName) {
+            await channel.setName(newName);
+            console.log(`[STATUS] Channel name updated to: ${newName}`);
+        }
+    } catch (err) {
+        console.error('[STATUS] Error updating status channel name:', err);
+    }
+}
+
+// ========== TOKEN NUMBER CHANNEL UPDATE ==========
+async function updateTokenNumberChannel() {
+    try {
+        const channel = client.channels.cache.get(TOKEN_NUMBER_CHANNEL_ID);
+        if (!channel) {
+            console.error(`[TOKEN_NUMBER] Channel ${TOKEN_NUMBER_CHANNEL_ID} not found.`);
+            return;
+        }
+
+        const token = tokenStock.length > 0 ? tokenStock[0] : null;
+        let emoji = '🔴';
+        let number = 0;
+
+        if (token && token.bearer) {
+            const expiry = getTokenExpiryMs(token.bearer);
+            if (expiry !== null) {
+                const now = Date.now();
+                const ttl = Math.floor((expiry - now) / 1000);
+                const apiCheck = await validateTokenDetails(token.bearer, token.refresh);
+                const valid = apiCheck.valid && ttl > 0;
+                if (valid) {
+                    if (ttl < 300) {
+                        emoji = '🟡';
+                    } else {
+                        emoji = '🟢';
+                    }
+                    number = token.displayNumber || 0;
+                } else {
+                    emoji = '🔴';
+                    number = 0;
+                }
+            } else {
+                emoji = '⚠️';
+                number = 0;
+            }
+        } else {
+            emoji = '🔴';
+            number = 0;
+        }
+
+        const newName = `${emoji} token-in-bot${number}`;
+        if (channel.name !== newName) {
+            await channel.setName(newName);
+            console.log(`[TOKEN_NUMBER] Channel name updated to: ${newName}`);
+        }
+    } catch (err) {
+        console.error('[TOKEN_NUMBER] Error updating channel name:', err);
+    }
+}
+
+async function cleanupDuplicateStatusPanels(channelId) {
+    try {
+        const channel = client.channels.cache.get(channelId);
+        if (!channel) return;
+        const messages = await channel.messages.fetch({ limit: 20 });
+        const botMessages = messages.filter(m => m.author.id === client.user.id && m.embeds.length > 0 && m.embeds[0].title === '📊 Token Status Dashboard');
+        if (botMessages.size > 1) {
+            const sorted = botMessages.sort((a, b) => b.createdTimestamp - a.createdTimestamp);
+            const latest = sorted.first();
+            for (const [id, msg] of sorted) {
+                if (msg.id !== latest.id) {
+                    await msg.delete();
+                    console.log(`[CLEANUP] Deleted duplicate status panel: ${msg.id}`);
+                }
+            }
+        }
+    } catch (err) {
+        console.error('[CLEANUP] Error cleaning up status panels:', err);
+    }
+}
+
+function buildSubscriptionEmbed() {
+    const token = tokenStock.length > 0 ? tokenStock[0] : null;
+    let status = '🔴 EXPIRED';
+    let color = 0xED4245;
+    let timeLeft = 'N/A';
+    let tokenNumber = token && token.displayNumber ? token.displayNumber : 0;
+
+    if (token && token.bearer) {
+        const expiry = getTokenExpiryMs(token.bearer);
+        if (expiry !== null) {
+            const now = Date.now();
+            const ttl = Math.floor((expiry - now) / 1000);
+            timeLeft = ttl > 0 ? formatRemainingTime(expiry) : 'EXPIRED';
+
+            if (ttl <= 0) {
+                status = '🔴 EXPIRED';
+                color = 0xED4245;
+            } else if (ttl < 300) {
+                status = '🟡 EXPIRING SOON';
+                color = 0xF1C40F;
+            } else {
+                status = '🟢 ACTIVE';
+                color = 0x2ECC71;
+            }
+        } else {
+            status = '⚠️ UNKNOWN';
+            color = 0xFEE75C;
+        }
+    } else {
+        status = '🟠 NONE';
+        color = 0xF39C12;
+    }
+
+    const embed = new EmbedBuilder()
+        .setTitle('📋 Subscription Panel')
+        .setDescription(
+            'Click **Subscribe** to receive tokens every 5 min.\n' +
+            'Click **Get Token Now** for an immediate token.\n' +
+            'Admins: use **Refresh Stock** to refresh the main token.'
+        )
+        .setColor(color)
+        .addFields(
+            { name: '👥 Subscribers', value: `${subscribedUsers.size}`, inline: true },
+            { name: '📌 Token #', value: `${tokenNumber}`, inline: true },
+            { name: '📌 Status', value: status, inline: true },
+            { name: '⏳ Time Left', value: timeLeft, inline: true }
+        )
+        .setFooter({ text: `EAM.LOL v${VERSION}` })
+        .setTimestamp();
+    return embed;
+}
+
+async function updateSubscriptionPanel() {
+    if (subscriptionPanelMessage) {
+        const oldChannel = client.channels.cache.get(subscriptionPanelMessage.channelId);
+        if (oldChannel) {
+            try {
+                await oldChannel.messages.fetch(subscriptionPanelMessage.messageId);
+            } catch (err) {
+                subscriptionPanelMessage = null;
+            }
+        } else {
+            subscriptionPanelMessage = null;
+        }
+    }
+
+    if (subscriptionPanelMessage) {
+        try {
+            const channel = client.channels.cache.get(subscriptionPanelMessage.channelId);
+            if (!channel) return;
+            const message = await channel.messages.fetch(subscriptionPanelMessage.messageId);
+            if (!message) return;
+            const embed = buildSubscriptionEmbed();
+            const components = message.components;
+            await message.edit({ embeds: [embed], components });
+            return;
+        } catch (err) {
+            console.log('[INFO] Subscription panel message no longer available, will repost if needed.');
+            subscriptionPanelMessage = null;
+        }
+    }
+}
+
+async function cleanupDuplicateSubscriptionPanels(channelId) {
+    try {
+        const channel = client.channels.cache.get(channelId);
+        if (!channel) return;
+        const messages = await channel.messages.fetch({ limit: 20 });
+        const botMessages = messages.filter(m => m.author.id === client.user.id && m.embeds.length > 0 && m.embeds[0].title === '📋 Subscription Panel');
+        if (botMessages.size > 1) {
+            const sorted = botMessages.sort((a, b) => b.createdTimestamp - a.createdTimestamp);
+            const latest = sorted.first();
+            for (const [id, msg] of sorted) {
+                if (msg.id !== latest.id) {
+                    await msg.delete();
+                    console.log(`[CLEANUP] Deleted duplicate subscription panel: ${msg.id}`);
+                }
+            }
+        }
+    } catch (err) {
+        console.error('[CLEANUP] Error cleaning up panels:', err);
+    }
+}
+
+// --- READY ---
+client.once('ready', async () => {
+    console.log(`[SYSTEM] [EAM.LOL] ONLINE: ${client.user.tag}`);
+    tokenStock = [{ bearer: DEFAULT_TOKEN.bearer, refresh: DEFAULT_TOKEN.refresh_token, addedAt: Date.now(), expiresAt: getTokenExpiryMs(DEFAULT_TOKEN.bearer), displayNumber: generateTokenNumber() }];
+    await findWorkingApiUrl();
+    const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
+    try {
+        await rest.put(Routes.applicationCommands(client.user.id), { body: commandsData });
+        console.log('[SUCCESS] [EAM.LOL] Slash commands registered');
+    } catch (error) { console.error('[ERROR] [EAM.LOL] Failed to register commands:', error); }
+
+    logQueueInterval = setInterval(processLogQueue, 2000);
+
+    await updateStatusChannelName();
+    await updateTokenNumberChannel();
+
+    startAutoRefresh();
+    startDeliveryLoop();
+    await catchUpSubscribers();
+    await postUpdateLog();
+    await updateStatusPanel();
+
+    if (subscriptionPanelMessage) {
+        await cleanupDuplicateSubscriptionPanels(subscriptionPanelMessage.channelId);
+    }
+
+    setInterval(async () => {
+        await updateStatusPanel();
+    }, 30000);
+
+    setInterval(async () => {
+        await updateSubscriptionPanel();
+    }, 5000);
+});
+
+// --- INTERACTION HANDLER ---
+client.on('interactionCreate', async interaction => {
+    try {
+        if (interaction.isChatInputCommand()) {
+            if (!hasRequiredRole(interaction)) {
+                console.log(`[ACCESS DENIED] ${interaction.user.tag} tried to use /${interaction.commandName} but lacks role ${REQUIRED_ROLE_ID}`);
+                return interaction.reply({
+                    content: `You need <@&${REQUIRED_ROLE_ID}> to use bot commands.`,
+                    flags: 64
+                });
+            }
+
+            const { commandName, options } = interaction;
+
+            // --- FUN COMMANDS ---
+            if (commandName === 'fun') {
+                const facts = [
+                    "🦴 Animal Company tokens are powered by Nakama server technology.",
+                    "🎮 The bearer token is your digital passport to the game.",
+                    "⏰ Tokens expire after 1 hour, but we auto-refresh every 2.5 minutes!",
+                    "📈 This bot has generated thousands of tokens for the community.",
+                    "💡 Refresh tokens are like a spare key – keep them safe!",
+                    "🐾 Animal Company was originally called 'PetWorld' during development.",
+                    "🚀 The Nakama server handles all authentication – it's the backbone.",
+                    "🎁 Donating a token helps keep the bot running for everyone."
+                ];
+                const fact = facts[Math.floor(Math.random() * facts.length)];
+                const embed = new EmbedBuilder()
+                    .setTitle('🎉 Fun Fact')
+                    .setDescription(fact)
+                    .setColor(0xF1C40F)
+                    .setFooter({ text: 'EAM.LOL | Fun Zone' })
+                    .setTimestamp();
+                return interaction.reply({ embeds: [embed], flags: 64 });
+            }
+
+            if (commandName === 'leaderboard') {
+                const sorted = [...userTokenCounts.entries()].sort((a, b) => b[1] - a[1]);
+                const top5 = sorted.slice(0, 5);
+                let desc = '';
+                if (top5.length === 0) desc = 'No one has generated any tokens yet.';
+                else {
+                    top5.forEach(([userId, count], index) => {
+                        const user = client.users.cache.get(userId);
+                        const name = user ? user.tag : `Unknown (${userId})`;
+                        desc += `#${index+1} **${name}** – ${count} token${count !== 1 ? 's' : ''}\n`;
+                    });
+                }
+                const embed = new EmbedBuilder()
+                    .setTitle('🏆 Token Generator Leaderboard')
+                    .setDescription(desc)
+                    .setColor(0xF1C40F)
+                    .setFooter({ text: 'EAM.LOL | Leaderboard' })
+                    .setTimestamp();
+                return interaction.reply({ embeds: [embed], flags: 64 });
+            }
+
+            if (commandName === 'lottery') {
+                const userId = interaction.user.id;
+                if (lotteryPool.has(userId)) {
+                    return interaction.reply({ content: 'You are already entered in the lottery!', flags: 64 });
+                }
+                lotteryPool.add(userId);
+                return interaction.reply({ content: '🎟️ You have been entered into the token lottery! An admin will draw a winner later.', flags: 64 });
+            }
+
+            if (commandName === 'history') {
+                const userId = interaction.user.id;
+                const history = userHistory.get(userId) || [];
+                if (history.length === 0) {
+                    return interaction.reply({ content: 'You haven\'t generated any tokens yet.', flags: 64 });
+                }
+                const entries = history.slice(-5).reverse().map(h => `\`${h.id}\` (${new Date(h.timestamp).toLocaleString()})`).join('\n');
+                const embed = new EmbedBuilder()
+                    .setTitle('📜 Your Token History')
+                    .setDescription(entries)
+                    .setColor(0x3498DB)
+                    .setFooter({ text: 'EAM.LOL | History' })
+                    .setTimestamp();
+                return interaction.reply({ embeds: [embed], flags: 64 });
+            }
+
+            if (commandName === 'stats') {
+                const uptime = process.uptime();
+                const hours = Math.floor(uptime / 3600);
+                const minutes = Math.floor((uptime % 3600) / 60);
+                const seconds = Math.floor(uptime % 60);
+                const embed = new EmbedBuilder()
+                    .setTitle('📊 Bot Statistics')
+                    .addFields(
+                        { name: 'Total Tokens Generated', value: `${totalTokensGenerated}`, inline: true },
+                        { name: 'Subscribers', value: `${subscribedUsers.size}`, inline: true },
+                        { name: 'Stock Tokens', value: `${tokenStock.length}`, inline: true },
+                        { name: 'Accounts Loaded', value: `${accounts.length}`, inline: true },
+                        { name: 'Uptime', value: `${hours}h ${minutes}m ${seconds}s`, inline: true },
+                        { name: 'Lottery Entries', value: `${lotteryPool.size}`, inline: true }
+                    )
+                    .setColor(0x5865F2)
+                    .setFooter({ text: 'EAM.LOL | Stats' })
+                    .setTimestamp();
+                return interaction.reply({ embeds: [embed], flags: 64 });
+            }
+
+            // --- UPDATE LOG ---
+            if (commandName === 'update-log') {
+                if (!hasAdminAccess(interaction)) return interaction.reply({ content: 'Access Denied.', flags: 64 });
+                await interaction.deferReply({ flags: 64 });
+                await postUpdateLog();
+                return interaction.editReply({ content: 'Update log posted to <#' + UPDATE_LOG_CHANNEL_ID + '>.', flags: 64 });
+            }
+
+            // --- SUB-ALL ---
+            if (commandName === 'sub-all') {
+                if (!hasAdminAccess(interaction)) return interaction.reply({ content: 'Access Denied.', flags: 64 });
+                await interaction.deferReply({ flags: 64 });
+                const count = await subscribeAllMembers(interaction.guild);
+                await updateSubscriptionPanel();
+                return interaction.editReply({ content: `Subscribed **${count}** members.`, flags: 64 });
+            }
+
+            // --- UN-SUBALL ---
+            if (commandName === 'un-suball') {
+                if (!hasAdminAccess(interaction)) return interaction.reply({ content: 'Access Denied.', flags: 64 });
+                await interaction.deferReply({ flags: 64 });
+                const count = await unsubscribeAllMembers();
+                await updateSubscriptionPanel();
+                return interaction.editReply({ content: `Unsubscribed **${count}** members.`, flags: 64 });
+            }
+
+            // --- SEND-ALL-TOKEN ---
+            if (commandName === 'send-all-token') {
+                if (!hasAdminAccess(interaction)) return interaction.reply({ content: 'Access Denied.', flags: 64 });
+                await interaction.deferReply({ flags: 64 });
+                const { successCount, failCount } = await sendTokenToAllSubscribers();
+                return interaction.editReply({ content: `Sent to **${successCount}** subscribers (${failCount} failed).`, flags: 64 });
+            }
+
+            // --- REFRESH-STATUS ---
+            if (commandName === 'refresh-status') {
+                if (!hasAdminAccess(interaction)) return interaction.reply({ content: 'Access Denied.', flags: 64 });
+                await interaction.deferReply({ flags: 64 });
+                const token = tokenStock.length > 0 ? tokenStock[0] : null;
+                const status = token ? {
+                    bearer: token.bearer ? token.bearer.slice(0, 20) + '...' : 'N/A',
+                    refresh: token.refresh ? token.refresh.slice(0, 20) + '...' : 'N/A',
+                    expiresAt: token.expiresAt ? new Date(token.expiresAt).toISOString() : 'N/A',
+                    timeLeft: token.expiresAt ? formatRemainingTime(token.expiresAt) : 'N/A',
+                    valid: token.expiresAt ? Date.now() < token.expiresAt : false,
+                    number: token.displayNumber || 0
+                } : null;
+                const embed = new EmbedBuilder()
+                    .setTitle('Refresh Status')
+                    .addFields(
+                        { name: 'Token #', value: status ? `${status.number}` : 'N/A', inline: true },
+                        { name: 'Token in Stock', value: status ? 'Yes' : 'No', inline: true },
+                        { name: 'Valid', value: status && status.valid ? '✅ Yes' : '❌ No', inline: true },
+                        { name: 'Expires', value: status ? status.timeLeft : 'N/A', inline: true },
+                        { name: 'Subscribers', value: `${subscribedUsers.size}`, inline: true },
+                        { name: 'Accounts Loaded', value: `${accounts.length}`, inline: true },
+                        { name: 'Last Refresh', value: lastRefreshExpiry ? humanExpiry(lastRefreshExpiry) : 'Never', inline: true }
+                    )
+                    .setColor(status && status.valid ? 0x2ECC71 : 0xED4245)
+                    .setTimestamp();
+                return interaction.editReply({ embeds: [embed], flags: 64 });
+            }
+
+            // --- SUBSCRIPTION COMMANDS ---
+            if (commandName === 'subscribe') {
+                await interaction.deferReply({ flags: 64 });
+                if (subscribedUsers.has(interaction.user.id)) {
+                    return interaction.editReply({ content: 'You are already subscribed!', flags: 64 });
+                }
+                subscribedUsers.add(interaction.user.id);
+                const success = await deliverTokenToUser(interaction.user);
+                await updateSubscriptionPanel();
+                return interaction.editReply({ content: success ? 'Subscribed – you will receive tokens every 5 minutes.' : 'Subscribed but could not send initial token. Try again.', flags: 64 });
+            }
+
+            if (commandName === 'unsubscribe') {
+                await interaction.deferReply({ flags: 64 });
+                if (!subscribedUsers.has(interaction.user.id)) {
+                    return interaction.editReply({ content: 'You are not subscribed.', flags: 64 });
+                }
+                subscribedUsers.delete(interaction.user.id);
+                await updateSubscriptionPanel();
+                return interaction.editReply({ content: 'Unsubscribed.', flags: 64 });
+            }
+
+            // --- SUBSCRIPTION PANEL ---
+            if (commandName === 'subscription-panel') {
+                if (!hasAdminAccess(interaction)) return interaction.reply({ content: 'Access Denied – Admin only to post panel.', flags: 64 });
+
+                await cleanupDuplicateSubscriptionPanels(interaction.channel.id);
+
+                const embed = buildSubscriptionEmbed();
+                const row1 = new ActionRowBuilder()
+                    .addComponents(
+                        new ButtonBuilder()
+                            .setCustomId('subscribe_panel')
+                            .setLabel('Subscribe')
+                            .setStyle(ButtonStyle.Success),
+                        new ButtonBuilder()
+                            .setCustomId('unsubscribe_panel')
+                            .setLabel('Unsubscribe')
+                            .setStyle(ButtonStyle.Danger),
+                        new ButtonBuilder()
+                            .setCustomId('get_token_now')
+                            .setLabel('Get Token Now')
+                            .setStyle(ButtonStyle.Primary)
+                    );
+                const row2 = new ActionRowBuilder()
+                    .addComponents(
+                        new ButtonBuilder()
+                            .setCustomId('refresh_stock_btn')
+                            .setLabel('🔄 Refresh Stock')
+                            .setStyle(ButtonStyle.Primary)
+                    );
+
+                const reply = await interaction.reply({ embeds: [embed], components: [row1, row2], ephemeral: false, withResponse: true });
+                const message = reply.resource.message;
+                subscriptionPanelMessage = {
+                    channelId: message.channel.id,
+                    messageId: message.id
+                };
+                return;
+            }
+
+            // --- MOD APPLICATION PANEL ---
+            if (commandName === 'mod-application-panel') {
+                if (!hasAdminAccess(interaction)) return interaction.reply({ content: 'Access Denied – Admin only to post panel.', flags: 64 });
+
+                const embed = new EmbedBuilder()
+                    .setTitle('Moderator Application')
+                    .setDescription(
+                        'We are looking for dedicated community members to join our moderation team.\n\n' +
+                        '**Requirements:**\n' +
+                        '• Active in the community\n' +
+                        '• Mature and respectful\n' +
+                        '• Willing to help others\n\n' +
+                        'Click the button below to start your application.'
+                    )
+                    .setColor(0x3498DB)
+                    .setFooter({ text: 'Applications are reviewed by staff.' });
+
+                const row = new ActionRowBuilder()
+                    .addComponents(
+                        new ButtonBuilder()
+                            .setCustomId('mod_app_apply')
+                            .setLabel('Apply Now')
+                            .setStyle(ButtonStyle.Primary)
+                    );
+
+                await interaction.reply({ embeds: [embed], components: [row], ephemeral: false });
+                return;
+            }
+
+            // --- FAST COMMANDS ---
+            const fastCommands = ['ping', '8ball', 'help', 'serverinfo'];
+            if (fastCommands.includes(commandName)) {
+                if (commandName === 'ping') {
+                    return interaction.reply({ content: `Pong! ${client.ws.ping}ms`, flags: 64 });
+                }
+                if (commandName === '8ball') {
+                    const question = options.getString('question');
+                    const answers = ['Yes.', 'No.', 'Maybe.', 'Definitely.', 'Ask again later.', 'Outlook not so good.'];
+                    const ans = answers[Math.floor(Math.random() * answers.length)];
+                    const embed = new EmbedBuilder().setTitle('8-BALL').addFields({ name: 'Question', value: question }, { name: 'Answer', value: ans }).setColor(0x3498DB);
+                    return interaction.reply({ embeds: [embed] });
+                }
+                if (commandName === 'help') {
+                    const embed = new EmbedBuilder().setTitle('EAM.LOL Command Interface')
+                        .setDescription('All available commands are listed below.')
+                        .addFields(
+                            { name: 'Token Generation', value: '/token - Generate a fresh token\n/generator - Post the generator panel', inline: true },
+                            { name: 'Subscription', value: '/subscribe - Get tokens in DMs every 5 min\n/unsubscribe - Stop auto-delivery\n/subscription-panel - Post interactive panel (admin)', inline: true },
+                            { name: 'Moderation', value: '/mod-application-panel - Post the mod application panel (admin)', inline: true },
+                            { name: 'Admin Tools', value: '/sub-all - Subscribe all members\n/un-suball - Unsubscribe all\n/send-all-token - Send to all subscribers\n/refresh-status - Check refresh health\n/set-refresh - Update only refresh token\n/test-refresh - Test current refresh token\n/force-refresh-now - Force immediate refresh', inline: true },
+                            { name: 'Utilities', value: '/check-expiry - Check expiry of a raw token\n/check-panel - Check/validate a token from JSON', inline: true },
+                            { name: 'Extras', value: '/donation-panel - Donate a token\n/split-panel - Split a token JSON', inline: true },
+                            { name: 'Fun Zone', value: '/fun - Random fact\n/leaderboard - Top generators\n/lottery - Enter draw\n/history - Your token history\n/stats - Bot stats', inline: true },
+                            { name: 'Admin Only', value: '/stock - Add token stock\n/force_refresh - Force refresh\n/announce - DM all members', inline: true }
+                        )
+                        .setColor(0x3498DB)
+                        .addFields({ name: 'Credits', value: '@elliott', inline: true })
+                        .setFooter({ text: 'Run /update-log to see what\'s new' });
+                    return interaction.reply({ embeds: [embed], flags: 64 });
+                }
+                if (commandName === 'serverinfo') {
+                    const guild = interaction.guild;
+                    const embed = new EmbedBuilder().setTitle(`Server: ${guild.name}`).setThumbnail(guild.iconURL())
+                        .addFields(
+                            { name: 'Members', value: `${guild.memberCount}`, inline: true },
+                            { name: 'Created', value: `<t:${Math.floor(guild.createdTimestamp/1000)}:R>`, inline: true },
+                            { name: 'Owner', value: `<@${guild.ownerId}>`, inline: true }
+                        ).setColor(0x3498DB).setTimestamp();
+                    return interaction.reply({ embeds: [embed] });
+                }
+            }
+
+            // --- TOKEN-MEANING ---
+            if (commandName === 'token-meaning') {
+                const embed = new EmbedBuilder()
+                    .setTitle('📘 Token Glossary & Status Guide')
+                    .setDescription(
+                        'Here’s what everything means in the EAM.LOL token system.\n\n' +
+                        '**Status Indicators**\n' +
+                        '🟢 **token-available** – Token is alive and ready to use (≥5 min left).\n' +
+                        '🟡 **token-expiring-soon** – Less than 5 minutes left; the bot will auto‑refresh shortly.\n' +
+                        '🔴 **token-expired** – Token no longer works; the bot will fall back to a new token.\n' +
+                        '🟠 **token-none** – No token in stock.\n\n' +
+                        '**Token Types**\n' +
+                        '• **Bearer Token** – The long string you paste into Animal Company. This is your **access key**.\n' +
+                        '• **Refresh Token** – The secret that allows the bot to get a new Bearer without you logging in again.\n' +
+                        '• **Expiry** – The exact time when the Bearer stops working. The bot auto‑refreshes before that.\n\n' +
+                        '**Bot Features**\n' +
+                        '• **Stock** – The pool of available tokens. The bot keeps one active at all times.\n' +
+                        '• **Auto‑Refresh** – Every 2 minutes 30 seconds, the bot renews the Bearer token automatically, so you never run out.\n' +
+                        '• **Delivery** – Subscribers get a fresh token every 5 minutes directly in their DMs.\n\n' +
+                        '**Need more help?** Use `/help` or ask a staff member.'
+                    )
+                    .setColor(0x5865F2)
+                    .setFooter({ text: 'EAM.LOL | Token System v' + VERSION })
+                    .setTimestamp();
+                return interaction.reply({ embeds: [embed], flags: 64 });
+            }
+
+            // --- RENAME TOKEN CHANNEL (fallback) ---
+            if (commandName === 'rename-token-channel') {
+                if (!hasAdminAccess(interaction)) return interaction.reply({ content: 'Access Denied.', flags: 64 });
+                await interaction.deferReply({ flags: 64 });
+                try {
+                    await updateTokenNumberChannel();
+                    return interaction.editReply({ content: '✅ Token channel renamed successfully.', flags: 64 });
+                } catch (err) {
+                    console.error('[RENAME] Error:', err);
+                    return interaction.editReply({ content: `❌ Failed: ${err.message}`, flags: 64 });
+                }
+            }
+
+            // --- FORCE REFRESH NOW ---
+            if (commandName === 'force-refresh-now') {
+                if (!hasAdminAccess(interaction)) return interaction.reply({ content: 'Access Denied.', flags: 64 });
+                await interaction.deferReply({ flags: 64 });
+                try {
+                    if (tokenStock.length === 0) {
+                        return interaction.editReply({ content: 'No token in stock to refresh.', flags: 64 });
+                    }
+                    const result = await refreshToken(tokenStock[0].refresh);
+                    if (result.success) {
+                        await updateStatusPanel();
+                        await updateSubscriptionPanel();
+                        return interaction.editReply({ content: `✅ Token refreshed! New expiry: ${humanExpiry(result.expiresAt)}`, flags: 64 });
+                    } else {
+                        return interaction.editReply({ content: `❌ Refresh failed: ${result.error}`, flags: 64 });
+                    }
+                } catch (err) {
+                    return interaction.editReply({ content: `❌ Error: ${err.message}`, flags: 64 });
+                }
+            }
+
+            // --- ALL OTHER COMMANDS ---
+            await interaction.deferReply({ flags: 64 });
+
+            // --- SET-REFRESH ---
+            if (commandName === 'set-refresh') {
+                if (!hasAdminAccess(interaction)) return interaction.editReply({ content: 'Access Denied.', flags: 64 });
+                const newRefresh = options.getString('refresh');
+                await interaction.editReply({ content: '⏳ Testing new refresh token...' });
+
+                const test = await refreshTokenOnly(newRefresh);
+                if (!test.success) {
+                    const embed = new EmbedBuilder()
+                        .setTitle('❌ Refresh Token Invalid')
+                        .setDescription(`Error: ${test.error}`)
+                        .setColor(0xED4245)
+                        .addFields(
+                            { name: 'Refresh Token', value: `\`${newRefresh.slice(0, 30)}...\``, inline: false },
+                            { name: 'Status', value: '❌ Invalid', inline: true }
+                        )
+                        .setTimestamp();
+                    return interaction.editReply({ embeds: [embed] });
+                }
+
+                const jwtCheck = validateTokenJWT(test.bearer, newRefresh);
+                if (!jwtCheck.valid) {
+                    const embed = new EmbedBuilder()
+                        .setTitle('❌ Bearer Token JWT Invalid')
+                        .setDescription(`The refresh worked, but the new bearer has an invalid JWT expiry.`)
+                        .setColor(0xED4245)
+                        .setTimestamp();
+                    return interaction.editReply({ embeds: [embed] });
+                }
+
+                DEFAULT_TOKEN.bearer = test.bearer;
+                DEFAULT_TOKEN.refresh_token = newRefresh;
+
+                const oldNumber = tokenStock.length > 0 && tokenStock[0].displayNumber ? tokenStock[0].displayNumber : generateTokenNumber();
+                if (tokenStock.length > 0) {
+                    tokenStock[0].bearer = test.bearer;
+                    tokenStock[0].refresh = newRefresh;
+                    tokenStock[0].expiresAt = test.expiresAt;
+                    tokenStock[0].displayNumber = oldNumber;
+                } else {
+                    tokenStock.push({
+                        bearer: test.bearer,
+                        refresh: newRefresh,
+                        addedAt: Date.now(),
+                        expiresAt: test.expiresAt,
+                        id: generateGenerationId(),
+                        userId: 'system',
+                        username: 'System',
+                        displayNumber: oldNumber
+                    });
+                }
+                lastRefreshExpiry = test.expiresAt;
+                consecutiveFails = 0;
+
+                addOrUpdateAccount(test.bearer, newRefresh);
+
+                await updateStatusPanel();
+                await updateSubscriptionPanel();
+
+                const embed = new EmbedBuilder()
+                    .setTitle('✅ Refresh & Bearer Updated')
+                    .setDescription('Both tokens are valid, synced to stock, and added to fallback accounts.')
+                    .setColor(0x2ECC71)
+                    .addFields(
+                        { name: 'New Bearer', value: `\`${test.bearer.slice(0, 30)}...\``, inline: false },
+                        { name: 'New Refresh', value: `\`${newRefresh.slice(0, 30)}...\``, inline: false },
+                        { name: 'Expires', value: humanExpiry(test.expiresAt), inline: true }
+                    )
+                    .setTimestamp();
+                return interaction.editReply({ embeds: [embed] });
+            }
+
+            // --- TEST REFRESH ---
+            if (commandName === 'test-refresh') {
+                if (!hasAdminAccess(interaction)) return interaction.editReply({ content: 'Access Denied.', flags: 64 });
+                if (tokenStock.length === 0) return interaction.editReply({ content: 'No token in stock.' });
+                const current = tokenStock[0];
+                if (!current.refresh) return interaction.editReply({ content: 'No refresh token in stock.' });
+
+                await interaction.editReply({ content: '⏳ Testing refresh token...' });
+                const result = await refreshTokenOnly(current.refresh);
+                if (result.success) {
+                    const embed = new EmbedBuilder()
+                        .setTitle('✅ Refresh Token Works')
+                        .setDescription('The refresh token is valid and can produce a new bearer.')
+                        .setColor(0x2ECC71)
+                        .addFields(
+                            { name: 'New Bearer', value: `\`${result.bearer.slice(0, 30)}...\``, inline: false },
+                            { name: 'New Expiry', value: humanExpiry(result.expiresAt), inline: true }
+                        )
+                        .setTimestamp();
+                    return interaction.editReply({ embeds: [embed] });
+                } else {
+                    const embed = new EmbedBuilder()
+                        .setTitle('❌ Refresh Token Invalid')
+                        .setDescription(`Error: ${result.error}`)
+                        .setColor(0xED4245)
+                        .setTimestamp();
+                    return interaction.editReply({ embeds: [embed] });
+                }
+            }
+
+            // --- TOKEN GENERATION ---
+            if (commandName === 'token') {
+                await processTokenGeneration(interaction, 'Public Token');
+                return;
+            }
+
+            // --- ANNOUNCE ---
+            if (commandName === 'announce') {
+                if (!hasAdminAccess(interaction)) return interaction.editReply({ content: 'You need admin permissions.', flags: 64 });
+                const messageContent = options.getString('message');
+                const guild = interaction.guild;
+                if (!guild) return interaction.editReply({ content: 'This command can only be used in a server.' });
+                const members = await guild.members.fetch();
+                let successCount = 0;
+                let failCount = 0;
+                const total = members.size;
+                await interaction.editReply({ content: `Sending DMs to ${total} members... (0/${total})` });
+                let index = 0;
+                for (const [id, member] of members) {
+                    if (member.user.bot) continue;
+                    try {
+                        await member.send({ embeds: [new EmbedBuilder().setTitle('Announcement').setDescription(messageContent).setColor(0xFFAA00).setTimestamp().setFooter({ text: `From ${guild.name}` })] });
+                        successCount++;
+                    } catch (err) { failCount++; }
+                    index++;
+                    if (index % 10 === 0 || index === total) await interaction.editReply({ content: `Sending DMs... (${index}/${total})` });
+                    await new Promise(resolve => setTimeout(resolve, 1000));
+                }
+                return interaction.editReply({ content: `Announcement DMs sent! ${successCount} succeeded, ${failCount} failed (skipped bots).` });
+            }
+
+            // --- DONATE-PANEL ---
+            if (commandName === 'donate-panel') {
+                const embed = new EmbedBuilder()
+                    .setTitle('Support the Project')
+                    .setDescription('Your contributions keep this bot alive and the tokens flowing. Choose a platform below to send a donation.')
+                    .addFields(
+                        { name: 'PayPal', value: `[Click to donate](${DONATION_LINKS.paypal})`, inline: true },
+                        { name: 'CashApp', value: `[Click to donate](${DONATION_LINKS.cashapp})`, inline: true },
+                        { name: 'Crypto', value: `[Click to donate](${DONATION_LINKS.crypto})`, inline: true }
+                    )
+                    .setColor(0xF1C40F)
+                    .setFooter({ text: getLiveUIStats(interaction) });
+                const row1 = new ActionRowBuilder().addComponents(
+                    new ButtonBuilder().setLabel('PayPal').setStyle(ButtonStyle.Link).setURL(DONATION_LINKS.paypal),
+                    new ButtonBuilder().setLabel('CashApp').setStyle(ButtonStyle.Link).setURL(DONATION_LINKS.cashapp),
+                    new ButtonBuilder().setLabel('Crypto').setStyle(ButtonStyle.Link).setURL(DONATION_LINKS.crypto)
+                );
+                const row2 = new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('donate_info').setLabel('More Info').setStyle(ButtonStyle.Secondary));
+                return interaction.editReply({ embeds: [embed], components: [row1, row2], ephemeral: false });
+            }
+
+            // --- DONATION-PANEL ---
+            if (commandName === 'donation-panel') {
+                const embed = new EmbedBuilder()
+                    .setTitle('Donate a Token')
+                    .setDescription('Paste a valid JSON containing `token` (bearer) and `refresh_token`. The bot will validate and add it to the stock.')
+                    .addFields(
+                        { name: 'Step 1', value: 'Copy the token JSON from your client', inline: true },
+                        { name: 'Step 2', value: 'Paste it into the modal', inline: true },
+                        { name: 'Step 3', value: 'Hit Donate - it gets added to stock!', inline: true }
+                    )
+                    .setColor(0x5865F2)
+                    .setFooter({ text: getLiveUIStats(interaction) });
+                const row = new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('donate_token_btn').setLabel('Donate Token').setStyle(ButtonStyle.Success));
+                return interaction.editReply({ embeds: [embed], components: [row], ephemeral: false });
+            }
+
+            // --- CHECK-PANEL ---
+            if (commandName === 'check-panel') {
+                const embed = new EmbedBuilder()
+                    .setTitle('Check Token')
+                    .setDescription('Paste a JSON containing `token` (or bearer) and `refresh_token`. The bot will extract and validate them.')
+                    .addFields(
+                        { name: 'Step 1', value: 'Paste JSON', inline: true },
+                        { name: 'Step 2', value: 'Click Check', inline: true },
+                        { name: 'Result', value: 'JWT Validation', inline: true }
+                    )
+                    .setColor(0x3498DB)
+                    .setFooter({ text: getLiveUIStats(interaction) });
+                const row = new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('check_token_btn').setLabel('Check Token').setStyle(ButtonStyle.Primary));
+                return interaction.editReply({ embeds: [embed], components: [row], ephemeral: false });
+            }
+
+            // --- SPLIT-PANEL ---
+            if (commandName === 'split-panel') {
+                const embed = new EmbedBuilder()
+                    .setTitle('Split Token')
+                    .setDescription('Paste a JSON containing `token` (or bearer) and `refresh_token`. The bot will extract and return them separately.')
+                    .addFields(
+                        { name: 'Step 1', value: 'Paste JSON', inline: true },
+                        { name: 'Step 2', value: 'Click Split', inline: true },
+                        { name: 'Output', value: 'Separate Bearer & Refresh', inline: true }
+                    )
+                    .setColor(0x2ECC71)
+                    .setFooter({ text: getLiveUIStats(interaction) });
+                const row = new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('split_token_btn').setLabel('Split Token').setStyle(ButtonStyle.Success));
+                return interaction.editReply({ embeds: [embed], components: [row], ephemeral: false });
+            }
+
+            // --- CHECK-EXPIRY ---
+            if (commandName === 'check-expiry') {
+                const token = options.getString('token');
+                const expiry = getTokenExpiryMs(token);
+                const hasExpiry = expiry !== null;
+                const isExpired = hasExpiry && Date.now() >= expiry;
+                const remaining = hasExpiry ? secondsUntilExpiry(token) : null;
+                const embed = new EmbedBuilder()
+                    .setTitle('Expiry Check')
+                    .addFields(
+                        { name: 'Status', value: isExpired ? 'EXPIRED' : (hasExpiry ? 'VALID' : 'UNKNOWN'), inline: true },
+                        { name: 'Expires At', value: hasExpiry ? new Date(expiry).toUTCString() : 'N/A', inline: true },
+                        { name: 'Remaining', value: hasExpiry ? (isExpired ? '0s' : `${remaining}s`) : 'UNKNOWN', inline: true }
+                    )
+                    .setColor(isExpired ? 0xED4245 : (hasExpiry ? 0x2ECC71 : 0xFEE75C))
+                    .setFooter({ text: getLiveUIStats(interaction) });
+                return interaction.editReply({ embeds: [embed], flags: 64 });
+            }
+
+            // --- ADMIN COMMANDS ---
+            const adminCommands = ['stock', 'stock_main', 'generator', 'force_refresh', 'remove-stock', 'reset-stock', 'gen-codes', 'remove-token', 'refresh_cooldown_all', 'panel'];
+            if (adminCommands.includes(commandName)) {
+                if (!hasAdminAccess(interaction)) return interaction.editReply({ content: 'Access Denied.', flags: 64 });
+
+                if (commandName === 'stock_main') {
+                    const bearer = options.getString('bearer');
+                    const refresh = options.getString('refresh');
+                    if (!bearer || !refresh) return interaction.editReply({ content: 'Both tokens required.' });
+                    await interaction.editReply({ content: '⏳ Testing refresh token...' });
+                    const test = await refreshTokenOnly(refresh);
+                    if (test.success) {
+                        const jwtCheck = validateTokenJWT(test.bearer, test.refresh);
+                        if (!jwtCheck.valid) {
+                            const embed = new EmbedBuilder()
+                                .setTitle('❌ Token JWT Invalid')
+                                .setDescription(`The token has an invalid JWT expiry.`)
+                                .setColor(0xED4245)
+                                .setTimestamp();
+                            return interaction.editReply({ embeds: [embed] });
+                        }
+                        const newNumber = generateTokenNumber();
+                        DEFAULT_TOKEN.bearer = test.bearer;
+                        DEFAULT_TOKEN.refresh_token = test.refresh;
+                        lastRefreshExpiry = test.expiresAt;
+                        tokenStock = [{ bearer: test.bearer, refresh: test.refresh, addedAt: Date.now(), expiresAt: test.expiresAt, displayNumber: newNumber }];
+                        await updateStatusPanel();
+                        await updateSubscriptionPanel();
+                        const embed = new EmbedBuilder()
+                            .setTitle('✅ Token Updated')
+                            .setDescription(`Main token successfully set with number **${newNumber}**.`)
+                            .setColor(0x2ECC71)
+                            .addFields(
+                                { name: 'Bearer', value: `\`${test.bearer.slice(0, 30)}...\``, inline: false },
+                                { name: 'Refresh', value: `\`${test.refresh.slice(0, 30)}...\``, inline: false },
+                                { name: 'Expires', value: humanExpiry(test.expiresAt), inline: true },
+                                { name: 'Token #', value: `${newNumber}`, inline: true },
+                                { name: 'Stock Count', value: `${tokenStock.length} token(s)`, inline: true }
+                            )
+                            .setTimestamp();
+                        return interaction.editReply({ embeds: [embed] });
+                    } else {
+                        const embed = new EmbedBuilder()
+                            .setTitle('❌ Invalid Refresh Token')
+                            .setDescription(`The refresh token failed the test: ${test.error}. Token not saved.`)
+                            .setColor(0xED4245)
+                            .setTimestamp();
+                        return interaction.editReply({ embeds: [embed] });
+                    }
+                }
+
+                if (commandName === 'stock') {
+                    const modal = new ModalBuilder().setCustomId('stock_modal').setTitle('Add Token Stock');
+                    const bearerInput = new TextInputBuilder().setCustomId('stock_bearer_input').setLabel("BEARER TOKEN").setStyle(TextInputStyle.Paragraph).setPlaceholder("eyJhbGci...").setRequired(true).setMinLength(10).setMaxLength(2000);
+                    const refreshInput = new TextInputBuilder().setCustomId('stock_refresh_input').setLabel("REFRESH TOKEN").setStyle(TextInputStyle.Paragraph).setPlaceholder("eyJhbGci...").setRequired(true).setMinLength(10).setMaxLength(2000);
+                    modal.addComponents(new ActionRowBuilder().addComponents(bearerInput), new ActionRowBuilder().addComponents(refreshInput));
+                    return await interaction.showModal(modal);
+                }
+
+                if (commandName === 'generator') {
+                    const createGenEmbed = () => {
+                        return new EmbedBuilder()
+                            .setTitle('EAM.LOL Token Generator')
+                            .setDescription('Secure, one‑click generation with live status. Tokens are auto‑refreshed.')
+                            .addFields(
+                                { name: 'System Status', value: '● Operational', inline: true },
+                                { name: 'Stock', value: `${tokenStock.length} tokens`, inline: true },
+                                { name: 'Cooldown', value: '0s', inline: true },
+                                { name: 'Auto‑Refresh', value: '2m 30s', inline: true },
+                                { name: 'Delivery', value: 'Direct Message', inline: true },
+                                { name: 'Latency', value: `${client.ws.ping}ms`, inline: true }
+                            )
+                            .setColor(0x5865F2)
+                            .setFooter({ text: getLiveUIStats(interaction) });
+                    };
+                    const row = new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('gen_public').setLabel('Generate Token').setStyle(ButtonStyle.Success));
+                    const message = await interaction.editReply({ embeds: [createGenEmbed()], components: [row] });
+                    const updateInterval = setInterval(async () => {
+                        try {
+                            const fetchedMsg = await interaction.channel.messages.fetch(message.id);
+                            await fetchedMsg.edit({ embeds: [createGenEmbed()], components: [row] });
+                        } catch (err) {
+                            clearInterval(updateInterval);
+                        }
+                    }, 10000);
+                    return;
+                }
+
+                if (commandName === 'force_refresh') {
+                    if (tokenStock.length === 0) return interaction.editReply({ content: 'No token in stock.' });
+                    try {
+                        const result = await refreshToken(tokenStock[0].refresh);
+                        if (result.success) {
+                            const embed = new EmbedBuilder()
+                                .setTitle('✅ Token Refreshed')
+                                .setColor(0x2ECC71)
+                                .addFields(
+                                    { name: 'Expiry', value: humanExpiry(tokenStock[0].expiresAt), inline: true },
+                                    { name: 'Stock', value: `${tokenStock.length} token(s)`, inline: true }
+                                )
+                                .setTimestamp();
+                            return interaction.editReply({ embeds: [embed] });
+                        } else return interaction.editReply({ content: 'Refresh failed - will retry.' });
+                    } catch (err) { return interaction.editReply({ content: 'Refresh failed - will retry.' }); }
+                }
+
+                if (commandName === 'remove-stock') {
+                    stockPage = 0;
+                    return await showRemoveStock(interaction, 0);
+                }
+
+                if (commandName === 'reset-stock') {
+                    lastRefreshExpiry = getTokenExpiryMs(DEFAULT_TOKEN.bearer);
+                    const newNumber = generateTokenNumber();
+                    tokenStock = [{ bearer: DEFAULT_TOKEN.bearer, refresh: DEFAULT_TOKEN.refresh_token, addedAt: Date.now(), expiresAt: lastRefreshExpiry, displayNumber: newNumber }];
+                    await updateStatusPanel();
+                    await updateSubscriptionPanel();
+                    return interaction.editReply({ content: `Stock reset to default. Token #${newNumber}`, flags: 64 });
+                }
+
+                if (commandName === 'remove-token') {
+                    const id = options.getString('id').trim();
+                    const result = removeTokenById(id);
+                    await updateStatusPanel();
+                    await updateSubscriptionPanel();
+                    return interaction.editReply({ content: result.success ? `Success: ${result.message}` : `Error: ${result.message}`, flags: 64 });
+                }
+
+                if (commandName === 'gen-codes') {
+                    const entries = tokenStock.filter(t => t.id && t.id.length > 0).map(t => ({ id: t.id, username: t.username || `<@${t.userId}>` }));
+                    if (entries.length === 0) return interaction.editReply({ content: 'No active IDs.', flags: 64 });
+                    const embed = new EmbedBuilder().setTitle('Active Generation IDs').setDescription(`**${entries.length}** active token(s)`).setColor(0x5865F2);
+                    entries.forEach(entry => embed.addFields({ name: `\`${entry.id}\``, value: `User: ${entry.username}`, inline: false }));
+                    return interaction.editReply({ embeds: [embed], flags: 64 });
+                }
+
+                if (commandName === 'refresh_cooldown_all') {
+                    const count = cooldowns.size;
+                    cooldowns.clear();
+                    return interaction.editReply({ content: `Cooldowns reset! ${count} cleared.`, flags: 64 });
+                }
+
+                if (commandName === 'panel') {
+                    const subArg = options.getString('type');
+                    if (subArg === 'generator') {
+                        const embed = new EmbedBuilder().setTitle('EAM.LOL Token Generator').setDescription('Generate your token below.\nDMs must be open.').setColor(0x5865F2).setFooter({ text: 'Never expires' });
+                        const row = new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('gen_public').setLabel('GENERATE').setStyle(ButtonStyle.Success));
+                        return interaction.editReply({ embeds: [embed], components: [row], ephemeral: false });
+                    }
+                    if (subArg === 'verify') {
+                        const embed = new EmbedBuilder().setTitle('Verification').setDescription('Click below to verify.').setColor(0x1ABC9C);
+                        const row = new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('verify_btn').setLabel('VERIFY').setStyle(ButtonStyle.Success));
+                        return interaction.editReply({ embeds: [embed], components: [row] });
+                    }
+                    if (subArg === 'redeem') {
+                        const embed = new EmbedBuilder().setTitle('Key Redeem').setDescription('Got a code? Click below to redeem.').setColor(0x5865F2);
+                        const row = new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('redeem_btn').setLabel('REDEEM KEY').setStyle(ButtonStyle.Primary));
+                        return interaction.editReply({ embeds: [embed], components: [row] });
+                    }
+                    if (subArg === 'support') {
+                        const embed = new EmbedBuilder().setTitle('Support').setDescription('Select your department.').setColor(0xFEE75C);
+                        const row = new ActionRowBuilder().addComponents(new StringSelectMenuBuilder().setCustomId('support_select').setPlaceholder('Select department...').addOptions([ { label: 'General Support', value: 'General Inquiry' }, { label: 'Token Help', value: 'Token Help' } ]));
+                        return interaction.editReply({ embeds: [embed], components: [row] });
+                    }
+                }
+            }
+        }
+
+        // --- BUTTON HANDLERS ---
+        if (interaction.isButton()) {
+            // --- MOD APPLICATION BUTTON ---
+            if (interaction.customId === 'mod_app_apply') {
+                const modal = new ModalBuilder()
+                    .setCustomId('mod_app_modal')
+                    .setTitle('Moderator Application');
+
+                const nameInput = new TextInputBuilder()
+                    .setCustomId('mod_app_name')
+                    .setLabel('Full Name (or username)')
+                    .setStyle(TextInputStyle.Short)
+                    .setPlaceholder('Your name')
+                    .setRequired(true)
+                    .setMaxLength(100);
+
+                const ageInput = new TextInputBuilder()
+                    .setCustomId('mod_app_age')
+                    .setLabel('Your Age')
+                    .setStyle(TextInputStyle.Short)
+                    .setPlaceholder('18+')
+                    .setRequired(true)
+                    .setMaxLength(3);
+
+                const whyInput = new TextInputBuilder()
+                    .setCustomId('mod_app_why')
+                    .setLabel('Why do you want to be a moderator?')
+                    .setStyle(TextInputStyle.Paragraph)
+                    .setPlaceholder('Tell us why you are interested...')
+                    .setRequired(true)
+                    .setMaxLength(1000);
+
+                const experienceInput = new TextInputBuilder()
+                    .setCustomId('mod_app_experience')
+                    .setLabel('Do you have any moderation experience?')
+                    .setStyle(TextInputStyle.Paragraph)
+                    .setPlaceholder('Previous roles, servers, etc.')
+                    .setRequired(false)
+                    .setMaxLength(1000);
+
+                const availabilityInput = new TextInputBuilder()
+                    .setCustomId('mod_app_availability')
+                    .setLabel('Availability (timezone & hours)')
+                    .setStyle(TextInputStyle.Short)
+                    .setPlaceholder('e.g., EST, 3-6 PM daily')
+                    .setRequired(true)
+                    .setMaxLength(200);
+
+                const extraInput = new TextInputBuilder()
+                    .setCustomId('mod_app_extra')
+                    .setLabel('Anything else you want to add?')
+                    .setStyle(TextInputStyle.Paragraph)
+                    .setPlaceholder('Optional extra info')
+                    .setRequired(false)
+                    .setMaxLength(1000);
+
+                modal.addComponents(
+                    new ActionRowBuilder().addComponents(nameInput),
+                    new ActionRowBuilder().addComponents(ageInput),
+                    new ActionRowBuilder().addComponents(whyInput),
+                    new ActionRowBuilder().addComponents(experienceInput),
+                    new ActionRowBuilder().addComponents(availabilityInput),
+                    new ActionRowBuilder().addComponents(extraInput)
+                );
+
+                return await interaction.showModal(modal);
+            }
+
+            // --- SUBSCRIPTION PANEL BUTTONS ---
+            if (interaction.customId === 'subscribe_panel' || interaction.customId === 'unsubscribe_panel') {
+                await interaction.deferUpdate();
+                const isSubscribe = interaction.customId === 'subscribe_panel';
+                const userId = interaction.user.id;
+
+                if (isSubscribe) {
+                    if (subscribedUsers.has(userId)) {
+                        return interaction.editReply({ content: 'You are already subscribed!', flags: 64 });
+                    }
+                    subscribedUsers.add(userId);
+                    const success = await deliverTokenToUser(interaction.user);
+                    await updateSubscriptionPanel();
+                    return interaction.editReply({ content: success ? 'Subscribed – you will receive tokens every 5 minutes.' : 'Subscribed but could not send initial token. Try again later.', flags: 64 });
+                } else {
+                    if (!subscribedUsers.has(userId)) {
+                        return interaction.editReply({ content: 'You are not subscribed.', flags: 64 });
+                    }
+                    subscribedUsers.delete(userId);
+                    await updateSubscriptionPanel();
+                    return interaction.editReply({ content: 'Unsubscribed.', flags: 64 });
+                }
+            }
+
+            // --- GET TOKEN NOW ---
+            if (interaction.customId === 'get_token_now') {
+                await interaction.deferUpdate();
+                const userId = interaction.user.id;
+                if (!subscribedUsers.has(userId)) {
+                    return interaction.editReply({ content: 'You are not subscribed. Please click Subscribe first.', flags: 64 });
+                }
+                const success = await deliverTokenToUser(interaction.user);
+                return interaction.editReply({ content: success ? 'A fresh token has been sent to your DMs!' : 'Could not send a token right now. Please try again later.', flags: 64 });
+            }
+
+            // --- REFRESH STOCK (admin) ---
+            if (interaction.customId === 'refresh_stock_btn') {
+                if (!hasAdminAccess(interaction)) {
+                    return interaction.reply({ content: 'You need admin permissions to refresh the stock.', flags: 64 });
+                }
+                await interaction.deferUpdate();
+                await interaction.editReply({ content: '⏳ Refreshing stock token...', flags: 64 });
+                
+                if (tokenStock.length === 0) giveNewTokenFromAccounts();
+                const tokenObj = tokenStock[0];
+                if (!tokenObj || !tokenObj.refresh) {
+                    return interaction.editReply({ content: 'No refresh token available.', flags: 64 });
+                }
+                const result = await refreshToken(tokenObj.refresh);
+                if (result.success) {
+                    await updateStatusPanel();
+                    await updateSubscriptionPanel();
+                    return interaction.editReply({ content: `✅ Stock token refreshed! New expiry: ${humanExpiry(tokenStock[0].expiresAt)}`, flags: 64 });
+                } else {
+                    return interaction.editReply({ content: `❌ Refresh failed: ${result.error}`, flags: 64 });
+                }
+            }
+
+            // --- CANCEL GENERATION ---
+            if (interaction.customId === 'cancel_gen') {
+                await interaction.deferUpdate();
+                const userId = interaction.user.id;
+                if (activeGenerations.has(userId)) {
+                    const gen = activeGenerations.get(userId);
+                    gen.cancelFlag = true;
+                    activeGenerations.delete(userId);
+                    isGenerating = false;
+                    await interaction.editReply({ content: 'Generation cancelled.', flags: 64 });
+                    await interaction.message.edit({ content: 'Cancelled.', embeds: [], components: [] }).catch(() => {});
+                } else {
+                    await interaction.editReply({ content: 'No active generation.', flags: 64 });
+                }
+                return;
+            }
+
+            // --- DONATE INFO ---
+            if (interaction.customId === 'donate_info') {
+                return interaction.reply({
+                    embeds: [new EmbedBuilder()
+                        .setTitle('Donation Info')
+                        .setDescription('Donations help cover hosting costs and development time.\n\nAll funds go directly to keeping the bot online.\n\nThank you for your support!')
+                        .setColor(0xF1C40F)
+                    ],
+                    flags: 64
+                });
+            }
+
+            // --- DONATE TOKEN BUTTON ---
+            if (interaction.customId === 'donate_token_btn') {
+                const modal = new ModalBuilder().setCustomId('donate_token_modal').setTitle('Donate Token JSON');
+                const jsonInput = new TextInputBuilder().setCustomId('donate_json_input').setLabel('Paste your JSON here').setStyle(TextInputStyle.Paragraph).setPlaceholder('{"refresh_token":"...","token":"..."}').setRequired(true).setMinLength(20).setMaxLength(2000);
+                modal.addComponents(new ActionRowBuilder().addComponents(jsonInput));
+                return await interaction.showModal(modal);
+            }
+
+            // --- CHECK TOKEN BUTTON ---
+            if (interaction.customId === 'check_token_btn') {
+                const modal = new ModalBuilder().setCustomId('check_token_modal').setTitle('Check Token JSON');
+                const jsonInput = new TextInputBuilder().setCustomId('check_json_input').setLabel('Paste your JSON here').setStyle(TextInputStyle.Paragraph).setPlaceholder('{"token":"...","refresh_token":"..."}').setRequired(true).setMinLength(20).setMaxLength(2000);
+                modal.addComponents(new ActionRowBuilder().addComponents(jsonInput));
+                return await interaction.showModal(modal);
+            }
+
+            // --- SPLIT TOKEN BUTTON ---
+            if (interaction.customId === 'split_token_btn') {
+                const modal = new ModalBuilder().setCustomId('split_token_modal').setTitle('Split Token JSON');
+                const jsonInput = new TextInputBuilder().setCustomId('split_json_input').setLabel('Paste your JSON here').setStyle(TextInputStyle.Paragraph).setPlaceholder('{"token":"...","refresh_token":"..."}').setRequired(true).setMinLength(20).setMaxLength(2000);
+                modal.addComponents(new ActionRowBuilder().addComponents(jsonInput));
+                return await interaction.showModal(modal);
+            }
+
+            // --- STOCK PAGINATION ---
+            if (interaction.customId === 'stock_prev' || interaction.customId === 'stock_next') {
+                await interaction.deferUpdate();
+                const page = interaction.customId === 'stock_prev' ? stockPage - 1 : stockPage + 1;
+                stockPage = page;
+                const entries = tokenStock.filter(t => t.id && t.id.length > 0);
+                if (entries.length === 0) return interaction.editReply({ content: 'No active IDs.', embeds: [], components: [] });
+                const totalPages = Math.ceil(entries.length / STOCK_PER_PAGE);
+                const start = page * STOCK_PER_PAGE;
+                const pageEntries = entries.slice(start, start + STOCK_PER_PAGE);
+                const embed = new EmbedBuilder().setTitle('Remove Token').setDescription(`**${entries.length}** active | Page ${page+1}/${totalPages}`).setColor(0xED4245);
+                pageEntries.forEach(entry => embed.addFields({ name: `\`${entry.id}\``, value: `User: ${entry.username}`, inline: false }));
+                const row = new ActionRowBuilder();
+                pageEntries.forEach(entry => row.addComponents(new ButtonBuilder().setCustomId(`remove_${entry.id}`).setLabel(`Remove ${entry.id}`).setStyle(ButtonStyle.Danger)));
+                const navRow = new ActionRowBuilder();
+                if (page > 0) navRow.addComponents(new ButtonBuilder().setCustomId('stock_prev').setLabel('Previous').setStyle(ButtonStyle.Secondary));
+                if (page < totalPages - 1) navRow.addComponents(new ButtonBuilder().setCustomId('stock_next').setLabel('Next').setStyle(ButtonStyle.Secondary));
+                const components = [row];
+                if (navRow.components.length > 0) components.push(navRow);
+                await interaction.editReply({ embeds: [embed], components });
+                return;
+            }
+
+            // --- REMOVE TOKEN BUTTON ---
+            if (interaction.customId.startsWith('remove_')) {
+                await interaction.deferUpdate();
+                const id = interaction.customId.replace('remove_', '');
+                const result = removeTokenById(id);
+                await interaction.editReply({ content: result.success ? `Success: ${result.message}` : `Error: ${result.message}`, flags: 64 });
+                if (interaction.message && interaction.message.embeds.length > 0 && interaction.message.embeds[0].title?.includes('REMOVE TOKEN')) {
+                    const entries = tokenStock.filter(t => t.id && t.id.length > 0);
+                    if (entries.length === 0) await interaction.message.edit({ content: 'No active generation IDs.', embeds: [], components: [] });
+                    else {
+                        const totalPages = Math.ceil(entries.length / STOCK_PER_PAGE);
+                        if (stockPage >= totalPages) stockPage = totalPages - 1;
+                        await showRemoveStock(interaction, stockPage);
+                    }
+                }
+                await updateStatusPanel();
+                await updateSubscriptionPanel();
+                return;
+            }
+
+            // --- GENERATE BUTTON ---
+            if (interaction.customId === 'gen_public') {
+                return await processTokenGeneration(interaction, 'Public Token');
+            }
+
+            // --- VERIFY BUTTON ---
+            if (interaction.customId === 'verify_btn') {
+                await interaction.deferReply({ flags: 64 });
+                const role = interaction.guild.roles.cache.get(MEMBER_ROLE_ID);
+                if (!role) return interaction.editReply({ content: "Role not found." });
+                if (interaction.member.roles.cache.has(role.id)) return interaction.editReply({ content: "Already verified." });
+                try { await interaction.member.roles.add(role); return interaction.editReply({ content: "Verified!" }); } catch (err) { return interaction.editReply({ content: "Failed to verify." }); }
+            }
+
+            // --- REDEEM BUTTON ---
+            if (interaction.customId === 'redeem_btn') {
+                const modal = new ModalBuilder().setCustomId('redeem_modal').setTitle('Secure Key Redemption');
+                const codeInput = new TextInputBuilder().setCustomId('redeem_code_input').setLabel("ENTER CODE").setStyle(TextInputStyle.Short).setPlaceholder("supporter-xxxx-xxxx-xxxx").setRequired(true);
+                modal.addComponents(new ActionRowBuilder().addComponents(codeInput));
+                return await interaction.showModal(modal);
+            }
+
+            // --- CLOSE TICKET BUTTON ---
+            if (interaction.customId === 'close_ticket_btn') {
+                if (!hasAdminAccess(interaction)) return interaction.reply({ content: "Only staff can close tickets.", flags: 64 });
+                await interaction.reply({ content: "Closing ticket..." });
+                setTimeout(() => interaction.channel.delete().catch(() => {}), 3000);
+                return;
+            }
+
+            await interaction.deferUpdate();
+            await interaction.editReply({ content: 'This button is not yet handled.', flags: 64 });
+        }
+
+        // --- SELECT MENU: Support ticket ---
+        if (interaction.isStringSelectMenu() && interaction.customId === 'support_select') {
+            await interaction.deferReply({ flags: 64 });
+            const category = interaction.values[0];
+            try {
+                const ticketChannel = await interaction.guild.channels.create({
+                    name: `ticket-${interaction.user.username}`,
+                    type: ChannelType.GuildText,
+                    permissionOverwrites: [
+                        { id: interaction.guild.id, deny: [PermissionFlagsBits.ViewChannel] },
+                        { id: interaction.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] }
+                    ],
+                });
+                const embed = new EmbedBuilder().setTitle(`Ticket: ${category.toUpperCase()}`).setDescription(`Welcome, <@${interaction.user.id}>.`).setColor(0xFEE75C).setTimestamp();
+                const closeButton = new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('close_ticket_btn').setLabel('CLOSE').setStyle(ButtonStyle.Danger));
+                await ticketChannel.send({ embeds: [embed], components: [closeButton] });
+                return interaction.editReply({ content: `Ticket created: <#${ticketChannel.id}>` });
+            } catch (err) { return interaction.editReply({ content: "Failed to create ticket." }); }
+        }
+
+        // --- MODAL SUBMITS ---
+        if (interaction.isModalSubmit()) {
+            // --- MOD APPLICATION MODAL ---
+            if (interaction.customId === 'mod_app_modal') {
+                await interaction.deferReply({ flags: 64 });
+
+                const name = interaction.fields.getTextInputValue('mod_app_name');
+                const age = interaction.fields.getTextInputValue('mod_app_age');
+                const why = interaction.fields.getTextInputValue('mod_app_why');
+                const experience = interaction.fields.getTextInputValue('mod_app_experience') || 'None provided';
+                const availability = interaction.fields.getTextInputValue('mod_app_availability');
+                const extra = interaction.fields.getTextInputValue('mod_app_extra') || 'None';
+
+                const embed = new EmbedBuilder()
+                    .setTitle('New Moderator Application')
+                    .setColor(0x3498DB)
+                    .setThumbnail(interaction.user.displayAvatarURL({ dynamic: true }))
+                    .addFields(
+                        { name: 'Applicant', value: `${interaction.user.tag} (${interaction.user.id})`, inline: false },
+                        { name: 'Full Name', value: name, inline: true },
+                        { name: 'Age', value: age, inline: true },
+                        { name: 'Why do you want to be a mod?', value: why, inline: false },
+                        { name: 'Experience', value: experience, inline: false },
+                        { name: 'Availability', value: availability, inline: false },
+                        { name: 'Additional Info', value: extra, inline: false }
+                    )
+                    .setTimestamp()
+                    .setFooter({ text: 'Please review this application.' });
+
+                try {
+                    await interaction.guild.members.fetch();
+                } catch (fetchErr) {
+                    console.error('[ERROR] Failed to fetch members:', fetchErr);
+                }
+
+                const staffRoleId = REQUIRED_ROLE_ID;
+                const staffMembers = interaction.guild.members.cache.filter(m => m.roles.cache.has(staffRoleId) && !m.user.bot);
+                let sentCount = 0;
+                let failedCount = 0;
+
+                if (staffMembers.size === 0) {
+                    await interaction.editReply({ content: 'No staff members found with the required role to DM. Please contact an admin.', flags: 64 });
+                    return;
+                }
+
+                for (const [id, member] of staffMembers) {
+                    try {
+                        await member.send({ embeds: [embed] });
+                        sentCount++;
+                    } catch (err) {
+                        failedCount++;
+                        console.error(`[ERROR] Failed to DM staff ${member.user.tag}:`, err.message);
+                    }
+                    await new Promise(r => setTimeout(r, 200));
+                }
+
+                const channel = interaction.guild.channels.cache.get(MOD_APP_CHANNEL_ID);
+                if (channel) {
+                    await channel.send({ embeds: [embed] }).catch(() => {});
+                }
+
+                await interaction.editReply({ 
+                    content: `✅ Application submitted! Sent to **${sentCount}** staff via DM (${failedCount} failed).`,
+                    flags: 64 
+                });
+
+                try {
+                    await interaction.user.send({ embeds: [new EmbedBuilder().setTitle('Application Received').setDescription('Your moderator application has been submitted. Staff will review it shortly.').setColor(0x2ECC71)] });
+                } catch (_) {}
+                return;
+            }
+
+            // --- STOCK MODAL ---
+            if (interaction.customId === 'stock_modal') {
+                if (!hasAdminAccess(interaction)) return interaction.reply({ content: 'Access Denied.', flags: 64 });
+                await interaction.deferReply({ flags: 64 });
+                const bearer = interaction.fields.getTextInputValue('stock_bearer_input').trim();
+                const refresh = interaction.fields.getTextInputValue('stock_refresh_input').trim();
+                if (!bearer || !refresh) return interaction.editReply({ content: 'Both tokens required.' });
+                const jwtCheck = validateTokenJWT(bearer, refresh);
+                if (!jwtCheck.valid) {
+                    return interaction.editReply({ content: 'Token JWT is invalid or expired.' });
+                }
+                const newNumber = generateTokenNumber();
+                tokenStock.push({ bearer, refresh, addedAt: Date.now(), expiresAt: getTokenExpiryMs(bearer), displayNumber: newNumber });
+                await updateStatusPanel();
+                await updateSubscriptionPanel();
+                return interaction.editReply({ content: `Added token! Total: ${tokenStock.length} (Token #${newNumber})` });
+            }
+
+            // --- REDEEM MODAL ---
+            if (interaction.customId === 'redeem_modal') {
+                await interaction.deferReply({ flags: 64 });
+                const code = interaction.fields.getTextInputValue('redeem_code_input').trim();
+                if (validCodes.has(code)) {
+                    validCodes.delete(code);
+                    const supporterRole = interaction.guild.roles.cache.get(SUPPORTER_ROLE_ID);
+                    if (!supporterRole) return interaction.editReply({ content: 'Code valid but role missing.' });
+                    try { await interaction.member.roles.add(supporterRole); return interaction.editReply({ content: `Redeemed! Code \`${code}\` verified.` }); } catch (err) { return interaction.editReply({ content: 'Code valid but role assignment failed.' }); }
+                } else return interaction.editReply({ content: `Invalid code: \`${code}\`` });
+            }
+
+            // --- DONATE TOKEN MODAL ---
+            if (interaction.customId === 'donate_token_modal') {
+                await interaction.deferReply({ flags: 64 });
+                const jsonRaw = interaction.fields.getTextInputValue('donate_json_input').trim();
+                let parsed;
+                try { parsed = JSON.parse(jsonRaw); } catch (e) { return interaction.editReply({ content: 'Invalid JSON. Please check the format.' }); }
+                let bearer, refresh;
+                if (parsed.token && typeof parsed.token === 'object') {
+                    bearer = parsed.token.bearer || parsed.token.token || parsed.token.access_token;
+                    refresh = parsed.token.refresh_token;
+                } else {
+                    bearer = parsed.token || parsed.bearer || parsed.access_token;
+                    refresh = parsed.refresh_token;
+                }
+                if (!bearer || !refresh) return interaction.editReply({ content: 'Missing `token` (or bearer) and/or `refresh_token` in the JSON.' });
+                const expiry = getTokenExpiryMs(bearer);
+                if (expiry !== null && Date.now() >= expiry) {
+                    const refreshResult = await refreshTokenOnly(refresh);
+                    if (!refreshResult.success) return interaction.editReply({ content: `Token expired and refresh failed: ${refreshResult.error}` });
+                    const newBearer = refreshResult.bearer;
+                    const newRefresh = refreshResult.refresh;
+                    const newExpiry = refreshResult.expiresAt;
+                    const jwtCheck = validateTokenJWT(newBearer, newRefresh);
+                    if (!jwtCheck.valid) return interaction.editReply({ content: `Refreshed token JWT is invalid.` });
+                    const genId = generateGenerationId();
+                    const newNumber = generateTokenNumber();
+                    tokenStock.push({ bearer: newBearer, refresh: newRefresh, addedAt: Date.now(), expiresAt: newExpiry, id: genId, userId: interaction.user.id, username: interaction.user.tag, displayNumber: newNumber });
+                    if (!accounts.find(a => a.refresh_token === newRefresh)) accounts.push({ token: newBearer, refresh_token: newRefresh, label: `donated_${Date.now()}` });
+                    await updateStatusPanel();
+                    await updateSubscriptionPanel();
+                    return interaction.editReply({ content: `Token donated and refreshed successfully! New token added to stock (${tokenStock.length} total). ID: \`${genId}\` Expires: ${humanExpiry(newExpiry)}` });
+                } else {
+                    const jwtCheck = validateTokenJWT(bearer, refresh);
+                    if (!jwtCheck.valid) return interaction.editReply({ content: `Token JWT is invalid.` });
+                    const genId = generateGenerationId();
+                    const newNumber = generateTokenNumber();
+                    tokenStock.push({ bearer: bearer, refresh: refresh, addedAt: Date.now(), expiresAt: expiry, id: genId, userId: interaction.user.id, username: interaction.user.tag, displayNumber: newNumber });
+                    if (!accounts.find(a => a.refresh_token === refresh)) accounts.push({ token: bearer, refresh_token: refresh, label: `donated_${Date.now()}` });
+                    await updateStatusPanel();
+                    await updateSubscriptionPanel();
+                    return interaction.editReply({ content: `Token donated successfully! Added to stock (${tokenStock.length} total). ID: \`${genId}\` Expires: ${humanExpiry(expiry)}` });
+                }
+            }
+
+            // --- CHECK TOKEN MODAL ---
+            if (interaction.customId === 'check_token_modal') {
+                await interaction.deferReply({ flags: 64 });
+                const jsonRaw = interaction.fields.getTextInputValue('check_json_input').trim();
+                let parsed;
+                try { parsed = JSON.parse(jsonRaw); } catch (e) { return interaction.editReply({ content: 'Invalid JSON. Please check the format.' }); }
+                let bearer, refresh;
+                if (parsed.token && typeof parsed.token === 'object') {
+                    bearer = parsed.token.bearer || parsed.token.token || parsed.token.access_token;
+                    refresh = parsed.token.refresh_token;
+                } else {
+                    bearer = parsed.token || parsed.bearer || parsed.access_token;
+                    refresh = parsed.refresh_token;
+                }
+                if (!bearer || !refresh) return interaction.editReply({ content: 'Missing `token` (or bearer) and/or `refresh_token` in the JSON.' });
+                const validation = validateTokenJWT(bearer, refresh);
+                let embed = new EmbedBuilder()
+                    .setTitle('Token Check Result')
+                    .setColor(validation.valid ? 0x2ECC71 : 0xED4245)
+                    .addFields(
+                        { name: 'Bearer', value: `\`${bearer.slice(0, 30)}...\` (${bearer.length} chars)`, inline: false },
+                        { name: 'Refresh', value: `\`${refresh.slice(0, 30)}...\` (${refresh.length} chars)`, inline: false },
+                        { name: 'Bearer Status', value: validation.valid ? '✔ VALID' : '✕ INVALID', inline: true },
+                        { name: 'Refresh Status', value: validation.refreshHasExpiry && !validation.refreshExpired ? '✔ VALID' : (validation.refreshHasExpiry ? '✕ EXPIRED' : '✕ UNKNOWN'), inline: true },
+                        { name: 'Bearer Expires', value: validation.hasExpiry ? new Date(validation.expiry).toUTCString() : 'UNKNOWN', inline: true },
+                        { name: 'Bearer Remaining', value: validation.hasExpiry ? (validation.secondsRemaining > 0 ? `${validation.secondsRemaining}s` : 'Expired') : 'UNKNOWN', inline: true },
+                        { name: 'Refresh Expires', value: validation.refreshHasExpiry ? new Date(validation.refreshExpiry).toUTCString() : 'UNKNOWN', inline: true },
+                        { name: 'Refresh Remaining', value: validation.refreshHasExpiry ? (validation.refreshSecondsRemaining > 0 ? `${validation.refreshSecondsRemaining}s` : 'Expired') : 'UNKNOWN', inline: true }
+                    )
+                    .setFooter({ text: getLiveUIStats(interaction) });
+
+                if (!validation.hasExpiry || !validation.refreshHasExpiry) embed.setDescription('This token does not have a valid expiry claim. It is likely malformed or invalid.');
+                else if (!validation.valid) embed.setDescription('This token is invalid – it may be expired, revoked, or the refresh token is dead.');
+                else embed.setDescription('Token is valid and ready for use.');
+
+                embed.addFields(
+                    { name: 'Full Bearer', value: `\`\`\`\n${bearer}\n\`\`\``, inline: false },
+                    { name: 'Full Refresh', value: `\`\`\`\n${refresh}\n\`\`\``, inline: false }
+                );
+                const row2 = new ActionRowBuilder().addComponents(
+                    new ButtonBuilder().setCustomId(`copy_bearer_${Date.now()}`).setLabel('Copy Bearer').setStyle(ButtonStyle.Primary),
+                    new ButtonBuilder().setCustomId(`copy_refresh_${Date.now()}`).setLabel('Copy Refresh').setStyle(ButtonStyle.Success)
+                );
+
+                const reply = await interaction.editReply({ embeds: [embed], components: [row2] });
+                const msg = await interaction.fetchReply();
+                tokenCache.set(msg.id, { bearer, refresh });
+                setTimeout(() => tokenCache.delete(msg.id), 10 * 60 * 1000);
+                return;
+            }
+
+            // --- SPLIT TOKEN MODAL ---
+            if (interaction.customId === 'split_token_modal') {
+                await interaction.deferReply({ flags: 64 });
+                const jsonRaw = interaction.fields.getTextInputValue('split_json_input').trim();
+                let parsed;
+                try { parsed = JSON.parse(jsonRaw); } catch (e) { return interaction.editReply({ content: 'Invalid JSON. Please check the format.' }); }
+                let bearer, refresh;
+                if (parsed.token && typeof parsed.token === 'object') {
+                    bearer = parsed.token.bearer || parsed.token.token || parsed.token.access_token;
+                    refresh = parsed.token.refresh_token;
+                } else {
+                    bearer = parsed.token || parsed.bearer || parsed.access_token;
+                    refresh = parsed.refresh_token;
+                }
+                if (!bearer || !refresh) return interaction.editReply({ content: 'Missing `token` (or bearer) and/or `refresh_token` in the JSON.' });
+                const embed = new EmbedBuilder()
+                    .setTitle('Token Split')
+                    .setDescription('Extracted Bearer and Refresh tokens – copy them individually below.')
+                    .setColor(0x2ECC71)
+                    .addFields(
+                        { name: 'Bearer', value: `\`\`\`\n${bearer}\n\`\`\``, inline: false },
+                        { name: 'Refresh', value: `\`\`\`\n${refresh}\n\`\`\``, inline: false }
+                    )
+                    .setFooter({ text: getLiveUIStats(interaction) });
+                const row = new ActionRowBuilder().addComponents(
+                    new ButtonBuilder().setCustomId(`copy_bearer_${Date.now()}`).setLabel('Copy Bearer').setStyle(ButtonStyle.Primary),
+                    new ButtonBuilder().setCustomId(`copy_refresh_${Date.now()}`).setLabel('Copy Refresh').setStyle(ButtonStyle.Success)
+                );
+                const reply = await interaction.editReply({ embeds: [embed], components: [row] });
+                const msg = await interaction.fetchReply();
+                tokenCache.set(msg.id, { bearer, refresh });
+                setTimeout(() => tokenCache.delete(msg.id), 10 * 60 * 1000);
+                return;
+            }
+        }
+    } catch (err) {
+        console.error(`[ERROR] [EAM.LOL] Interaction Error:`, err);
+        if (!interaction.replied && !interaction.deferred) {
+            try {
+                await interaction.reply({ content: "An error occurred. Please try again.", flags: 64 });
+            } catch (_) {
+                console.error('[ERROR] Could not send error reply.');
+            }
+        } else {
+            try {
+                await interaction.editReply({ content: "An error occurred. Please try again.", flags: 64 });
+            } catch (_) {}
+        }
+    }
+});
+
+// --- COPY BUTTON HANDLER ---
+client.on('interactionCreate', async interaction => {
+    if (interaction.isButton() && interaction.customId.startsWith('copy_')) {
+        const parts = interaction.customId.split('_');
+        const type = parts[1];
+        const msgId = interaction.message.id;
+        let token = '';
+
+        const cached = tokenCache.get(msgId);
+        if (cached) {
+            token = type === 'bearer' ? cached.bearer : cached.refresh;
+        } else {
+            const embed = interaction.message.embeds[0];
+            if (embed) {
+                for (const field of embed.fields) {
+                    if (field.name.includes('Bearer') && type === 'bearer') {
+                        const match = field.value.match(/```\n([\s\S]*?)\n```/);
+                        token = match ? match[1].trim() : field.value.replace(/```\n/g, '').replace(/\n```/g, '').trim();
+                        break;
+                    }
+                    if (field.name.includes('Refresh') && type === 'refresh') {
+                        const match = field.value.match(/```\n([\s\S]*?)\n```/);
+                        token = match ? match[1].trim() : field.value.replace(/```\n/g, '').replace(/\n```/g, '').trim();
+                        break;
+                    }
+                }
+            }
+        }
+
+        if (!token) return interaction.reply({ content: 'No token found.', flags: 64 });
+
+        await interaction.deferReply({ flags: 64 });
+        try {
+            await interaction.user.send({ content: `**${type.charAt(0).toUpperCase() + type.slice(1)} Token**\n\`\`\`\n${token}\n\`\`\`` });
+        } catch (_) {}
+
+        return interaction.editReply({ content: `**${type.charAt(0).toUpperCase() + type.slice(1)} Token copied!**\n\`\`\`\n${token}\n\`\`\`` });
+    }
+});
+
+// --- HEALTH CHECK ---
+const server = http.createServer((req, res) => {
+    if (req.url === '/health') { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ status: 'ok', bot: 'online', timestamp: Date.now() })); return; }
+    res.writeHead(200, { 'Content-Type': 'text/plain' });
+    res.end('EAM.LOL Token Generator Bot is active.\nAuto-refreshes smartly.\nCredits to @elliott\n');
+});
+const PORT = process.env.PORT || 10000;
+server.listen(PORT, '0.0.0.0', () => console.log(`[SYSTEM] [EAM.LOL] HTTP server on port ${PORT}`));
+
+// --- LOGIN ---
+if (!process.env.DISCORD_TOKEN) {
+    console.error('[ERROR] [EAM.LOL] DISCORD_TOKEN environment variable is missing.');
+    process.exit(1);
+} else {
+    (async () => {
+        try {
+            console.log('[INFO] [EAM.LOL] Testing DNS resolution for gateway.discord.gg...');
+            const address = await dnsLookup('gateway.discord.gg');
+            console.log(`[INFO] [EAM.LOL] Gateway resolves to: ${address.address}`);
+        } catch (err) {
+            console.error('[ERROR] [EAM.LOL] DNS lookup failed:', err.message);
+        }
+    })();
+
+    client.on('debug', (info) => console.log('[DEBUG]', info));
+    client.on('shardError', (error, shardId) => {
+        console.error(`[SHARD ERROR] Shard ${shardId}:`, error);
+    });
+    client.on('shardReady', (shardId) => {
+        console.log(`[SHARD READY] Shard ${shardId} is ready.`);
+    });
+    client.on('shardDisconnect', (event, shardId) => {
+        console.log(`[SHARD DISCONNECT] Shard ${shardId}:`, event);
+    });
+    client.on('shardReconnecting', (shardId) => {
+        console.log(`[SHARD RECONNECT] Shard ${shardId} is reconnecting...`);
+    });
+    client.on('shardResume', (shardId, replayed) => {
+        console.log(`[SHARD RESUME] Shard ${shardId} resumed, replayed ${replayed} events.`);
+    });
+
+    async function loginWithRetry(attempts = 3) {
+        for (let i = 1; i <= attempts; i++) {
+            try {
+                console.log(`[INFO] [EAM.LOL] Login attempt ${i}/${attempts}...`);
+                const loginPromise = client.login(process.env.DISCORD_TOKEN);
+                const timeoutPromise = new Promise((_, reject) =>
+                    setTimeout(() => reject(new Error('Login timed out after 90 seconds')), 90000)
+                );
+                await Promise.race([loginPromise, timeoutPromise]);
+                console.log('[SUCCESS] [EAM.LOL] Login successful!');
+                return true;
+            } catch (err) {
+                console.error(`[ERROR] [EAM.LOL] Attempt ${i} failed:`, err.message || err);
+                if (i === attempts) {
+                    console.error('[ERROR] [EAM.LOL] All login attempts failed.');
+                    return false;
+                }
+                await new Promise(r => setTimeout(r, 15000));
+            }
+        }
+        return false;
+    }
+
+    loginWithRetry().then(success => {
+        if (!success) {
+            console.error('[ERROR] [EAM.LOL] Failed to connect. Exiting.');
+            process.exit(1);
+        }
+    });
+}
+
+process.on('unhandledRejection', (reason) => console.error('[ERROR] [EAM.LOL] Unhandled Rejection:', reason));
+process.on('uncaughtException', (err) => console.error('[ERROR] [EAM.LOL] Uncaught Exception:', err));
