@@ -12,7 +12,7 @@ import aiohttp
 import asyncpg
 
 # --- ENVIRONMENT & CONFIGURATION ---
-BOT_TOKEN = os.getenv("BOT_TOKEN", "MTU0NTUyOTA0ODQ5MzcyMzcwOQ.GaSthT.QY8BFRjG1GscSR0C1cNXp5Garozn-dOWcGTgHg")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 SERVER_KEY = "defaultkey"
 ALLOWED_GUILD_IDS = [int(x.strip()) for x in os.getenv("ALLOWED_GUILD_IDS", "1536788735616876698").split(",") if x.strip()]
 DATABASE_URL = os.getenv("DATABASE_URL")
