@@ -1,6 +1,6 @@
 // ============================================================
-// FILE: index.js – EAM.LOL Token Bot v2.4.7
-// Fixed refresh, fast subscription panel, duplicate removal.
+// FILE: index.js – EAM.LOL Token Bot v2.4.8
+// FIXES: Panel persistence + Token expiry safety guard
 // ============================================================
 
 const {
@@ -26,6 +26,8 @@ const http = require('http');
 const dns = require('dns');
 const { promisify } = require('util');
 const dnsLookup = promisify(dns.lookup);
+const fs = require('fs');
+const path = require('path');
 
 dns.setServers(['8.8.8.8', '1.1.1.1']);
 console.log('[INFO] [EAM.LOL] DNS set to Google DNS (8.8.8.8, 1.1.1.1)');
@@ -42,21 +44,22 @@ const client = new Client({
 });
 
 // --- CONFIGURATION ---
-const VERSION = "2.4.7";
+const VERSION = "2.4.8";
 const UPDATE_LOG_CHANNEL_ID = "1545829503912120431";
 const STATUS_CHANNEL_ID = "1545624109583695933";      // static name
 const TOKEN_NUMBER_CHANNEL_ID = "1546151859465756722"; // dynamic name
 const LOG_CHANNEL_ID = "1545922334534148196";
+const PANEL_DATA_FILE = path.join(__dirname, 'subscription_panel.json');
 
 const CHANGELOG = `🔧 Bot Update v${VERSION}
 
 What's new:
 • **Subscription panel updates every 5 seconds** – live token number, status, and time left.
-• **Duplicate panel removal** – only the latest subscription panel remains.
-• **Token number and validity** now shown directly on the subscription panel.
-• **Refresh token fix** – \`/set-refresh\` now properly updates the fallback accounts list.
+• **Panel persistence** – the bot remembers where the panel is after restarts and auto‑recovers if it goes missing.
+• **Safety token guard** – every 30 seconds, the bot checks the main token. If it's below 5 minutes TTL, it forces a refresh or swaps to a fallback account. No more expired tokens!
 
 What's fixed:
+• Token expiry – the bot now proactively refreshes before expiration.
 • "All accounts exhausted" error – the bot can now use the refresh token you set.
 • Logs now clearly show refresh attempts and results.`;
 
@@ -116,7 +119,7 @@ const subscribedUsers = new Set();
 const AUTO_DELIVERY_INTERVAL = 5 * 60 * 1000;
 let deliveryInterval = null;
 
-// --- Panel message tracking ---
+// --- Panel message tracking (with persistence) ---
 let subscriptionPanelMessage = null;
 let statusPanelMessage = null;
 
@@ -1227,86 +1230,39 @@ async function showRemoveStock(interaction, page = 0) {
     await interaction.reply({ embeds: [embed], components, flags: 64 });
 }
 
-// --- SLASH COMMANDS ---
-const commandsData = [
-    new SlashCommandBuilder().setName('8ball').setDescription('Ask the magic 8ball a question').addStringOption(opt => opt.setName('question').setDescription('Your question').setRequired(true)),
-    new SlashCommandBuilder().setName('help').setDescription('List all available bot commands and panels'),
-    new SlashCommandBuilder().setName('ping').setDescription('Pong - checks bot latency'),
-    new SlashCommandBuilder().setName('serverinfo').setDescription('Get info about this server'),
-    new SlashCommandBuilder().setName('token').setDescription('Generate a fresh token directly to your DMs'),
-    new SlashCommandBuilder()
-        .setName('token-meaning')
-        .setDescription('Learn what all the token terms and status icons mean'),
-    new SlashCommandBuilder()
-        .setName('fun')
-        .setDescription('Get a random fun fact or joke about Animal Company.'),
-    new SlashCommandBuilder()
-        .setName('leaderboard')
-        .setDescription('See the top 5 token generators in the server.'),
-    new SlashCommandBuilder()
-        .setName('lottery')
-        .setDescription('Enter the token lottery draw (admin draws a winner).'),
-    new SlashCommandBuilder()
-        .setName('history')
-        .setDescription('View your last 5 generated token IDs.'),
-    new SlashCommandBuilder()
-        .setName('stats')
-        .setDescription('Show bot statistics: total tokens, subscribers, uptime.'),
-    new SlashCommandBuilder().setName('stock').setDescription('Open form to add token stock').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-    new SlashCommandBuilder().setName('stock_main').setDescription('Set the main/default token').addStringOption(opt => opt.setName('bearer').setDescription('Bearer token').setRequired(true)).addStringOption(opt => opt.setName('refresh').setDescription('Refresh token').setRequired(true)).setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-    new SlashCommandBuilder().setName('set-refresh').setDescription('Update only the refresh token (tested immediately)').addStringOption(opt => opt.setName('refresh').setDescription('The new refresh token').setRequired(true)),
-    new SlashCommandBuilder().setName('test-refresh').setDescription('Test if the current refresh token works'),
-    new SlashCommandBuilder().setName('generator').setDescription('Post generator panel').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-    new SlashCommandBuilder().setName('force_refresh').setDescription('Force refresh the current token').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-    new SlashCommandBuilder().setName('remove-stock').setDescription('Remove a token by selection').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-    new SlashCommandBuilder().setName('reset-stock').setDescription('Reset stock to default token').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-    new SlashCommandBuilder().setName('gen-codes').setDescription('List all active generation IDs').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-    new SlashCommandBuilder().setName('remove-token').setDescription('Remove a specific token by ID').addStringOption(opt => opt.setName('id').setDescription('Generation ID').setRequired(true)).setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-    new SlashCommandBuilder().setName('refresh_cooldown_all').setDescription('Reset cooldown for everyone').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-    new SlashCommandBuilder().setName('panel').setDescription('Deploys interactive panels').addStringOption(opt => opt.setName('type').setDescription('Panel type').setRequired(true).addChoices(
-        { name: 'Verify', value: 'verify' },
-        { name: 'Redeem', value: 'redeem' },
-        { name: 'Support', value: 'support' },
-        { name: 'Generator', value: 'generator' }
-    )).setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-    new SlashCommandBuilder().setName('donate-panel').setDescription('Post a donation panel with payment links.'),
-    new SlashCommandBuilder().setName('donation-panel').setDescription('Post a panel to donate tokens by pasting JSON.'),
-    new SlashCommandBuilder().setName('check-panel').setDescription('Post a panel to check/validate a token from JSON.'),
-    new SlashCommandBuilder().setName('split-panel').setDescription('Post a panel to split a token JSON into bearer and refresh.'),
-    new SlashCommandBuilder().setName('announce').setDescription('DM all members with your announcement message.').addStringOption(opt => opt.setName('message').setDescription('The announcement message').setRequired(true)).setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-    new SlashCommandBuilder().setName('check-expiry').setDescription('Check when a token expires (based on JWT exp claim)').addStringOption(opt => opt.setName('token').setDescription('The token to check').setRequired(true)),
-    new SlashCommandBuilder().setName('subscribe').setDescription('Subscribe to automatic token deliveries in DMs (every 5 minutes)'),
-    new SlashCommandBuilder().setName('unsubscribe').setDescription('Stop automatic token deliveries'),
-    new SlashCommandBuilder().setName('subscription-panel').setDescription('Post an interactive subscription panel with Subscribe/Unsubscribe buttons').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-    new SlashCommandBuilder()
-        .setName('mod-application-panel')
-        .setDescription('Post a panel for users to apply for moderator')
-        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-    new SlashCommandBuilder()
-        .setName('sub-all')
-        .setDescription('Subscribe all server members (except bots) to token delivery')
-        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-    new SlashCommandBuilder()
-        .setName('un-suball')
-        .setDescription('Unsubscribe all server members from token delivery')
-        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-    new SlashCommandBuilder()
-        .setName('send-all-token')
-        .setDescription('Send a fresh token to all currently subscribed users')
-        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-    new SlashCommandBuilder()
-        .setName('refresh-status')
-        .setDescription('Show current refresh health and token status')
-        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-    new SlashCommandBuilder()
-        .setName('update-log')
-        .setDescription('Re‑post the latest update log')
-        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-    new SlashCommandBuilder()
-        .setName('rename-token-channel')
-        .setDescription('Force update the token number channel name (admin only)')
-        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
-].map(cmd => cmd.toJSON());
+// ========== PANEL PERSISTENCE HELPERS ==========
+function savePanelData() {
+    if (!subscriptionPanelMessage) return;
+    const data = {
+        channelId: subscriptionPanelMessage.channelId,
+        messageId: subscriptionPanelMessage.messageId
+    };
+    try {
+        fs.writeFileSync(PANEL_DATA_FILE, JSON.stringify(data, null, 2));
+        console.log('[PANEL] Saved panel location to disk.');
+    } catch (err) {
+        console.error('[PANEL] Failed to save panel data:', err);
+    }
+}
+
+function loadPanelData() {
+    try {
+        if (fs.existsSync(PANEL_DATA_FILE)) {
+            const data = JSON.parse(fs.readFileSync(PANEL_DATA_FILE, 'utf8'));
+            if (data.channelId && data.messageId) {
+                subscriptionPanelMessage = {
+                    channelId: data.channelId,
+                    messageId: data.messageId
+                };
+                console.log('[PANEL] Loaded panel location from disk.');
+                return true;
+            }
+        }
+    } catch (err) {
+        console.error('[PANEL] Failed to load panel data:', err);
+    }
+    return false;
+}
 
 // ========== STATUS PANEL UPDATE FUNCTION ==========
 async function updateStatusPanel() {
@@ -1351,7 +1307,7 @@ async function updateStatusPanel() {
             color = 0xED4245;
         }
 
-        // Update token number channel name
+        // Update token number channel
         await updateTokenNumberChannel();
 
         const embed = new EmbedBuilder()
@@ -1440,9 +1396,8 @@ async function updateTokenNumberChannel() {
         console.error('[TOKEN_NUMBER] Error updating channel name:', err);
     }
 }
-// ========================================================
 
-// ========== SUBSCRIPTION PANEL BUILD (updated with token number) ==========
+// ========== SUBSCRIPTION PANEL BUILD ==========
 function buildSubscriptionEmbed() {
     const token = tokenStock.length > 0 ? tokenStock[0] : null;
     let status = '⛔ No token';
@@ -1494,45 +1449,84 @@ function buildSubscriptionEmbed() {
         .setTimestamp();
     return embed;
 }
-// ========================================================
 
-// --- Helper to update subscription panel (with duplicate removal) ---
+// ========== UPDATED SUBSCRIPTION PANEL (with persistence + recovery) ==========
 async function updateSubscriptionPanel() {
-    // Clean up any duplicate subscription panels from the same channel
-    if (subscriptionPanelMessage) {
-        const oldChannel = client.channels.cache.get(subscriptionPanelMessage.channelId);
-        if (oldChannel) {
-            try {
-                const oldMsg = await oldChannel.messages.fetch(subscriptionPanelMessage.messageId);
-                // Delete only if it exists and is not the current one
-                // But we will just update it if we can.
-            } catch (err) {
-                // Message not found, clear tracking
-                subscriptionPanelMessage = null;
-            }
-        } else {
-            subscriptionPanelMessage = null;
-        }
-    }
+    const clientLocal = client;
+    if (!clientLocal) return;
 
-    // If we have a tracked panel, update it
+    // If we have a tracked panel, try to fetch it
     if (subscriptionPanelMessage) {
         try {
-            const channel = client.channels.cache.get(subscriptionPanelMessage.channelId);
-            if (!channel) return;
-            const message = await channel.messages.fetch(subscriptionPanelMessage.messageId);
-            if (!message) return;
-            const embed = buildSubscriptionEmbed();
-            const components = message.components;
-            await message.edit({ embeds: [embed], components });
-            return;
+            const channel = clientLocal.channels.cache.get(subscriptionPanelMessage.channelId);
+            if (channel) {
+                const message = await channel.messages.fetch(subscriptionPanelMessage.messageId);
+                if (message) {
+                    // Found it – update it
+                    const embed = buildSubscriptionEmbed();
+                    const row1 = new ActionRowBuilder()
+                        .addComponents(
+                            new ButtonBuilder().setCustomId('subscribe_panel').setLabel('Subscribe').setStyle(ButtonStyle.Success),
+                            new ButtonBuilder().setCustomId('unsubscribe_panel').setLabel('Unsubscribe').setStyle(ButtonStyle.Danger),
+                            new ButtonBuilder().setCustomId('get_token_now').setLabel('Get Token Now').setStyle(ButtonStyle.Primary)
+                        );
+                    const row2 = new ActionRowBuilder()
+                        .addComponents(
+                            new ButtonBuilder().setCustomId('refresh_stock_btn').setLabel('🔄 Refresh Stock').setStyle(ButtonStyle.Primary)
+                        );
+                    await message.edit({ embeds: [embed], components: [row1, row2] });
+                    // Save location (it's still valid)
+                    savePanelData();
+                    return;
+                }
+            }
         } catch (err) {
-            console.log('[INFO] Subscription panel message no longer available, will repost if needed.');
+            // Message not found – clear tracking and fall through to recovery
+            console.log('[PANEL] Tracked message gone, searching for a new one...');
             subscriptionPanelMessage = null;
         }
     }
 
-    // If no tracked panel, do nothing (we only post via command)
+    // No tracked panel – try to load from disk
+    if (!subscriptionPanelMessage) {
+        const loaded = loadPanelData();
+        if (loaded) {
+            // Retry update with loaded data
+            return updateSubscriptionPanel();
+        }
+    }
+
+    // Still nothing – try to find an existing panel in the channel
+    // Use the channel from the last known location, or fallback to STATUS_CHANNEL_ID
+    const channelId = subscriptionPanelMessage?.channelId || STATUS_CHANNEL_ID;
+    const channel = clientLocal.channels.cache.get(channelId);
+    if (!channel) {
+        console.log('[PANEL] No channel to search for panel.');
+        return;
+    }
+
+    try {
+        const messages = await channel.messages.fetch({ limit: 50 });
+        const panelMsg = messages.find(m => 
+            m.author.id === clientLocal.user.id && 
+            m.embeds.length > 0 && 
+            m.embeds[0].title === '📋 Subscription Panel'
+        );
+        if (panelMsg) {
+            subscriptionPanelMessage = {
+                channelId: panelMsg.channel.id,
+                messageId: panelMsg.id
+            };
+            console.log(`[PANEL] Found existing panel: ${panelMsg.id}`);
+            savePanelData();
+            // Now update it
+            return updateSubscriptionPanel();
+        } else {
+            console.log('[PANEL] No existing panel found – waiting for admin to post one.');
+        }
+    } catch (err) {
+        console.error('[PANEL] Error searching for panel:', err);
+    }
 }
 
 // --- Cleanup duplicate subscription panels ---
@@ -1543,7 +1537,6 @@ async function cleanupDuplicateSubscriptionPanels(channelId) {
         const messages = await channel.messages.fetch({ limit: 20 });
         const botMessages = messages.filter(m => m.author.id === client.user.id && m.embeds.length > 0 && m.embeds[0].title === '📋 Subscription Panel');
         if (botMessages.size > 1) {
-            // Delete all but the latest
             const sorted = botMessages.sort((a, b) => b.createdTimestamp - a.createdTimestamp);
             const latest = sorted.first();
             for (const [id, msg] of sorted) {
@@ -1557,6 +1550,87 @@ async function cleanupDuplicateSubscriptionPanels(channelId) {
         console.error('[CLEANUP] Error cleaning up panels:', err);
     }
 }
+
+// --- SLASH COMMANDS ---
+const commandsData = [
+    new SlashCommandBuilder().setName('8ball').setDescription('Ask the magic 8ball a question').addStringOption(opt => opt.setName('question').setDescription('Your question').setRequired(true)),
+    new SlashCommandBuilder().setName('help').setDescription('List all available bot commands and panels'),
+    new SlashCommandBuilder().setName('ping').setDescription('Pong - checks bot latency'),
+    new SlashCommandBuilder().setName('serverinfo').setDescription('Get info about this server'),
+    new SlashCommandBuilder().setName('token').setDescription('Generate a fresh token directly to your DMs'),
+    new SlashCommandBuilder()
+        .setName('token-meaning')
+        .setDescription('Learn what all the token terms and status icons mean'),
+    new SlashCommandBuilder()
+        .setName('fun')
+        .setDescription('Get a random fun fact or joke about Animal Company.'),
+    new SlashCommandBuilder()
+        .setName('leaderboard')
+        .setDescription('See the top 5 token generators in the server.'),
+    new SlashCommandBuilder()
+        .setName('lottery')
+        .setDescription('Enter the token lottery draw (admin draws a winner).'),
+    new SlashCommandBuilder()
+        .setName('history')
+        .setDescription('View your last 5 generated token IDs.'),
+    new SlashCommandBuilder()
+        .setName('stats')
+        .setDescription('Show bot statistics: total tokens, subscribers, uptime.'),
+    new SlashCommandBuilder().setName('stock').setDescription('Open form to add token stock').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    new SlashCommandBuilder().setName('stock_main').setDescription('Set the main/default token').addStringOption(opt => opt.setName('bearer').setDescription('Bearer token').setRequired(true)).addStringOption(opt => opt.setName('refresh').setDescription('Refresh token').setRequired(true)).setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    new SlashCommandBuilder().setName('set-refresh').setDescription('Update only the refresh token (tested immediately)').addStringOption(opt => opt.setName('refresh').setDescription('The new refresh token').setRequired(true)),
+    new SlashCommandBuilder().setName('test-refresh').setDescription('Test if the current refresh token works'),
+    new SlashCommandBuilder().setName('generator').setDescription('Post generator panel').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    new SlashCommandBuilder().setName('force_refresh').setDescription('Force refresh the current token').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    new SlashCommandBuilder().setName('remove-stock').setDescription('Remove a token by selection').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    new SlashCommandBuilder().setName('reset-stock').setDescription('Reset stock to default token').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    new SlashCommandBuilder().setName('gen-codes').setDescription('List all active generation IDs').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    new SlashCommandBuilder().setName('remove-token').setDescription('Remove a specific token by ID').addStringOption(opt => opt.setName('id').setDescription('Generation ID').setRequired(true)).setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    new SlashCommandBuilder().setName('refresh_cooldown_all').setDescription('Reset cooldown for everyone').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    new SlashCommandBuilder().setName('panel').setDescription('Deploys interactive panels').addStringOption(opt => opt.setName('type').setDescription('Panel type').setRequired(true).addChoices(
+        { name: 'Verify', value: 'verify' },
+        { name: 'Redeem', value: 'redeem' },
+        { name: 'Support', value: 'support' },
+        { name: 'Generator', value: 'generator' }
+    )).setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    new SlashCommandBuilder().setName('donate-panel').setDescription('Post a donation panel with payment links.'),
+    new SlashCommandBuilder().setName('donation-panel').setDescription('Post a panel to donate tokens by pasting JSON.'),
+    new SlashCommandBuilder().setName('check-panel').setDescription('Post a panel to check/validate a token from JSON.'),
+    new SlashCommandBuilder().setName('split-panel').setDescription('Post a panel to split a token JSON into bearer and refresh.'),
+    new SlashCommandBuilder().setName('announce').setDescription('DM all members with your announcement message.').addStringOption(opt => opt.setName('message').setDescription('The announcement message').setRequired(true)).setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    new SlashCommandBuilder().setName('check-expiry').setDescription('Check when a token expires (based on JWT exp claim)').addStringOption(opt => opt.setName('token').setDescription('The token to check').setRequired(true)),
+    new SlashCommandBuilder().setName('subscribe').setDescription('Subscribe to automatic token deliveries in DMs (every 5 minutes)'),
+    new SlashCommandBuilder().setName('unsubscribe').setDescription('Stop automatic token deliveries'),
+    new SlashCommandBuilder().setName('subscription-panel').setDescription('Post an interactive subscription panel with Subscribe/Unsubscribe buttons').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    new SlashCommandBuilder()
+        .setName('mod-application-panel')
+        .setDescription('Post a panel for users to apply for moderator')
+        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    new SlashCommandBuilder()
+        .setName('sub-all')
+        .setDescription('Subscribe all server members (except bots) to token delivery')
+        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    new SlashCommandBuilder()
+        .setName('un-suball')
+        .setDescription('Unsubscribe all server members from token delivery')
+        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    new SlashCommandBuilder()
+        .setName('send-all-token')
+        .setDescription('Send a fresh token to all currently subscribed users')
+        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    new SlashCommandBuilder()
+        .setName('refresh-status')
+        .setDescription('Show current refresh health and token status')
+        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    new SlashCommandBuilder()
+        .setName('update-log')
+        .setDescription('Re‑post the latest update log')
+        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    new SlashCommandBuilder()
+        .setName('rename-token-channel')
+        .setDescription('Force update the token number channel name (admin only)')
+        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+].map(cmd => cmd.toJSON());
 
 // --- READY ---
 client.once('ready', async () => {
@@ -1592,6 +1666,11 @@ client.once('ready', async () => {
     await postUpdateLog();
     await updateStatusPanel();
 
+    // Load subscription panel from disk
+    loadPanelData();
+    // Update it (will auto-recover if found)
+    await updateSubscriptionPanel();
+
     // Clean up any old subscription panels in the channel (if we have one tracked)
     if (subscriptionPanelMessage) {
         await cleanupDuplicateSubscriptionPanels(subscriptionPanelMessage.channelId);
@@ -1607,9 +1686,47 @@ client.once('ready', async () => {
     setInterval(async () => {
         await updateSubscriptionPanel();
     }, 5000);
+
+    // ========== SAFETY TOKEN GUARD (Fixes token expiry) ==========
+    // Every 30 seconds, check if the main token is alive.
+    // If TTL drops below 5 minutes, force a refresh or swap accounts.
+    setInterval(async () => {
+        if (tokenStock.length === 0) {
+            console.log('[SAFETY] Stock empty, loading new token...');
+            giveNewTokenFromAccounts();
+            await updateStatusPanel();
+            await updateSubscriptionPanel();
+            return;
+        }
+        const token = tokenStock[0];
+        if (!token || !token.bearer) {
+            console.log('[SAFETY] Token missing, loading new token...');
+            giveNewTokenFromAccounts();
+            await updateStatusPanel();
+            await updateSubscriptionPanel();
+            return;
+        }
+        const expiry = getTokenExpiryMs(token.bearer);
+        if (expiry === null) {
+            console.log('[SAFETY] Token has no expiry, refreshing...');
+            const result = await refreshToken(token.refresh);
+            if (!result.success) giveNewTokenFromAccounts();
+            await updateStatusPanel();
+            await updateSubscriptionPanel();
+            return;
+        }
+        const ttl = Math.floor((expiry - Date.now()) / 1000);
+        if (ttl < 300) { // less than 5 minutes
+            console.log(`[SAFETY] Token TTL is ${ttl}s, forcing refresh...`);
+            const result = await refreshToken(token.refresh);
+            if (!result.success) giveNewTokenFromAccounts();
+            await updateStatusPanel();
+            await updateSubscriptionPanel();
+        }
+    }, 30000); // run every 30 seconds
 });
 
-// --- INTERACTION HANDLER --- (unchanged but with the updated commands)
+// --- INTERACTION HANDLER ---
 client.on('interactionCreate', async interaction => {
     try {
         if (interaction.isChatInputCommand()) {
@@ -1834,6 +1951,7 @@ client.on('interactionCreate', async interaction => {
                     channelId: message.channel.id,
                     messageId: message.id
                 };
+                savePanelData(); // <-- SAVE TO DISK
                 return;
             }
 
