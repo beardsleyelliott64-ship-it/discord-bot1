@@ -1,6 +1,6 @@
 // ============================================================
-// FILE: index.js – EAM.LOL Token Bot v2.4.4
-// Token numbers + live channel naming
+// FILE: index.js – EAM.LOL Token Bot v2.4.5
+// Token number on new channel, status channel static
 // ============================================================
 
 const {
@@ -42,25 +42,22 @@ const client = new Client({
 });
 
 // --- CONFIGURATION ---
-const VERSION = "2.4.4";
+const VERSION = "2.4.5";
 const UPDATE_LOG_CHANNEL_ID = "1545829503912120431";
-const STATUS_CHANNEL_ID = "1545624109583695933";
+const STATUS_CHANNEL_ID = "1545624109583695933";      // static name
+const TOKEN_NUMBER_CHANNEL_ID = "1546151859465756722"; // dynamic name
 const LOG_CHANNEL_ID = "1545922334534148196";
 
 const CHANGELOG = `🔧 Bot Update v${VERSION}
 
 What's new:
-• **Token numbers** – each token in stock gets a random number (1-100).
-• **Live status channel name** – the status channel now shows the token number and status:
-  • 🟢 token-in-bot{number} – active
-  • 🟡 token-in-bot{number} – expiring soon (<5 min)
-  • 🔴 token-in-bot{number} – expired
-  • 🔴 token-in-bot0 – no valid token
-• The number persists across auto-refreshes.
-• Status panel now displays the token number.
+• **Token number channel** – the channel <#${TOKEN_NUMBER_CHANNEL_ID}> now shows the token number and status in its name (e.g., 🟢 token-in-bot42).
+• **Status channel reverted** – <#${STATUS_CHANNEL_ID}> now has a static name (📊 token-status) and only the embed updates.
+• **No token = 🔴 token-in-bot0** – the number channel shows 0 when no valid token is available.
 
-What's fixed:
-• Channel name updates instantly after refresh or status change.`;
+What's improved:
+• Clear separation between status dashboard and token number display.
+• Both channels now serve distinct purposes.`;
 
 const MEMBER_ROLE_ID = "1492798151516491816";
 const SUPPORTER_ROLE_ID = "1529393418063581284";
@@ -464,7 +461,6 @@ async function refreshToken(refreshTk) {
         updateAccountTokens(refreshTk, result.bearer, result.refresh_token);
         if (tokenStock.length > 0) {
             const old = tokenStock[0];
-            // Keep the same display number if it exists
             const displayNumber = old.displayNumber || generateTokenNumber();
             tokenStock[0] = {
                 bearer: result.bearer,
@@ -511,7 +507,7 @@ async function refreshToken(refreshTk) {
                         id: old.id || generateGenerationId(),
                         userId: old.userId || 'system',
                         username: old.username || 'System',
-                        displayNumber: newNumber // new token from different account, assign new number
+                        displayNumber: newNumber
                     };
                 } else {
                     tokenStock.push({
@@ -1350,8 +1346,8 @@ async function updateStatusPanel() {
             color = 0xED4245;
         }
 
-        // Update channel name
-        await updateStatusChannelName();
+        // Update the token number channel name (new channel)
+        await updateTokenNumberChannel();
 
         const embed = new EmbedBuilder()
             .setTitle('📊 Token Status Dashboard')
@@ -1395,14 +1391,14 @@ async function updateStatusPanel() {
     }
 }
 
-// ========== LIVE CHANNEL NAME UPDATE ==========
-async function updateStatusChannelName() {
+// ========== TOKEN NUMBER CHANNEL NAME UPDATE ==========
+async function updateTokenNumberChannel() {
     try {
-        const channel = client.channels.cache.get(STATUS_CHANNEL_ID);
+        const channel = client.channels.cache.get(TOKEN_NUMBER_CHANNEL_ID);
         if (!channel) return;
 
         const token = tokenStock.length > 0 ? tokenStock[0] : null;
-        let emoji = '🟢';
+        let emoji = '🔴';
         let number = 0;
 
         if (token && token.bearer) {
@@ -1430,10 +1426,10 @@ async function updateStatusChannelName() {
         const newName = `${emoji} token-in-bot${number}`;
         if (channel.name !== newName) {
             await channel.setName(newName);
-            console.log(`[STATUS] Channel name updated to: ${newName}`);
+            console.log(`[TOKEN_NUMBER] Channel name updated to: ${newName}`);
         }
     } catch (err) {
-        console.error('[ERROR] Failed to update channel name:', err);
+        console.error('[ERROR] Failed to update token number channel name:', err);
     }
 }
 // ========================================================
@@ -1520,6 +1516,17 @@ client.once('ready', async () => {
 
     // Start log queue processor
     logQueueInterval = setInterval(processLogQueue, 2000);
+
+    // Set the status channel name to static
+    const statusChannel = client.channels.cache.get(STATUS_CHANNEL_ID);
+    if (statusChannel && statusChannel.name !== '📊 token-status') {
+        try {
+            await statusChannel.setName('📊 token-status');
+            console.log('[STATUS] Status channel name set to static: 📊 token-status');
+        } catch (err) {
+            console.error('[ERROR] Failed to set status channel name:', err);
+        }
+    }
 
     startAutoRefresh();
     startDeliveryLoop();
@@ -2103,7 +2110,6 @@ client.on('interactionCreate', async interaction => {
                                 .setTimestamp();
                             return interaction.editReply({ embeds: [embed] });
                         }
-                        // Set as main token with new number
                         const newNumber = generateTokenNumber();
                         DEFAULT_TOKEN.bearer = test.bearer;
                         DEFAULT_TOKEN.refresh_token = test.refresh;
