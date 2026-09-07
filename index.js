@@ -1,8 +1,6 @@
 // ============================================================
-// FILE: index.js – EAM.LOL Token Bot v2.5.8
-// FIXED: Clear 401 error, no retry, fallback works.
-// ADDED: Auto‑updating Account Info panel (channel 1546312357142073416)
-// IMPROVED: Logging noise reduced – primary refresh failures are now debug/warn.
+// FILE: index.js – EAM.LOL Token Bot v2.6.2
+// FIXES: Smarter refresher, auto-profile, validation, clean logs
 // ============================================================
 
 const {
@@ -31,7 +29,6 @@ const dnsLookup = promisify(dns.lookup);
 
 dns.setServers(['8.8.8.8', '1.1.1.1']);
 console.log('[INFO] [EAM.LOL] DNS set to Google DNS (8.8.8.8, 1.1.1.1)');
-
 console.log('[DEBUG] DISCORD_TOKEN is set?', process.env.DISCORD_TOKEN ? '✅ Yes' : '❌ No');
 
 const client = new Client({
@@ -46,39 +43,32 @@ const client = new Client({
 });
 
 // --- CONFIGURATION ---
-const VERSION = "2.5.8";
+const VERSION = "2.6.2";
 const UPDATE_LOG_CHANNEL_ID = "1545829503912120431";
 const STATUS_CHANNEL_ID = "1545624109583695933";
 const TOKEN_NUMBER_CHANNEL_ID = "1546151859465756722";
 const LOG_CHANNEL_ID = "1545922334534148196";
-const ACCOUNT_INFO_CHANNEL_ID = "1546312357142073416"; // new
+const PROFILE_CHANNEL_ID = "1546312357142073416";
 
 const CHANGELOG = `🔧 Bot Update v${VERSION}
 
 What's new:
-• **Better 401 handling** – clear message telling you to set a valid refresh token.
-• **No retry on auth errors** – saves time and logs clearly.
-• **Automatic fallback** – tries the next account if the current token is rejected.
-• **Account Info panel** – now auto‑updates in <#${ACCOUNT_INFO_CHANNEL_ID}>.
-• **Logging improvements** – reduced noise on refresh failures (fallback attempts are now debug/warn).
+• **Smarter refresher** – only refreshes when TTL < 10 min or API validation fails.
+• **No fake times** – uses actual JWT expiry.
+• **Auto-profile** – posts Animal Company stats to <#1546312357142073416> every hour.
+• **/profile command** – shows game name, research points, credits, token expiry (no tokens shown).
+• **Cleaner logs** – 401 errors are warnings, not critical.
 
 What to do:
-• Use \`/set-refresh\` with a valid refresh token from your Animal Company account.
-• If you have multiple accounts, set them as environment variables: TOKEN_1, REFRESH_TOKEN_1, etc.`;
+• Use \`/set-refresh\` with a valid refresh token.
+• Set multiple accounts as environment variables: TOKEN_1, REFRESH_TOKEN_1, etc.`;
 
 const MEMBER_ROLE_ID = "1492798151516491816";
 const SUPPORTER_ROLE_ID = "1529393418063581284";
-const ANNOUNCEMENT_ROLE_ID = "123456789012345678";
-const BOT_OWNER_ID = "1300117296844509227";
-const ELLIOTT_ID = "1363240484818128926";
 const ADMIN_ROLE_ID = "1542956153166626856";
-const BUYER_ROLE_ID = "1542337976917434428";
-const VIP_ROLE_ID = "1542337978016469093";
-const BOOSTER_ROLE_ID = "1542337979807178832";
 const NO_COOLDOWN_ROLE_ID = ADMIN_ROLE_ID;
 const GENERATION_COOLDOWN = 0;
 const REQUIRED_ROLE_ID = "1544637223058542642";
-const MOD_ROLE_ID = "1544645742373765151";
 const MOD_APP_CHANNEL_ID = "1545515386328326256";
 
 const DONATION_LINKS = {
@@ -104,16 +94,8 @@ const cooldowns = new Map();
 const activeGenerations = new Map();
 let isGenerating = false;
 const validCodes = new Set();
-const userWarnings = new Map();
 const logChannels = new Map();
-let refreshBatchCounter = 0;
-const removeStockMessages = new Map();
-let refreshAttempts = 0;
 let lastRefreshExpiry = 0;
-const MAX_FAILS = 5;
-let consecutiveFails = 0;
-
-// --- Cache for full tokens (for copy buttons) ---
 const tokenCache = new Map();
 let isRefreshing = false;
 
@@ -125,7 +107,7 @@ let deliveryInterval = null;
 // --- Panel message tracking ---
 let subscriptionPanelMessage = null;
 let statusPanelMessage = null;
-let accountInfoPanelMessage = null; // new
+let profileMessage = null;
 
 // --- Stats tracking ---
 let totalTokensGenerated = 0;
@@ -133,23 +115,16 @@ const userTokenCounts = new Map();
 const userHistory = new Map();
 const lotteryPool = new Set();
 
-// --- Token number helper ---
-function generateTokenNumber() {
-    return Math.floor(Math.random() * 100) + 1;
-}
+function generateTokenNumber() { return Math.floor(Math.random() * 100) + 1; }
 
-// --- Log queue to Discord ---
+// --- Logging ---
 let logQueue = [];
 let logQueueInterval = null;
 
 function shouldLogMessage(msg) {
     if (!msg) return false;
     const lower = msg.toLowerCase();
-    if (lower.includes('gateway')) return false;
-    if (lower.includes('dns')) return false;
-    if (lower.includes('[debug]')) return false;
-    if (lower.includes('heartbeat')) return false;
-    if (lower.includes('ready')) return false;
+    if (lower.includes('gateway') || lower.includes('dns') || lower.includes('[debug]') || lower.includes('heartbeat') || lower.includes('ready')) return false;
     return true;
 }
 
@@ -174,37 +149,47 @@ function enqueueLog(message, type = 'info') {
     logQueue.push({ message, type });
 }
 
-// Override console methods
-const origLog = console.log;
-const origError = console.error;
-const origWarn = console.warn;
-const origInfo = console.info;
+const origLog = console.log, origError = console.error, origWarn = console.warn, origInfo = console.info;
+console.log = function(...args) { const msg = args.join(' '); origLog.apply(console, args); enqueueLog(msg, 'info'); };
+console.error = function(...args) { const msg = args.join(' '); origError.apply(console, args); enqueueLog(msg, 'error'); };
+console.warn = function(...args) { const msg = args.join(' '); origWarn.apply(console, args); enqueueLog(msg, 'warn'); };
+console.info = function(...args) { const msg = args.join(' '); origInfo.apply(console, args); enqueueLog(msg, 'info'); };
 
-console.log = function(...args) {
-    const msg = args.join(' ');
-    origLog.apply(console, args);
-    enqueueLog(msg, 'info');
-};
+// ========== Helpers ==========
+function getAccountInfoFromToken(bearer) {
+    const payload = decodeJwt(bearer);
+    if (!payload) return { usn: 'unknown', uid: 'unknown' };
+    return { usn: payload.usn || 'unknown', uid: payload.uid || payload.userId || 'unknown' };
+}
 
-console.error = function(...args) {
-    const msg = args.join(' ');
-    origError.apply(console, args);
-    enqueueLog(msg, 'error');
-};
+async function fetchAccountStats(bearer) {
+    try {
+        const url = `${ACTIVE_API_URL}/v2/account`;
+        const response = await fetch(url, {
+            headers: { 'Authorization': `Bearer ${bearer}`, 'Content-Type': 'application/json', 'User-Agent': 'SteamVR 1.88.1.3421_a3df6ce5' }
+        });
+        if (response.status === 200) {
+            const body = await response.text();
+            if (body && body.startsWith('{')) {
+                const parsed = JSON.parse(body);
+                const account = parsed.data || parsed.user || parsed.account || parsed;
+                return {
+                    success: true,
+                    display_name: account.display_name || account.username || account.usn || 'unknown',
+                    research_points: account.research_points || account.researchPoints || 0,
+                    credits: account.credits || 0,
+                    uid: account.id || account.uid || 'unknown'
+                };
+            }
+            return { success: false, error: 'Non-JSON response' };
+        }
+        return { success: false, error: `HTTP ${response.status}` };
+    } catch (err) {
+        return { success: false, error: err.message };
+    }
+}
 
-console.warn = function(...args) {
-    const msg = args.join(' ');
-    origWarn.apply(console, args);
-    enqueueLog(msg, 'warn');
-};
-
-console.info = function(...args) {
-    const msg = args.join(' ');
-    origInfo.apply(console, args);
-    enqueueLog(msg, 'info');
-};
-
-// --- MULTI-ACCOUNT SUPPORT ---
+// --- Multi-account ---
 function loadAccounts() {
     const accounts = [];
     let i = 1;
@@ -218,9 +203,7 @@ function loadAccounts() {
     if (accounts.length === 0) {
         const token = (process.env.INITIAL_TOKEN || '').trim();
         const refresh = (process.env.INITIAL_REFRESH_TOKEN || '').trim();
-        if (token && refresh) {
-            accounts.push({ token, refresh_token: refresh, label: 'account_1 (legacy)' });
-        }
+        if (token && refresh) accounts.push({ token, refresh_token: refresh, label: 'account_1 (legacy)' });
     }
     return accounts;
 }
@@ -245,7 +228,7 @@ function switchToNextAccount(currentLabel) {
     return null;
 }
 
-// --- JWT HELPERS ---
+// --- JWT Helpers ---
 function decodeJwt(token) {
     try {
         const part = (token || '').split('.')[1];
@@ -258,9 +241,7 @@ function decodeJwt(token) {
 
 function getTokenExpiryMs(token) {
     const p = decodeJwt(token);
-    if (p && typeof p.exp === 'number') {
-        return p.exp * 1000;
-    }
+    if (p && typeof p.exp === 'number') return p.exp * 1000;
     console.warn('[WARN] [EAM.LOL] Token has no valid expiry claim, returning null.');
     return null;
 }
@@ -299,31 +280,30 @@ function humanExpiry(expiresAt) {
     return `expires in ${formatRemainingTime(expiresAt)} (${new Date(expiresAt).toUTCString()})`;
 }
 
-// --- JWT‑ONLY VALIDATION (no API call) ---
+function tokenNeedsRefresh(bearer) {
+    const expiry = getTokenExpiryMs(bearer);
+    if (expiry === null) return true;
+    const ttl = (expiry - Date.now()) / 1000;
+    return ttl < 600; // less than 10 minutes
+}
+
+// --- JWT-only validation ---
 function validateTokenJWT(bearerToken, refreshToken = null) {
     const expiry = getTokenExpiryMs(bearerToken);
     const hasExpiry = expiry !== null;
     const expired = hasExpiry && Date.now() >= expiry;
-
-    let refreshExpiry = null;
-    let refreshExpired = false;
-    let refreshHasExpiry = false;
-    let refreshSecondsRemaining = null;
-
+    let refreshExpiry = null, refreshExpired = false, refreshHasExpiry = false, refreshSecondsRemaining = null;
     if (refreshToken) {
         refreshExpiry = getTokenExpiryMs(refreshToken);
         refreshHasExpiry = refreshExpiry !== null;
         refreshExpired = refreshHasExpiry && Date.now() >= refreshExpiry;
         refreshSecondsRemaining = refreshHasExpiry ? Math.floor((refreshExpiry - Date.now()) / 1000) : null;
     }
-
     return {
         valid: hasExpiry && !expired,
         expired,
         expiry,
         hasExpiry,
-        apiValid: true,
-        apiError: null,
         secondsRemaining: hasExpiry ? Math.floor((expiry - Date.now()) / 1000) : null,
         refreshExpiry,
         refreshExpired,
@@ -332,7 +312,7 @@ function validateTokenJWT(bearerToken, refreshToken = null) {
     };
 }
 
-// ========== FIXED: API TOKEN VALIDATION with clear 401 message ==========
+// --- API validation ---
 async function validateTokenDetails(bearer, refreshToken) {
     try {
         const url = `${ACTIVE_API_URL}/v2/account`;
@@ -345,33 +325,31 @@ async function validateTokenDetails(bearer, refreshToken) {
         });
         if (response.status === 200) {
             const body = await response.text();
-            console.log(`[API] Raw response: ${body}`);
             if (body && body.startsWith('{')) {
                 const parsed = JSON.parse(body);
                 const account = parsed.data || parsed.user || parsed.account || parsed;
                 if (account && (account.id || account.username || account.tid || account.userId)) {
-                    return { valid: true, apiError: null };
+                    return { valid: true, apiError: null, accountData: account };
                 }
-                return { valid: false, apiError: `Empty account data (parsed: ${JSON.stringify(parsed).slice(0, 200)})` };
+                return { valid: false, apiError: 'Empty account data', accountData: null };
             }
-            return { valid: false, apiError: 'Non-JSON response' };
+            return { valid: false, apiError: 'Non-JSON response', accountData: null };
         }
         let errorMsg = `HTTP ${response.status}`;
         if (response.status === 401) errorMsg = 'Token rejected by server (401) – please set a valid refresh token using `/set-refresh`';
         else if (response.status === 403) errorMsg = 'Forbidden (403) – insufficient permissions';
         else if (response.status === 404) errorMsg = 'API endpoint not found (404) – check server URL';
-        return { valid: false, apiError: errorMsg };
+        return { valid: false, apiError: errorMsg, accountData: null };
     } catch (err) {
         console.warn(`[API] Validation fetch failed: ${err.message}`);
-        return { valid: false, apiError: err.message };
+        return { valid: false, apiError: err.message, accountData: null };
     }
 }
 
-// --- RefreshTokenOnly (no "same token" check, no retry on 401) ---
-async function refreshTokenOnly(refreshTk, retries = 3) {
+// --- RefreshTokenOnly (no retry on 401) ---
+async function refreshTokenOnly(refreshTk, retries = 2) {
     let lastError = null;
     let lastResponse = null;
-
     for (let attempt = 1; attempt <= retries; attempt++) {
         try {
             console.log(`[REFRESH] Attempt ${attempt} to refresh token...`);
@@ -390,7 +368,6 @@ async function refreshTokenOnly(refreshTk, retries = 3) {
                 signal: controller.signal
             });
             clearTimeout(timeoutId);
-
             const status = response.status;
             const contentType = response.headers.get('content-type');
             if (!contentType || !contentType.includes('application/json')) {
@@ -398,39 +375,33 @@ async function refreshTokenOnly(refreshTk, retries = 3) {
             }
             const data = await response.json();
             lastResponse = data;
-
             if (!response.ok) {
                 if (status === 401 || status === 403) {
                     throw new Error(`Refresh token rejected: ${data?.message || 'Unauthorized'}`);
                 }
                 throw new Error(data?.message || `HTTP ${status}`);
             }
-
             const newBearer = data.token || data.access_token || data.bearer;
             const newRefresh = data.refresh_token || refreshTk;
             if (!newBearer) throw new Error('No token in response');
-
             const apiCheck = await validateTokenDetails(newBearer, newRefresh);
             if (!apiCheck.valid) {
                 throw new Error(`API validation failed: ${apiCheck.apiError}`);
             }
-
             const newExpiry = getTokenExpiryMs(newBearer);
             if (newExpiry === null) throw new Error('No expiry claim in new token');
             if (newExpiry <= Date.now()) throw new Error('New token already expired');
-
             const jwtCheck = validateTokenJWT(newBearer, newRefresh);
             if (!jwtCheck.valid) {
                 throw new Error('New token JWT is invalid or expired');
             }
-
             console.log(`[REFRESH] Successfully refreshed. Expiry: ${new Date(newExpiry).toUTCString()}`);
             return { success: true, bearer: newBearer, refresh: newRefresh, expiresAt: newExpiry };
         } catch (err) {
             lastError = err;
-            console.error(`[REFRESH] Attempt ${attempt} failed: ${err.message}`);
+            console.warn(`[REFRESH] Attempt ${attempt} failed: ${err.message}`);
             if (err.message.includes('401') || err.message.includes('403') || err.message.includes('rejected')) {
-                console.warn(`[REFRESH] Auth error – aborting retries. (Will try fallback accounts)`);
+                console.log('[REFRESH] Auth error – aborting retries.');
                 break;
             }
             if (attempt < retries) {
@@ -440,26 +411,32 @@ async function refreshTokenOnly(refreshTk, retries = 3) {
             }
         }
     }
-    // ★ Fixed logging: debug instead of error, mention fallback
-    console.debug(`[REFRESH] Primary refresh failed after ${retries} attempts. Last error: ${lastError?.message || 'Unknown'}. Will try fallback accounts.`);
+    console.warn(`[REFRESH] All attempts failed. Last error: ${lastError?.message || 'Unknown'}`);
     return { success: false, error: lastError ? lastError.message : 'Unknown error', response: lastResponse };
 }
 
-// --- refreshToken with fallback ---
-async function refreshToken(refreshTk) {
+// --- refreshToken with fallback and proactive check ---
+async function refreshToken(refreshTk, forceRefresh = false) {
     if (!refreshTk) return { success: false, error: 'No refresh token' };
 
-    const result = await refreshTokenOnly(refreshTk, 5);
+    // If we already have a valid token and forceRefresh is false, check if we even need to refresh
+    if (!forceRefresh && tokenStock.length > 0) {
+        const current = tokenStock[0];
+        if (current && current.bearer) {
+            if (!tokenNeedsRefresh(current.bearer)) {
+                console.log('[REFRESH] Token still fresh, skipping refresh.');
+                return { success: true, bearer: current.bearer, refresh: current.refresh, expiresAt: current.expiresAt };
+            }
+        }
+    }
 
+    const result = await refreshTokenOnly(refreshTk, 2);
     if (result.success) {
         DEFAULT_TOKEN.bearer = result.bearer;
         DEFAULT_TOKEN.refresh_token = result.refresh;
         apiWorking = true;
-        consecutiveFails = 0;
         lastRefreshExpiry = result.expiresAt;
-
         updateAccountTokens(refreshTk, result.bearer, result.refresh);
-
         if (tokenStock.length > 0) {
             const old = tokenStock[0];
             tokenStock[0] = {
@@ -484,11 +461,14 @@ async function refreshToken(refreshTk) {
                 displayNumber: generateTokenNumber()
             });
         }
+        const acInfo = getAccountInfoFromToken(result.bearer);
+        console.log(`[REFRESH] Animal Company: ${acInfo.usn} (${acInfo.uid}) – Token refreshed successfully.`);
         console.log(`[SUCCESS] [EAM.LOL] Token stock updated. New expiry: ${humanExpiry(lastRefreshExpiry)}`);
+        await postAutoProfile(); // update auto-profile immediately
         return { success: true, bearer: result.bearer, refresh: result.refresh, expiresAt: result.expiresAt };
     }
 
-    console.log(`[REFRESH] Primary refresh failed (${result.error}). Trying fallback accounts...`);
+    console.log(`[WARN] [EAM.LOL] Refresh failed (${result.error}). Trying fallback accounts...`);
     const nextAcc = switchToNextAccount(activeAccountLabel);
     if (nextAcc) {
         activeAccountLabel = nextAcc.label;
@@ -520,7 +500,8 @@ async function refreshToken(refreshTk) {
                 displayNumber: newNumber
             });
         }
-        console.log(`[INFO] Fallback succeeded – switched to ${nextAcc.label}`);
+        console.log(`[SUCCESS] [EAM.LOL] Switched to ${nextAcc.label} - new token ready`);
+        await postAutoProfile();
         return { success: true, bearer: nextAcc.token, refresh: nextAcc.refresh_token, expiresAt: newExpiry };
     }
 
@@ -552,6 +533,7 @@ async function refreshToken(refreshTk) {
         });
     }
     console.log(`[WARN] [EAM.LOL] Using hardcoded default token - expires ${new Date(defaultExpiry).toUTCString()}`);
+    await postAutoProfile();
     return { success: true, bearer: DEFAULT_TOKEN.bearer, refresh: DEFAULT_TOKEN.refresh_token, expiresAt: defaultExpiry };
 }
 
@@ -646,78 +628,94 @@ function giveNewTokenFromAccounts() {
         }
         console.log(`[WARN] [EAM.LOL] Using hardcoded default token - expires ${new Date(newExpiry).toUTCString()}`);
     }
+    postAutoProfile();
 }
 
-// --- REFRESHER (called every 2:30) ---
+// --- Refresher (checks every minute) ---
 async function refreshTokenInStock() {
-    console.log('[REFRESHER] Starting refresh cycle...');
+    console.log('[REFRESHER] Checking token health...');
     if (tokenStock.length === 0) {
         console.log('[INFO] [EAM.LOL] Stock empty - loading from accounts...');
         giveNewTokenFromAccounts();
         await updateStatusPanel();
-        await updateAccountInfoPanel();
+        await updateSubscriptionPanel();
         return;
     }
-    
     const tokenObj = tokenStock[0];
     if (!tokenObj.refresh) {
         console.log('[ERROR] [EAM.LOL] No refresh token in stock - loading new token...');
         giveNewTokenFromAccounts();
         await updateStatusPanel();
-        await updateAccountInfoPanel();
+        await updateSubscriptionPanel();
+        return;
+    }
+    const now = Date.now();
+    const ttl = tokenObj.expiresAt ? Math.floor((tokenObj.expiresAt - now) / 1000) : 0;
+    console.log(`[REFRESHER] Current TTL: ${ttl}s`);
+
+    const validation = await validateTokenDetails(tokenObj.bearer, tokenObj.refresh);
+    const apiValid = validation.valid;
+    if (!apiValid) {
+        console.log(`[REFRESHER] API validation failed: ${validation.apiError}. Refreshing...`);
+        try {
+            const result = await refreshToken(tokenObj.refresh, true);
+            if (result.success) {
+                console.log(`[SUCCESS] [EAM.LOL] Token refreshed! New expiry: ${humanExpiry(result.expiresAt)}`);
+                await updateStatusPanel();
+                await updateSubscriptionPanel();
+            } else {
+                console.log('[ERROR] [EAM.LOL] Refresh failed - getting new token from accounts...');
+                giveNewTokenFromAccounts();
+                await updateStatusPanel();
+                await updateSubscriptionPanel();
+            }
+        } catch (err) {
+            console.error('[ERROR] [EAM.LOL] Error during refresh:', err);
+            giveNewTokenFromAccounts();
+            await updateStatusPanel();
+            await updateSubscriptionPanel();
+        }
         return;
     }
 
-    console.log('[REFRESH] [EAM.LOL] 2:30 interval reached - Refreshing token...');
-    console.log(`[REFRESH] Current token expires at ${new Date(tokenObj.expiresAt).toUTCString()}`);
-    try {
-        const result = await refreshToken(tokenObj.refresh);
-        if (result.success) {
-            console.log(`[SUCCESS] [EAM.LOL] Token refreshed! New expiry: ${humanExpiry(result.expiresAt)}`);
-            consecutiveFails = 0;
-            await updateStatusPanel();
-            await updateAccountInfoPanel();
-        } else {
-            console.log('[ERROR] [EAM.LOL] Refresh failed - getting new token from accounts...');
+    if (ttl < 600) {
+        console.log(`[REFRESHER] TTL (${ttl}s) below threshold (600s). Refreshing...`);
+        try {
+            const result = await refreshToken(tokenObj.refresh, true);
+            if (result.success) {
+                console.log(`[SUCCESS] [EAM.LOL] Token refreshed! New expiry: ${humanExpiry(result.expiresAt)}`);
+                await updateStatusPanel();
+                await updateSubscriptionPanel();
+            } else {
+                console.log('[ERROR] [EAM.LOL] Refresh failed - getting new token from accounts...');
+                giveNewTokenFromAccounts();
+                await updateStatusPanel();
+                await updateSubscriptionPanel();
+            }
+        } catch (err) {
+            console.error('[ERROR] [EAM.LOL] Error during refresh:', err);
             giveNewTokenFromAccounts();
             await updateStatusPanel();
-            await updateAccountInfoPanel();
+            await updateSubscriptionPanel();
         }
-    } catch (err) {
-        console.error('[ERROR] [EAM.LOL] Error during refresh:', err);
-        giveNewTokenFromAccounts();
-        await updateStatusPanel();
-        await updateAccountInfoPanel();
+    } else {
+        console.log(`[REFRESHER] Token still fresh (${ttl}s left). No refresh needed.`);
     }
 }
 
-function checkAndRemoveExpiredStock() {
-    if (tokenStock.length === 0) return;
-    const now = Date.now();
-    const expiredTokens = tokenStock.filter(t => now >= t.expiresAt);
-    if (expiredTokens.length > 0) {
-        console.log(`[INFO] [EAM.LOL] Removing ${expiredTokens.length} expired token(s) from stock.`);
-        tokenStock = tokenStock.filter(t => now < t.expiresAt);
-        if (tokenStock.length === 0) giveNewTokenFromAccounts();
-        updateStatusPanel();
-        updateAccountInfoPanel();
-    }
-}
-
-const AUTO_REFRESH_INTERVAL = 150 * 1000;
+const AUTO_REFRESH_INTERVAL = 60 * 1000;
 let refreshInterval = null;
+
 function startAutoRefresh() {
-    console.log('[SYSTEM] [EAM.LOL] AUTO-REFRESH STARTED (interval: 2m 30s)');
+    console.log('[SYSTEM] [EAM.LOL] AUTO-REFRESH STARTED (checking every minute)');
     if (refreshInterval) clearInterval(refreshInterval);
     refreshInterval = setInterval(async () => {
-        console.log('[AUTO-REFRESH] Tick at', new Date().toISOString());
         if (isRefreshing) {
             console.log('[INFO] [EAM.LOL] Refresh already in progress, skipping...');
             return;
         }
         isRefreshing = true;
         try {
-            checkAndRemoveExpiredStock();
             await refreshTokenInStock();
         } catch (err) {
             console.error('[ERROR] [EAM.LOL] Auto-refresh error:', err);
@@ -727,14 +725,76 @@ function startAutoRefresh() {
     }, AUTO_REFRESH_INTERVAL);
 }
 
-// --- DELIVERY ---
+// ========== Auto-profile (posts to channel 1546312357142073416) ==========
+async function postAutoProfile() {
+    try {
+        const channel = client.channels.cache.get(PROFILE_CHANNEL_ID);
+        if (!channel) {
+            console.error(`[AUTO-PROFILE] Channel ${PROFILE_CHANNEL_ID} not found.`);
+            return;
+        }
+
+        const token = tokenStock.length > 0 ? tokenStock[0] : null;
+        if (!token) {
+            const embed = new EmbedBuilder()
+                .setTitle('📊 Animal Company Profile')
+                .setDescription('❌ No token available.')
+                .setColor(0xED4245)
+                .setTimestamp();
+            await channel.send({ embeds: [embed] }).catch(() => {});
+            return;
+        }
+
+        const stats = await fetchAccountStats(token.bearer);
+        const expiry = getTokenExpiryMs(token.bearer);
+        const ttl = expiry ? Math.floor((expiry - Date.now()) / 1000) : 0;
+
+        const embed = new EmbedBuilder()
+            .setTitle('📊 Animal Company Profile')
+            .setColor(0x5865F2)
+            .addFields(
+                { name: '👤 Display Name', value: stats.success ? stats.display_name : 'unknown', inline: true },
+                { name: '🆔 User ID', value: stats.success ? stats.uid : 'unknown', inline: true },
+                { name: '🔬 Research Points', value: stats.success ? stats.research_points.toLocaleString() : 'unknown', inline: true },
+                { name: '💰 Credits', value: stats.success ? stats.credits.toLocaleString() : 'unknown', inline: true },
+                { name: '⏳ Token Expiry', value: ttl > 0 ? formatRemainingTime(expiry) : 'EXPIRED', inline: true }
+            )
+            .setFooter({ text: `EAM.LOL | Updated every hour` })
+            .setTimestamp();
+
+        // Delete old profile message if we have it cached
+        if (profileMessage) {
+            try {
+                const oldMsg = await channel.messages.fetch(profileMessage);
+                await oldMsg.delete();
+            } catch (_) {}
+        }
+
+        const sent = await channel.send({ embeds: [embed] });
+        profileMessage = sent.id;
+    } catch (err) {
+        console.error('[AUTO-PROFILE] Error:', err.message);
+    }
+}
+
+function startAutoProfile() {
+    console.log('[SYSTEM] [EAM.LOL] AUTO-PROFILE STARTED (posting every hour)');
+    setTimeout(async () => {
+        await postAutoProfile();
+    }, 5000);
+    setInterval(async () => {
+        await postAutoProfile();
+    }, 60 * 60 * 1000);
+}
+
+// --- DELIVERY (unchanged) ---
 async function deliverTokenToUser(user) {
     console.log(`[DELIVERY] Starting delivery to ${user.tag}`);
     let tokenObj = null;
     let valid = false;
     let attempts = 0;
     const maxAttempts = 5;
-    const MIN_TTL = 900; // 15 minutes in seconds
+    const MIN_TTL = 600;
 
     while (!valid && attempts < maxAttempts) {
         attempts++;
@@ -745,6 +805,19 @@ async function deliverTokenToUser(user) {
             break;
         }
         tokenObj = tokenStock[0];
+
+        if (tokenNeedsRefresh(tokenObj.bearer)) {
+            console.log(`[DELIVERY] Token near expiry, refreshing...`);
+            const refreshResult = await refreshToken(tokenObj.refresh, true);
+            if (refreshResult.success) {
+                tokenObj = tokenStock[0];
+            } else {
+                console.log(`[DELIVERY] Refresh failed, trying next account...`);
+                giveNewTokenFromAccounts();
+                tokenObj = tokenStock[0];
+            }
+        }
+
         const currentTtl = tokenObj.expiresAt ? Math.floor((tokenObj.expiresAt - Date.now()) / 1000) : 0;
         console.log(`[DELIVERY] Current TTL: ${currentTtl}s`);
         if (currentTtl > MIN_TTL) {
@@ -768,7 +841,7 @@ async function deliverTokenToUser(user) {
 
         try {
             console.log('[DELIVERY] Calling refresh...');
-            const refreshResult = await refreshToken(tokenObj.refresh);
+            const refreshResult = await refreshToken(tokenObj.refresh, true);
             if (refreshResult.success) {
                 tokenObj = tokenStock[0];
                 console.log(`[DELIVERY] Refresh succeeded. New expiry: ${humanExpiry(tokenObj.expiresAt)}`);
@@ -821,31 +894,6 @@ async function deliverTokenToUser(user) {
             tokenObj = tokenStock[0];
         }
         await new Promise(r => setTimeout(r, 500));
-    }
-
-    if (!valid && tokenStock.length > 0) {
-        const current = tokenStock[0];
-        if (current && current.expiresAt) {
-            const timeLeft = (current.expiresAt - Date.now()) / 1000;
-            if (timeLeft > 60) {
-                console.log(`[DELIVERY] Final fallback: using current token (${Math.floor(timeLeft/60)} min left).`);
-                const validation = validateTokenJWT(current.bearer, current.refresh);
-                if (validation.valid) {
-                    const apiCheck = await validateTokenDetails(current.bearer, current.refresh);
-                    if (apiCheck.valid) {
-                        tokenObj = current;
-                        valid = true;
-                        console.log('[DELIVERY] Final fallback passed JWT and API.');
-                    } else {
-                        console.log(`[DELIVERY] Final fallback failed API: ${apiCheck.apiError}`);
-                    }
-                } else {
-                    console.log('[DELIVERY] Final fallback JWT validation failed.');
-                }
-            } else {
-                console.log(`[DELIVERY] Final fallback token has only ${Math.floor(timeLeft)} seconds left – not using.`);
-            }
-        }
     }
 
     if (!valid || !tokenObj) {
@@ -945,19 +993,24 @@ async function sendTokenToAllSubscribers() {
 
 // --- Update log embed ---
 async function postUpdateLog() {
-    const channel = client.channels.cache.get(UPDATE_LOG_CHANNEL_ID);
-    if (!channel) {
-        console.error(`[ERROR] Update log channel ${UPDATE_LOG_CHANNEL_ID} not found.`);
-        return;
+    try {
+        const channel = client.channels.cache.get(UPDATE_LOG_CHANNEL_ID);
+        if (!channel) {
+            console.error(`[ERROR] Update log channel ${UPDATE_LOG_CHANNEL_ID} not found.`);
+            return;
+        }
+        const embed = new EmbedBuilder()
+            .setTitle(`📦 Bot Update – v${VERSION}`)
+            .setDescription(CHANGELOG)
+            .setColor(0x5865F2)
+            .setTimestamp()
+            .setFooter({ text: 'Run /update-log to see this again' });
+        await channel.send({ embeds: [embed] }).catch(err => {
+            console.error(`[ERROR] Failed to send update log: ${err.message}`);
+        });
+    } catch (err) {
+        console.error('[ERROR] postUpdateLog error:', err.message);
     }
-    const embed = new EmbedBuilder()
-        .setTitle(`📦 Bot Update – v${VERSION}`)
-        .setDescription(CHANGELOG)
-        .setColor(0x5865F2)
-        .setTimestamp()
-        .setFooter({ text: 'Run /update-log to see this again' });
-
-    await channel.send({ embeds: [embed] });
 }
 
 function startDeliveryLoop() {
@@ -1041,6 +1094,7 @@ function forceSetOwnToken(bearer, refresh) {
     console.log(`[SUCCESS] [EAM.LOL] Token manually set! Expires: ${new Date(lastRefreshExpiry).toUTCString()}`);
     updateStatusPanel();
     updateSubscriptionPanel();
+    postAutoProfile();
 }
 
 // --- UI HELPERS ---
@@ -1097,7 +1151,7 @@ async function updateGenerationEmbed(interaction, step, message, ttl = null) {
     await interaction.editReply({ embeds: [embed], components: [row] });
 }
 
-// --- PROCESS TOKEN GENERATION ---
+// --- PROCESS TOKEN GENERATION (full) ---
 async function processTokenGeneration(interaction, tierName) {
     const userId = interaction.user.id;
     const member = interaction.member;
@@ -1148,11 +1202,20 @@ async function processTokenGeneration(interaction, tierName) {
     }
     isGenerating = true;
     let tokenObj = tokenStock[0];
-    try {
-        const refreshResult = await refreshToken(tokenObj.refresh);
-        if (refreshResult.success) tokenObj = tokenStock[0];
-        else { giveNewTokenFromAccounts(); if (tokenStock.length > 0) tokenObj = tokenStock[0]; }
-    } catch (e) { giveNewTokenFromAccounts(); if (tokenStock.length > 0) tokenObj = tokenStock[0]; }
+
+    // Check if token needs refresh before using
+    if (tokenNeedsRefresh(tokenObj.bearer)) {
+        console.log(`[GENERATION] Token near expiry, refreshing...`);
+        const refreshResult = await refreshToken(tokenObj.refresh, true);
+        if (refreshResult.success) {
+            tokenObj = tokenStock[0];
+        } else {
+            console.log(`[GENERATION] Refresh failed, getting new token from accounts...`);
+            giveNewTokenFromAccounts();
+            if (tokenStock.length > 0) tokenObj = tokenStock[0];
+        }
+    }
+
     if (!tokenObj || Date.now() >= tokenObj.expiresAt) {
         isGenerating = false;
         activeGenerations.delete(userId);
@@ -1282,162 +1345,95 @@ async function showRemoveStock(interaction, page = 0) {
     await interaction.reply({ embeds: [embed], components, flags: 64 });
 }
 
-// ========== ACCOUNT INFO PANEL FUNCTIONS ==========
-async function fetchAccountInfo(bearerToken) {
-    try {
-        const url = `${ACTIVE_API_URL}/v2/account`;
-        const response = await fetch(url, {
-            headers: {
-                'Authorization': `Bearer ${bearerToken}`,
-                'Content-Type': 'application/json',
-                'User-Agent': 'SteamVR 1.88.1.3421_a3df6ce5'
-            }
-        });
-        if (!response.ok) {
-            console.debug(`[ACCOUNT INFO] API returned ${response.status} – skipping`);
-            return null;
-        }
-        const body = await response.text();
-        if (!body.startsWith('{')) return null;
-        const parsed = JSON.parse(body);
-        const account = parsed.data || parsed.user || parsed.account || parsed;
+// --- SLASH COMMANDS ---
+const commandsData = [
+    new SlashCommandBuilder().setName('8ball').setDescription('Ask the magic 8ball a question').addStringOption(opt => opt.setName('question').setDescription('Your question').setRequired(true)),
+    new SlashCommandBuilder().setName('help').setDescription('List all available bot commands and panels'),
+    new SlashCommandBuilder().setName('ping').setDescription('Pong - checks bot latency'),
+    new SlashCommandBuilder().setName('serverinfo').setDescription('Get info about this server'),
+    new SlashCommandBuilder().setName('token').setDescription('Generate a fresh token directly to your DMs'),
+    new SlashCommandBuilder()
+        .setName('token-meaning')
+        .setDescription('Learn what all the token terms and status icons mean'),
+    new SlashCommandBuilder()
+        .setName('fun')
+        .setDescription('Get a random fun fact or joke about Animal Company.'),
+    new SlashCommandBuilder()
+        .setName('leaderboard')
+        .setDescription('See the top 5 token generators in the server.'),
+    new SlashCommandBuilder()
+        .setName('lottery')
+        .setDescription('Enter the token lottery draw (admin draws a winner).'),
+    new SlashCommandBuilder()
+        .setName('history')
+        .setDescription('View your last 5 generated token IDs.'),
+    new SlashCommandBuilder()
+        .setName('stats')
+        .setDescription('Show bot statistics: total tokens, subscribers, uptime.'),
+    new SlashCommandBuilder().setName('stock').setDescription('Open form to add token stock').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    new SlashCommandBuilder().setName('stock_main').setDescription('Set the main/default token').addStringOption(opt => opt.setName('bearer').setDescription('Bearer token').setRequired(true)).addStringOption(opt => opt.setName('refresh').setDescription('Refresh token').setRequired(true)).setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    new SlashCommandBuilder().setName('set-refresh').setDescription('Update only the refresh token (tested immediately)').addStringOption(opt => opt.setName('refresh').setDescription('The new refresh token').setRequired(true)),
+    new SlashCommandBuilder().setName('test-refresh').setDescription('Test if the current refresh token works'),
+    new SlashCommandBuilder().setName('generator').setDescription('Post generator panel').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    new SlashCommandBuilder().setName('force_refresh').setDescription('Force refresh the current token').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    new SlashCommandBuilder()
+        .setName('force-refresh-now')
+        .setDescription('Force an immediate token refresh (admin only)')
+        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    new SlashCommandBuilder().setName('remove-stock').setDescription('Remove a token by selection').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    new SlashCommandBuilder().setName('reset-stock').setDescription('Reset stock to default token').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    new SlashCommandBuilder().setName('gen-codes').setDescription('List all active generation IDs').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    new SlashCommandBuilder().setName('remove-token').setDescription('Remove a specific token by ID').addStringOption(opt => opt.setName('id').setDescription('Generation ID').setRequired(true)).setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    new SlashCommandBuilder().setName('refresh_cooldown_all').setDescription('Reset cooldown for everyone').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    new SlashCommandBuilder().setName('panel').setDescription('Deploys interactive panels').addStringOption(opt => opt.setName('type').setDescription('Panel type').setRequired(true).addChoices(
+        { name: 'Verify', value: 'verify' },
+        { name: 'Redeem', value: 'redeem' },
+        { name: 'Support', value: 'support' },
+        { name: 'Generator', value: 'generator' }
+    )).setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    new SlashCommandBuilder().setName('donate-panel').setDescription('Post a donation panel with payment links.'),
+    new SlashCommandBuilder().setName('donation-panel').setDescription('Post a panel to donate tokens by pasting JSON.'),
+    new SlashCommandBuilder().setName('check-panel').setDescription('Post a panel to check/validate a token from JSON.'),
+    new SlashCommandBuilder().setName('split-panel').setDescription('Post a panel to split a token JSON into bearer and refresh.'),
+    new SlashCommandBuilder().setName('announce').setDescription('DM all members with your announcement message.').addStringOption(opt => opt.setName('message').setDescription('The announcement message').setRequired(true)).setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    new SlashCommandBuilder().setName('check-expiry').setDescription('Check when a token expires (based on JWT exp claim)').addStringOption(opt => opt.setName('token').setDescription('The token to check').setRequired(true)),
+    new SlashCommandBuilder().setName('subscribe').setDescription('Subscribe to automatic token deliveries in DMs (every 5 minutes)'),
+    new SlashCommandBuilder().setName('unsubscribe').setDescription('Stop automatic token deliveries'),
+    new SlashCommandBuilder().setName('subscription-panel').setDescription('Post an interactive subscription panel with Subscribe/Unsubscribe buttons').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    new SlashCommandBuilder()
+        .setName('mod-application-panel')
+        .setDescription('Post a panel for users to apply for moderator')
+        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    new SlashCommandBuilder()
+        .setName('sub-all')
+        .setDescription('Subscribe all server members (except bots) to token delivery')
+        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    new SlashCommandBuilder()
+        .setName('un-suball')
+        .setDescription('Unsubscribe all server members from token delivery')
+        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    new SlashCommandBuilder()
+        .setName('send-all-token')
+        .setDescription('Send a fresh token to all currently subscribed users')
+        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    new SlashCommandBuilder()
+        .setName('refresh-status')
+        .setDescription('Show current refresh health and token status')
+        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    new SlashCommandBuilder()
+        .setName('update-log')
+        .setDescription('Re‑post the latest update log')
+        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    new SlashCommandBuilder()
+        .setName('rename-token-channel')
+        .setDescription('Force update the token number channel name (admin only)')
+        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    new SlashCommandBuilder()
+        .setName('profile')
+        .setDescription('Show your Animal Company profile (username, UID, research points, etc.)')
+].map(cmd => cmd.toJSON());
 
-        const username = account.username || account.display_name || account.name || 'Unknown';
-        let researchPoints = 0;
-        if (account.research_points !== undefined) researchPoints = account.research_points;
-        else if (account.research !== undefined) researchPoints = account.research;
-        else if (account.researchPoints !== undefined) researchPoints = account.researchPoints;
-        if (researchPoints === 0 && account.stats) {
-            if (account.stats.research_points !== undefined) researchPoints = account.stats.research_points;
-            else if (account.stats.research !== undefined) researchPoints = account.stats.research;
-        }
-        const id = account.id || account.userId || account.tid || 'N/A';
-        const email = account.email || account.email_address || 'N/A';
-        const createdAt = account.created_at || account.createdAt || account.create_time || null;
-
-        return {
-            username,
-            researchPoints,
-            id,
-            email,
-            createdAt: createdAt ? new Date(createdAt).toUTCString() : 'Unknown'
-        };
-    } catch (err) {
-        console.debug(`[ACCOUNT INFO] Error: ${err.message}`);
-        return null;
-    }
-}
-
-async function updateAccountInfoPanel() {
-    try {
-        const channel = client.channels.cache.get(ACCOUNT_INFO_CHANNEL_ID);
-        if (!channel) {
-            console.error(`[ACCOUNT INFO] Channel ${ACCOUNT_INFO_CHANNEL_ID} not found.`);
-            return;
-        }
-
-        await cleanupDuplicateAccountInfoPanels(ACCOUNT_INFO_CHANNEL_ID);
-
-        const token = tokenStock.length > 0 ? tokenStock[0] : null;
-        if (!token || !token.bearer) {
-            const embed = new EmbedBuilder()
-                .setTitle('📋 Animal Company Account Info')
-                .setDescription('⚠️ No token available – account data cannot be fetched.')
-                .setColor(0xF1C40F)
-                .setFooter({ text: `EAM.LOL Account Info | v${VERSION}` })
-                .setTimestamp();
-            if (accountInfoPanelMessage) {
-                try {
-                    const oldChannel = client.channels.cache.get(accountInfoPanelMessage.channelId);
-                    if (oldChannel) {
-                        const oldMsg = await oldChannel.messages.fetch(accountInfoPanelMessage.messageId);
-                        await oldMsg.edit({ embeds: [embed], components: [] });
-                        return;
-                    }
-                } catch (_) { accountInfoPanelMessage = null; }
-            }
-            const msg = await channel.send({ embeds: [embed] });
-            accountInfoPanelMessage = { channelId: msg.channel.id, messageId: msg.id };
-            return;
-        }
-
-        const info = await fetchAccountInfo(token.bearer);
-        if (!info) {
-            const embed = new EmbedBuilder()
-                .setTitle('📋 Animal Company Account Info')
-                .setDescription('❌ Could not fetch account data from the API.')
-                .setColor(0xED4245)
-                .setFooter({ text: `EAM.LOL Account Info | v${VERSION}` })
-                .setTimestamp();
-            if (accountInfoPanelMessage) {
-                try {
-                    const oldChannel = client.channels.cache.get(accountInfoPanelMessage.channelId);
-                    if (oldChannel) {
-                        const oldMsg = await oldChannel.messages.fetch(accountInfoPanelMessage.messageId);
-                        await oldMsg.edit({ embeds: [embed], components: [] });
-                        return;
-                    }
-                } catch (_) { accountInfoPanelMessage = null; }
-            }
-            const msg = await channel.send({ embeds: [embed] });
-            accountInfoPanelMessage = { channelId: msg.channel.id, messageId: msg.id };
-            return;
-        }
-
-        const embed = new EmbedBuilder()
-            .setTitle('📋 Animal Company Account Info')
-            .setDescription(`Current account details (auto‑refreshed)`)
-            .setColor(0x2ECC71)
-            .addFields(
-                { name: '👤 Game Name', value: info.username, inline: true },
-                { name: '🔬 Research Points', value: `${info.researchPoints}`, inline: true },
-                { name: '🆔 Account ID', value: info.id.length > 20 ? info.id.slice(0, 20)+'…' : info.id, inline: true },
-                { name: '📧 Email', value: info.email.length > 20 ? info.email.slice(0, 20)+'…' : info.email, inline: true },
-                { name: '📅 Created', value: info.createdAt, inline: true }
-            )
-            .setFooter({ text: `EAM.LOL Account Info | v${VERSION} | Updated ${new Date().toUTCString()}` })
-            .setTimestamp();
-
-        if (accountInfoPanelMessage) {
-            try {
-                const oldChannel = client.channels.cache.get(accountInfoPanelMessage.channelId);
-                if (oldChannel) {
-                    const oldMsg = await oldChannel.messages.fetch(accountInfoPanelMessage.messageId);
-                    await oldMsg.edit({ embeds: [embed], components: [] });
-                    return;
-                }
-            } catch (_) { accountInfoPanelMessage = null; }
-        }
-
-        const msg = await channel.send({ embeds: [embed] });
-        accountInfoPanelMessage = { channelId: msg.channel.id, messageId: msg.id };
-    } catch (err) {
-        console.error('[ACCOUNT INFO] Error updating panel:', err);
-    }
-}
-
-async function cleanupDuplicateAccountInfoPanels(channelId) {
-    try {
-        const channel = client.channels.cache.get(channelId);
-        if (!channel) return;
-        const messages = await channel.messages.fetch({ limit: 20 });
-        const botMessages = messages.filter(m => m.author.id === client.user.id && m.embeds.length > 0 && m.embeds[0].title === '📋 Animal Company Account Info');
-        if (botMessages.size > 1) {
-            const sorted = botMessages.sort((a, b) => b.createdTimestamp - a.createdTimestamp);
-            const latest = sorted.first();
-            for (const [id, msg] of sorted) {
-                if (msg.id !== latest.id) {
-                    await msg.delete();
-                    console.log(`[ACCOUNT INFO] Deleted duplicate panel: ${msg.id}`);
-                }
-            }
-        }
-    } catch (err) {
-        console.error('[ACCOUNT INFO] Cleanup error:', err);
-    }
-}
-
-// ========== STATUS PANEL UPDATE FUNCTION ==========
+// --- STATUS PANEL FUNCTIONS ---
 async function updateStatusPanel() {
     try {
         const channel = client.channels.cache.get(STATUS_CHANNEL_ID);
@@ -1445,9 +1441,7 @@ async function updateStatusPanel() {
             console.error(`[ERROR] Status channel ${STATUS_CHANNEL_ID} not found.`);
             return;
         }
-
         await cleanupDuplicateStatusPanels(STATUS_CHANNEL_ID);
-
         const token = tokenStock.length > 0 ? tokenStock[0] : null;
         let statusText = '🔴 token-expired';
         let color = 0xED4245;
@@ -1462,10 +1456,8 @@ async function updateStatusPanel() {
                 const ttl = Math.floor((expiry - now) / 1000);
                 expiryText = new Date(expiry).toUTCString();
                 timeLeft = ttl > 0 ? formatRemainingTime(expiry) : 'EXPIRED';
-
                 const apiCheck = await validateTokenDetails(token.bearer, token.refresh);
                 const apiValid = apiCheck.valid;
-
                 if (ttl <= 0 || !apiValid) {
                     statusText = '🔴 token-expired';
                     color = 0xED4245;
@@ -1499,13 +1491,12 @@ async function updateStatusPanel() {
                 { name: 'Expires At (UTC)', value: expiryText, inline: true },
                 { name: 'Time Left', value: timeLeft, inline: true },
                 { name: 'Last Refresh', value: lastRefreshExpiry ? humanExpiry(lastRefreshExpiry) : 'Never', inline: true },
-                { name: 'Auto-Refresh Cycle', value: 'Every 2m 30s', inline: true }
+                { name: 'Auto-Refresh Cycle', value: 'Every 1 minute (checks health)', inline: true }
             )
             .setFooter({ text: `EAM.LOL Status | v${VERSION}` })
             .setTimestamp();
 
         const components = [];
-
         if (statusPanelMessage) {
             try {
                 const oldChannel = client.channels.cache.get(statusPanelMessage.channelId);
@@ -1534,10 +1525,8 @@ async function updateStatusChannelName() {
     try {
         const channel = client.channels.cache.get(STATUS_CHANNEL_ID);
         if (!channel) return;
-
         const token = tokenStock.length > 0 ? tokenStock[0] : null;
         let newName = '🟠 token-none';
-
         if (token && token.bearer) {
             const expiry = getTokenExpiryMs(token.bearer);
             if (expiry !== null) {
@@ -1558,7 +1547,6 @@ async function updateStatusChannelName() {
         } else {
             newName = '🟠 token-none';
         }
-
         if (channel.name !== newName) {
             await channel.setName(newName);
             console.log(`[STATUS] Channel name updated to: ${newName}`);
@@ -1568,7 +1556,6 @@ async function updateStatusChannelName() {
     }
 }
 
-// ========== TOKEN NUMBER CHANNEL UPDATE ==========
 async function updateTokenNumberChannel() {
     try {
         const channel = client.channels.cache.get(TOKEN_NUMBER_CHANNEL_ID);
@@ -1576,11 +1563,9 @@ async function updateTokenNumberChannel() {
             console.error(`[TOKEN_NUMBER] Channel ${TOKEN_NUMBER_CHANNEL_ID} not found.`);
             return;
         }
-
         const token = tokenStock.length > 0 ? tokenStock[0] : null;
         let emoji = '🔴';
         let number = 0;
-
         if (token && token.bearer) {
             const expiry = getTokenExpiryMs(token.bearer);
             if (expiry !== null) {
@@ -1589,11 +1574,7 @@ async function updateTokenNumberChannel() {
                 const apiCheck = await validateTokenDetails(token.bearer, token.refresh);
                 const valid = apiCheck.valid && ttl > 0;
                 if (valid) {
-                    if (ttl < 300) {
-                        emoji = '🟡';
-                    } else {
-                        emoji = '🟢';
-                    }
+                    emoji = ttl < 300 ? '🟡' : '🟢';
                     number = token.displayNumber || 0;
                 } else {
                     emoji = '🔴';
@@ -1607,14 +1588,15 @@ async function updateTokenNumberChannel() {
             emoji = '🔴';
             number = 0;
         }
-
         const newName = `${emoji} token-in-bot${number}`;
         if (channel.name !== newName) {
-            await channel.setName(newName);
+            await channel.setName(newName).catch(err => {
+                console.error(`[TOKEN_NUMBER] Failed to rename channel: ${err.message}`);
+            });
             console.log(`[TOKEN_NUMBER] Channel name updated to: ${newName}`);
         }
     } catch (err) {
-        console.error('[TOKEN_NUMBER] Error updating channel name:', err);
+        console.error('[TOKEN_NUMBER] Error updating channel name:', err.message);
     }
 }
 
@@ -1645,14 +1627,12 @@ function buildSubscriptionEmbed() {
     let color = 0xED4245;
     let timeLeft = 'N/A';
     let tokenNumber = token && token.displayNumber ? token.displayNumber : 0;
-
     if (token && token.bearer) {
         const expiry = getTokenExpiryMs(token.bearer);
         if (expiry !== null) {
             const now = Date.now();
             const ttl = Math.floor((expiry - now) / 1000);
             timeLeft = ttl > 0 ? formatRemainingTime(expiry) : 'EXPIRED';
-
             if (ttl <= 0) {
                 status = '🔴 EXPIRED';
                 color = 0xED4245;
@@ -1671,7 +1651,6 @@ function buildSubscriptionEmbed() {
         status = '🟠 NONE';
         color = 0xF39C12;
     }
-
     const embed = new EmbedBuilder()
         .setTitle('📋 Subscription Panel')
         .setDescription(
@@ -1704,7 +1683,6 @@ async function updateSubscriptionPanel() {
             subscriptionPanelMessage = null;
         }
     }
-
     if (subscriptionPanelMessage) {
         try {
             const channel = client.channels.cache.get(subscriptionPanelMessage.channelId);
@@ -1755,29 +1733,19 @@ client.once('ready', async () => {
     } catch (error) { console.error('[ERROR] [EAM.LOL] Failed to register commands:', error); }
 
     logQueueInterval = setInterval(processLogQueue, 2000);
-
     await updateStatusChannelName();
     await updateTokenNumberChannel();
-
     startAutoRefresh();
     startDeliveryLoop();
     await catchUpSubscribers();
     await postUpdateLog();
     await updateStatusPanel();
-    await updateAccountInfoPanel(); // new
-
     if (subscriptionPanelMessage) {
         await cleanupDuplicateSubscriptionPanels(subscriptionPanelMessage.channelId);
     }
-
-    setInterval(async () => {
-        await updateStatusPanel();
-        await updateAccountInfoPanel(); // new
-    }, 30000);
-
-    setInterval(async () => {
-        await updateSubscriptionPanel();
-    }, 5000);
+    setInterval(async () => { await updateStatusPanel(); }, 30000);
+    setInterval(async () => { await updateSubscriptionPanel(); }, 5000);
+    startAutoProfile();
 });
 
 // --- INTERACTION HANDLER ---
@@ -1793,6 +1761,71 @@ client.on('interactionCreate', async interaction => {
             }
 
             const { commandName, options } = interaction;
+
+            // --- /profile command ---
+            if (commandName === 'profile') {
+                await interaction.deferReply({ flags: 64 });
+                const token = tokenStock.length > 0 ? tokenStock[0] : null;
+                if (!token) {
+                    return interaction.editReply({ content: 'No token available.', flags: 64 });
+                }
+                const stats = await fetchAccountStats(token.bearer);
+                const expiry = getTokenExpiryMs(token.bearer);
+                const ttl = expiry ? Math.floor((expiry - Date.now()) / 1000) : 0;
+                const embed = new EmbedBuilder()
+                    .setTitle('📊 Animal Company Profile')
+                    .setColor(0x5865F2)
+                    .addFields(
+                        { name: '👤 Display Name', value: stats.success ? stats.display_name : 'unknown', inline: true },
+                        { name: '🆔 User ID', value: stats.success ? stats.uid : 'unknown', inline: true },
+                        { name: '🔬 Research Points', value: stats.success ? stats.research_points.toLocaleString() : 'unknown', inline: true },
+                        { name: '💰 Credits', value: stats.success ? stats.credits.toLocaleString() : 'unknown', inline: true },
+                        { name: '⏳ Token Expiry', value: ttl > 0 ? formatRemainingTime(expiry) : 'EXPIRED', inline: true }
+                    )
+                    .setTimestamp();
+                return interaction.editReply({ embeds: [embed], flags: 64 });
+            }
+
+            // --- FAST COMMANDS ---
+            if (commandName === 'ping') {
+                return interaction.reply({ content: `Pong! ${client.ws.ping}ms`, flags: 64 });
+            }
+            if (commandName === '8ball') {
+                const question = options.getString('question');
+                const answers = ['Yes.', 'No.', 'Maybe.', 'Definitely.', 'Ask again later.', 'Outlook not so good.'];
+                const ans = answers[Math.floor(Math.random() * answers.length)];
+                const embed = new EmbedBuilder().setTitle('8-BALL').addFields({ name: 'Question', value: question }, { name: 'Answer', value: ans }).setColor(0x3498DB);
+                return interaction.reply({ embeds: [embed] });
+            }
+            if (commandName === 'help') {
+                const embed = new EmbedBuilder().setTitle('EAM.LOL Command Interface')
+                    .setDescription('All available commands are listed below.')
+                    .addFields(
+                        { name: 'Token Generation', value: '/token - Generate a fresh token\n/generator - Post the generator panel', inline: true },
+                        { name: 'Subscription', value: '/subscribe - Get tokens in DMs every 5 min\n/unsubscribe - Stop auto-delivery\n/subscription-panel - Post interactive panel (admin)', inline: true },
+                        { name: 'Moderation', value: '/mod-application-panel - Post the mod application panel (admin)', inline: true },
+                        { name: 'Admin Tools', value: '/sub-all - Subscribe all members\n/un-suball - Unsubscribe all\n/send-all-token - Send to all subscribers\n/refresh-status - Check refresh health\n/set-refresh - Update only refresh token\n/test-refresh - Test current refresh token\n/force-refresh-now - Force immediate refresh', inline: true },
+                        { name: 'Utilities', value: '/check-expiry - Check expiry of a raw token\n/check-panel - Check/validate a token from JSON', inline: true },
+                        { name: 'Extras', value: '/donation-panel - Donate a token\n/split-panel - Split a token JSON', inline: true },
+                        { name: 'Fun Zone', value: '/fun - Random fact\n/leaderboard - Top generators\n/lottery - Enter draw\n/history - Your token history\n/stats - Bot stats', inline: true },
+                        { name: 'Admin Only', value: '/stock - Add token stock\n/force_refresh - Force refresh\n/announce - DM all members', inline: true },
+                        { name: 'Profile', value: '/profile - Show Animal Company stats', inline: true }
+                    )
+                    .setColor(0x3498DB)
+                    .addFields({ name: 'Credits', value: '@elliott', inline: true })
+                    .setFooter({ text: 'Run /update-log to see what\'s new' });
+                return interaction.reply({ embeds: [embed], flags: 64 });
+            }
+            if (commandName === 'serverinfo') {
+                const guild = interaction.guild;
+                const embed = new EmbedBuilder().setTitle(`Server: ${guild.name}`).setThumbnail(guild.iconURL())
+                    .addFields(
+                        { name: 'Members', value: `${guild.memberCount}`, inline: true },
+                        { name: 'Created', value: `<t:${Math.floor(guild.createdTimestamp/1000)}:R>`, inline: true },
+                        { name: 'Owner', value: `<@${guild.ownerId}>`, inline: true }
+                    ).setColor(0x3498DB).setTimestamp();
+                return interaction.reply({ embeds: [embed] });
+            }
 
             // --- FUN COMMANDS ---
             if (commandName === 'fun') {
@@ -1883,202 +1916,6 @@ client.on('interactionCreate', async interaction => {
                 return interaction.reply({ embeds: [embed], flags: 64 });
             }
 
-            // --- UPDATE LOG ---
-            if (commandName === 'update-log') {
-                if (!hasAdminAccess(interaction)) return interaction.reply({ content: 'Access Denied.', flags: 64 });
-                await interaction.deferReply({ flags: 64 });
-                await postUpdateLog();
-                return interaction.editReply({ content: 'Update log posted to <#' + UPDATE_LOG_CHANNEL_ID + '>.', flags: 64 });
-            }
-
-            // --- SUB-ALL ---
-            if (commandName === 'sub-all') {
-                if (!hasAdminAccess(interaction)) return interaction.reply({ content: 'Access Denied.', flags: 64 });
-                await interaction.deferReply({ flags: 64 });
-                const count = await subscribeAllMembers(interaction.guild);
-                await updateSubscriptionPanel();
-                return interaction.editReply({ content: `Subscribed **${count}** members.`, flags: 64 });
-            }
-
-            // --- UN-SUBALL ---
-            if (commandName === 'un-suball') {
-                if (!hasAdminAccess(interaction)) return interaction.reply({ content: 'Access Denied.', flags: 64 });
-                await interaction.deferReply({ flags: 64 });
-                const count = await unsubscribeAllMembers();
-                await updateSubscriptionPanel();
-                return interaction.editReply({ content: `Unsubscribed **${count}** members.`, flags: 64 });
-            }
-
-            // --- SEND-ALL-TOKEN ---
-            if (commandName === 'send-all-token') {
-                if (!hasAdminAccess(interaction)) return interaction.reply({ content: 'Access Denied.', flags: 64 });
-                await interaction.deferReply({ flags: 64 });
-                const { successCount, failCount } = await sendTokenToAllSubscribers();
-                return interaction.editReply({ content: `Sent to **${successCount}** subscribers (${failCount} failed).`, flags: 64 });
-            }
-
-            // --- REFRESH-STATUS ---
-            if (commandName === 'refresh-status') {
-                if (!hasAdminAccess(interaction)) return interaction.reply({ content: 'Access Denied.', flags: 64 });
-                await interaction.deferReply({ flags: 64 });
-                const token = tokenStock.length > 0 ? tokenStock[0] : null;
-                const status = token ? {
-                    bearer: token.bearer ? token.bearer.slice(0, 20) + '...' : 'N/A',
-                    refresh: token.refresh ? token.refresh.slice(0, 20) + '...' : 'N/A',
-                    expiresAt: token.expiresAt ? new Date(token.expiresAt).toISOString() : 'N/A',
-                    timeLeft: token.expiresAt ? formatRemainingTime(token.expiresAt) : 'N/A',
-                    valid: token.expiresAt ? Date.now() < token.expiresAt : false,
-                    number: token.displayNumber || 0
-                } : null;
-                const embed = new EmbedBuilder()
-                    .setTitle('Refresh Status')
-                    .addFields(
-                        { name: 'Token #', value: status ? `${status.number}` : 'N/A', inline: true },
-                        { name: 'Token in Stock', value: status ? 'Yes' : 'No', inline: true },
-                        { name: 'Valid', value: status && status.valid ? '✅ Yes' : '❌ No', inline: true },
-                        { name: 'Expires', value: status ? status.timeLeft : 'N/A', inline: true },
-                        { name: 'Subscribers', value: `${subscribedUsers.size}`, inline: true },
-                        { name: 'Accounts Loaded', value: `${accounts.length}`, inline: true },
-                        { name: 'Last Refresh', value: lastRefreshExpiry ? humanExpiry(lastRefreshExpiry) : 'Never', inline: true }
-                    )
-                    .setColor(status && status.valid ? 0x2ECC71 : 0xED4245)
-                    .setTimestamp();
-                return interaction.editReply({ embeds: [embed], flags: 64 });
-            }
-
-            // --- SUBSCRIPTION COMMANDS ---
-            if (commandName === 'subscribe') {
-                await interaction.deferReply({ flags: 64 });
-                if (subscribedUsers.has(interaction.user.id)) {
-                    return interaction.editReply({ content: 'You are already subscribed!', flags: 64 });
-                }
-                subscribedUsers.add(interaction.user.id);
-                const success = await deliverTokenToUser(interaction.user);
-                await updateSubscriptionPanel();
-                return interaction.editReply({ content: success ? 'Subscribed – you will receive tokens every 5 minutes.' : 'Subscribed but could not send initial token. Try again.', flags: 64 });
-            }
-
-            if (commandName === 'unsubscribe') {
-                await interaction.deferReply({ flags: 64 });
-                if (!subscribedUsers.has(interaction.user.id)) {
-                    return interaction.editReply({ content: 'You are not subscribed.', flags: 64 });
-                }
-                subscribedUsers.delete(interaction.user.id);
-                await updateSubscriptionPanel();
-                return interaction.editReply({ content: 'Unsubscribed.', flags: 64 });
-            }
-
-            // --- SUBSCRIPTION PANEL ---
-            if (commandName === 'subscription-panel') {
-                if (!hasAdminAccess(interaction)) return interaction.reply({ content: 'Access Denied – Admin only to post panel.', flags: 64 });
-
-                await cleanupDuplicateSubscriptionPanels(interaction.channel.id);
-
-                const embed = buildSubscriptionEmbed();
-                const row1 = new ActionRowBuilder()
-                    .addComponents(
-                        new ButtonBuilder()
-                            .setCustomId('subscribe_panel')
-                            .setLabel('Subscribe')
-                            .setStyle(ButtonStyle.Success),
-                        new ButtonBuilder()
-                            .setCustomId('unsubscribe_panel')
-                            .setLabel('Unsubscribe')
-                            .setStyle(ButtonStyle.Danger),
-                        new ButtonBuilder()
-                            .setCustomId('get_token_now')
-                            .setLabel('Get Token Now')
-                            .setStyle(ButtonStyle.Primary)
-                    );
-                const row2 = new ActionRowBuilder()
-                    .addComponents(
-                        new ButtonBuilder()
-                            .setCustomId('refresh_stock_btn')
-                            .setLabel('🔄 Refresh Stock')
-                            .setStyle(ButtonStyle.Primary)
-                    );
-
-                const reply = await interaction.reply({ embeds: [embed], components: [row1, row2], ephemeral: false, withResponse: true });
-                const message = reply.resource.message;
-                subscriptionPanelMessage = {
-                    channelId: message.channel.id,
-                    messageId: message.id
-                };
-                return;
-            }
-
-            // --- MOD APPLICATION PANEL ---
-            if (commandName === 'mod-application-panel') {
-                if (!hasAdminAccess(interaction)) return interaction.reply({ content: 'Access Denied – Admin only to post panel.', flags: 64 });
-
-                const embed = new EmbedBuilder()
-                    .setTitle('Moderator Application')
-                    .setDescription(
-                        'We are looking for dedicated community members to join our moderation team.\n\n' +
-                        '**Requirements:**\n' +
-                        '• Active in the community\n' +
-                        '• Mature and respectful\n' +
-                        '• Willing to help others\n\n' +
-                        'Click the button below to start your application.'
-                    )
-                    .setColor(0x3498DB)
-                    .setFooter({ text: 'Applications are reviewed by staff.' });
-
-                const row = new ActionRowBuilder()
-                    .addComponents(
-                        new ButtonBuilder()
-                            .setCustomId('mod_app_apply')
-                            .setLabel('Apply Now')
-                            .setStyle(ButtonStyle.Primary)
-                    );
-
-                await interaction.reply({ embeds: [embed], components: [row], ephemeral: false });
-                return;
-            }
-
-            // --- FAST COMMANDS ---
-            const fastCommands = ['ping', '8ball', 'help', 'serverinfo'];
-            if (fastCommands.includes(commandName)) {
-                if (commandName === 'ping') {
-                    return interaction.reply({ content: `Pong! ${client.ws.ping}ms`, flags: 64 });
-                }
-                if (commandName === '8ball') {
-                    const question = options.getString('question');
-                    const answers = ['Yes.', 'No.', 'Maybe.', 'Definitely.', 'Ask again later.', 'Outlook not so good.'];
-                    const ans = answers[Math.floor(Math.random() * answers.length)];
-                    const embed = new EmbedBuilder().setTitle('8-BALL').addFields({ name: 'Question', value: question }, { name: 'Answer', value: ans }).setColor(0x3498DB);
-                    return interaction.reply({ embeds: [embed] });
-                }
-                if (commandName === 'help') {
-                    const embed = new EmbedBuilder().setTitle('EAM.LOL Command Interface')
-                        .setDescription('All available commands are listed below.')
-                        .addFields(
-                            { name: 'Token Generation', value: '/token - Generate a fresh token\n/generator - Post the generator panel', inline: true },
-                            { name: 'Subscription', value: '/subscribe - Get tokens in DMs every 5 min\n/unsubscribe - Stop auto-delivery\n/subscription-panel - Post interactive panel (admin)', inline: true },
-                            { name: 'Moderation', value: '/mod-application-panel - Post the mod application panel (admin)', inline: true },
-                            { name: 'Admin Tools', value: '/sub-all - Subscribe all members\n/un-suball - Unsubscribe all\n/send-all-token - Send to all subscribers\n/refresh-status - Check refresh health\n/set-refresh - Update only refresh token\n/test-refresh - Test current refresh token\n/force-refresh-now - Force immediate refresh', inline: true },
-                            { name: 'Utilities', value: '/check-expiry - Check expiry of a raw token\n/check-panel - Check/validate a token from JSON', inline: true },
-                            { name: 'Extras', value: '/donation-panel - Donate a token\n/split-panel - Split a token JSON', inline: true },
-                            { name: 'Fun Zone', value: '/fun - Random fact\n/leaderboard - Top generators\n/lottery - Enter draw\n/history - Your token history\n/stats - Bot stats', inline: true },
-                            { name: 'Admin Only', value: '/stock - Add token stock\n/force_refresh - Force refresh\n/announce - DM all members', inline: true }
-                        )
-                        .setColor(0x3498DB)
-                        .addFields({ name: 'Credits', value: '@elliott', inline: true })
-                        .setFooter({ text: 'Run /update-log to see what\'s new' });
-                    return interaction.reply({ embeds: [embed], flags: 64 });
-                }
-                if (commandName === 'serverinfo') {
-                    const guild = interaction.guild;
-                    const embed = new EmbedBuilder().setTitle(`Server: ${guild.name}`).setThumbnail(guild.iconURL())
-                        .addFields(
-                            { name: 'Members', value: `${guild.memberCount}`, inline: true },
-                            { name: 'Created', value: `<t:${Math.floor(guild.createdTimestamp/1000)}:R>`, inline: true },
-                            { name: 'Owner', value: `<@${guild.ownerId}>`, inline: true }
-                        ).setColor(0x3498DB).setTimestamp();
-                    return interaction.reply({ embeds: [embed] });
-                }
-            }
-
             // --- TOKEN-MEANING ---
             if (commandName === 'token-meaning') {
                 const embed = new EmbedBuilder()
@@ -2127,10 +1964,11 @@ client.on('interactionCreate', async interaction => {
                     if (tokenStock.length === 0) {
                         return interaction.editReply({ content: 'No token in stock to refresh.', flags: 64 });
                     }
-                    const result = await refreshToken(tokenStock[0].refresh);
+                    const result = await refreshToken(tokenStock[0].refresh, true);
                     if (result.success) {
                         await updateStatusPanel();
                         await updateSubscriptionPanel();
+                        await postAutoProfile();
                         return interaction.editReply({ content: `✅ Token refreshed! New expiry: ${humanExpiry(result.expiresAt)}`, flags: 64 });
                     } else {
                         return interaction.editReply({ content: `❌ Refresh failed: ${result.error}`, flags: 64 });
@@ -2201,6 +2039,7 @@ client.on('interactionCreate', async interaction => {
 
                 await updateStatusPanel();
                 await updateSubscriptionPanel();
+                await postAutoProfile();
 
                 const embed = new EmbedBuilder()
                     .setTitle('✅ Refresh & Bearer Updated')
@@ -2392,6 +2231,7 @@ client.on('interactionCreate', async interaction => {
                         tokenStock = [{ bearer: test.bearer, refresh: test.refresh, addedAt: Date.now(), expiresAt: test.expiresAt, displayNumber: newNumber }];
                         await updateStatusPanel();
                         await updateSubscriptionPanel();
+                        await postAutoProfile();
                         const embed = new EmbedBuilder()
                             .setTitle('✅ Token Updated')
                             .setDescription(`Main token successfully set with number **${newNumber}**.`)
@@ -2455,8 +2295,11 @@ client.on('interactionCreate', async interaction => {
                 if (commandName === 'force_refresh') {
                     if (tokenStock.length === 0) return interaction.editReply({ content: 'No token in stock.' });
                     try {
-                        const result = await refreshToken(tokenStock[0].refresh);
+                        const result = await refreshToken(tokenStock[0].refresh, true);
                         if (result.success) {
+                            await updateStatusPanel();
+                            await updateSubscriptionPanel();
+                            await postAutoProfile();
                             const embed = new EmbedBuilder()
                                 .setTitle('✅ Token Refreshed')
                                 .setColor(0x2ECC71)
@@ -2481,6 +2324,7 @@ client.on('interactionCreate', async interaction => {
                     tokenStock = [{ bearer: DEFAULT_TOKEN.bearer, refresh: DEFAULT_TOKEN.refresh_token, addedAt: Date.now(), expiresAt: lastRefreshExpiry, displayNumber: newNumber }];
                     await updateStatusPanel();
                     await updateSubscriptionPanel();
+                    await postAutoProfile();
                     return interaction.editReply({ content: `Stock reset to default. Token #${newNumber}`, flags: 64 });
                 }
 
@@ -2530,6 +2374,9 @@ client.on('interactionCreate', async interaction => {
                     }
                 }
             }
+
+            // Fallback for any unhandled command
+            return interaction.editReply({ content: 'Command not implemented yet.', flags: 64 });
         }
 
         // --- BUTTON HANDLERS ---
@@ -2648,10 +2495,11 @@ client.on('interactionCreate', async interaction => {
                 if (!tokenObj || !tokenObj.refresh) {
                     return interaction.editReply({ content: 'No refresh token available.', flags: 64 });
                 }
-                const result = await refreshToken(tokenObj.refresh);
+                const result = await refreshToken(tokenObj.refresh, true);
                 if (result.success) {
                     await updateStatusPanel();
                     await updateSubscriptionPanel();
+                    await postAutoProfile();
                     return interaction.editReply({ content: `✅ Stock token refreshed! New expiry: ${humanExpiry(tokenStock[0].expiresAt)}`, flags: 64 });
                 } else {
                     return interaction.editReply({ content: `❌ Refresh failed: ${result.error}`, flags: 64 });
@@ -2895,6 +2743,7 @@ client.on('interactionCreate', async interaction => {
                 tokenStock.push({ bearer, refresh, addedAt: Date.now(), expiresAt: getTokenExpiryMs(bearer), displayNumber: newNumber });
                 await updateStatusPanel();
                 await updateSubscriptionPanel();
+                await postAutoProfile();
                 return interaction.editReply({ content: `Added token! Total: ${tokenStock.length} (Token #${newNumber})` });
             }
 
@@ -2940,6 +2789,7 @@ client.on('interactionCreate', async interaction => {
                     if (!accounts.find(a => a.refresh_token === newRefresh)) accounts.push({ token: newBearer, refresh_token: newRefresh, label: `donated_${Date.now()}` });
                     await updateStatusPanel();
                     await updateSubscriptionPanel();
+                    await postAutoProfile();
                     return interaction.editReply({ content: `Token donated and refreshed successfully! New token added to stock (${tokenStock.length} total). ID: \`${genId}\` Expires: ${humanExpiry(newExpiry)}` });
                 } else {
                     const jwtCheck = validateTokenJWT(bearer, refresh);
@@ -2950,6 +2800,7 @@ client.on('interactionCreate', async interaction => {
                     if (!accounts.find(a => a.refresh_token === refresh)) accounts.push({ token: bearer, refresh_token: refresh, label: `donated_${Date.now()}` });
                     await updateStatusPanel();
                     await updateSubscriptionPanel();
+                    await postAutoProfile();
                     return interaction.editReply({ content: `Token donated successfully! Added to stock (${tokenStock.length} total). ID: \`${genId}\` Expires: ${humanExpiry(expiry)}` });
                 }
             }
@@ -3063,7 +2914,6 @@ client.on('interactionCreate', async interaction => {
         const type = parts[1];
         const msgId = interaction.message.id;
         let token = '';
-
         const cached = tokenCache.get(msgId);
         if (cached) {
             token = type === 'bearer' ? cached.bearer : cached.refresh;
@@ -3084,14 +2934,11 @@ client.on('interactionCreate', async interaction => {
                 }
             }
         }
-
         if (!token) return interaction.reply({ content: 'No token found.', flags: 64 });
-
         await interaction.deferReply({ flags: 64 });
         try {
             await interaction.user.send({ content: `**${type.charAt(0).toUpperCase() + type.slice(1)} Token**\n\`\`\`\n${token}\n\`\`\`` });
         } catch (_) {}
-
         return interaction.editReply({ content: `**${type.charAt(0).toUpperCase() + type.slice(1)} Token copied!**\n\`\`\`\n${token}\n\`\`\`` });
     }
 });
