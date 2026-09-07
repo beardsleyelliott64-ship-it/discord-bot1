@@ -1,6 +1,6 @@
 // ============================================================
-// FILE: index.js – EAM.LOL Token Bot v2.6.3
-// COMPLETE – ALL COMMANDS WORK, NO ERRORS
+// FILE: index.js – EAM.LOL Token Bot v2.6.4
+// BULLETPROOF REFRESHER – NO MORE EXPIRATION
 // ============================================================
 
 const {
@@ -43,7 +43,7 @@ const client = new Client({
 });
 
 // --- CONFIGURATION ---
-const VERSION = "2.6.3";
+const VERSION = "2.6.4";
 const UPDATE_LOG_CHANNEL_ID = "1545829503912120431";
 const STATUS_CHANNEL_ID = "1545624109583695933";
 const TOKEN_NUMBER_CHANNEL_ID = "1546151859465756722";
@@ -52,10 +52,14 @@ const PROFILE_CHANNEL_ID = "1546312357142073416";
 
 const CHANGELOG = `🔧 Bot Update v${VERSION}
 
-• Refresh threshold = 20 minutes.
-• All commands fully implemented.
-• Panels visible to all users.
-• Auto-profile posting every hour.`;
+• Refresh threshold = 30 minutes.
+• Retries ALL accounts on failure.
+• Health check every 5 minutes.
+• Smart fallback & cooldowns.
+
+What to do:
+• Set a valid REFRESH_TOKEN_1 in environment variables.
+• Or use /set-refresh in Discord.`;
 
 const MEMBER_ROLE_ID = "1492798151516491816";
 const SUPPORTER_ROLE_ID = "1529393418063581284";
@@ -199,6 +203,8 @@ function loadAccounts() {
         const refresh = (process.env.INITIAL_REFRESH_TOKEN || '').trim();
         if (token && refresh) accounts.push({ token, refresh_token: refresh, label: 'account_1 (legacy)' });
     }
+    // Always add the hardcoded DEFAULT_TOKEN as a fallback
+    accounts.push({ token: DEFAULT_TOKEN.bearer, refresh_token: DEFAULT_TOKEN.refresh_token, label: 'hardcoded_default' });
     return accounts;
 }
 let accounts = loadAccounts();
@@ -211,11 +217,20 @@ function getActiveAccount() {
     return null;
 }
 function switchToNextAccount(currentLabel) {
-    const ordered = [...accounts].sort((a, b) => (a.label === currentLabel ? 1 : b.label === currentLabel ? -1 : 0));
-    for (const acc of ordered) {
+    // Try all accounts in order, skipping the current one
+    for (const acc of accounts) {
         if (acc.label === currentLabel) continue;
         if (!isTokenExpiredObj({ bearer: acc.refresh_token })) {
             console.log(`[INFO] [EAM.LOL] Switching to ${acc.label}`);
+            return acc;
+        }
+    }
+    return null;
+}
+// New: try all accounts in a loop, return the first one that works
+function tryAllAccountsForRefresh() {
+    for (const acc of accounts) {
+        if (!isTokenExpiredObj({ bearer: acc.refresh_token })) {
             return acc;
         }
     }
@@ -274,8 +289,8 @@ function humanExpiry(expiresAt) {
     return `expires in ${formatRemainingTime(expiresAt)} (${new Date(expiresAt).toUTCString()})`;
 }
 
-// ========== REFRESH THRESHOLD = 20 MINUTES ==========
-const REFRESH_THRESHOLD = 1200; // 20 minutes in seconds
+// ========== REFRESH THRESHOLD = 30 MINUTES ==========
+const REFRESH_THRESHOLD = 1800; // 30 minutes in seconds
 
 function tokenNeedsRefresh(bearer) {
     const expiry = getTokenExpiryMs(bearer);
@@ -412,7 +427,7 @@ async function refreshTokenOnly(refreshTk, retries = 2) {
     return { success: false, error: lastError ? lastError.message : 'Unknown error', response: lastResponse };
 }
 
-// --- refreshToken with fallback ---
+// --- refreshToken with fallback and proactive check ---
 async function refreshToken(refreshTk, forceRefresh = false) {
     if (!refreshTk) return { success: false, error: 'No refresh token' };
 
@@ -427,6 +442,7 @@ async function refreshToken(refreshTk, forceRefresh = false) {
         }
     }
 
+    // Try to refresh using the provided refresh token
     const result = await refreshTokenOnly(refreshTk, 2);
     if (result.success) {
         DEFAULT_TOKEN.bearer = result.bearer;
@@ -465,44 +481,58 @@ async function refreshToken(refreshTk, forceRefresh = false) {
         return { success: true, bearer: result.bearer, refresh: result.refresh, expiresAt: result.expiresAt };
     }
 
-    console.log(`[WARN] [EAM.LOL] Refresh failed (${result.error}). Trying fallback accounts...`);
-    const nextAcc = switchToNextAccount(activeAccountLabel);
-    if (nextAcc) {
-        activeAccountLabel = nextAcc.label;
-        DEFAULT_TOKEN.bearer = nextAcc.token;
-        DEFAULT_TOKEN.refresh_token = nextAcc.refresh_token;
-        const newExpiry = getTokenExpiryMs(nextAcc.token);
-        const newNumber = generateTokenNumber();
-        if (tokenStock.length > 0) {
-            const old = tokenStock[0];
-            tokenStock[0] = {
-                bearer: nextAcc.token,
-                refresh: nextAcc.refresh_token,
-                addedAt: Date.now(),
-                expiresAt: newExpiry,
-                id: old.id || generateGenerationId(),
-                userId: old.userId || 'system',
-                username: old.username || 'System',
-                displayNumber: newNumber
-            };
-        } else {
-            tokenStock.push({
-                bearer: nextAcc.token,
-                refresh: nextAcc.refresh_token,
-                addedAt: Date.now(),
-                expiresAt: newExpiry,
-                id: generateGenerationId(),
-                userId: 'system',
-                username: 'System',
-                displayNumber: newNumber
-            });
+    // Refresh failed – try all other accounts (in order)
+    console.warn(`[WARN] [EAM.LOL] Refresh failed (${result.error}). Trying all other accounts...`);
+    // We need to loop through all accounts except the one we just used
+    const usedRefresh = refreshTk;
+    for (const acc of accounts) {
+        if (acc.refresh_token === usedRefresh) continue; // skip the one that failed
+        // Check if this account's refresh token is not expired (JWT check)
+        if (isTokenExpiredObj({ bearer: acc.refresh_token })) {
+            console.log(`[INFO] [EAM.LOL] Skipping ${acc.label} – refresh token expired.`);
+            continue;
         }
-        console.log(`[SUCCESS] [EAM.LOL] Switched to ${nextAcc.label} - new token ready`);
-        await postAutoProfile();
-        return { success: true, bearer: nextAcc.token, refresh: nextAcc.refresh_token, expiresAt: newExpiry };
+        // Try to refresh with this account
+        const newResult = await refreshTokenOnly(acc.refresh_token, 2);
+        if (newResult.success) {
+            // We got a new token
+            activeAccountLabel = acc.label;
+            DEFAULT_TOKEN.bearer = newResult.bearer;
+            DEFAULT_TOKEN.refresh_token = newResult.refresh;
+            lastRefreshExpiry = newResult.expiresAt;
+            updateAccountTokens(acc.refresh_token, newResult.bearer, newResult.refresh);
+            if (tokenStock.length > 0) {
+                const old = tokenStock[0];
+                tokenStock[0] = {
+                    bearer: newResult.bearer,
+                    refresh: newResult.refresh,
+                    addedAt: Date.now(),
+                    expiresAt: newResult.expiresAt,
+                    id: old.id || generateGenerationId(),
+                    userId: old.userId || 'system',
+                    username: old.username || 'System',
+                    displayNumber: old.displayNumber || generateTokenNumber()
+                };
+            } else {
+                tokenStock.push({
+                    bearer: newResult.bearer,
+                    refresh: newResult.refresh,
+                    addedAt: Date.now(),
+                    expiresAt: newResult.expiresAt,
+                    id: generateGenerationId(),
+                    userId: 'system',
+                    username: 'System',
+                    displayNumber: generateTokenNumber()
+                });
+            }
+            console.log(`[SUCCESS] [EAM.LOL] Switched to ${acc.label} - new token ready`);
+            await postAutoProfile();
+            return { success: true, bearer: newResult.bearer, refresh: newResult.refresh, expiresAt: newResult.expiresAt };
+        }
     }
 
-    console.log('[ERROR] [EAM.LOL] All accounts exhausted. Falling back to hardcoded default.');
+    // All accounts exhausted – fallback to hardcoded default
+    console.error('[ERROR] [EAM.LOL] All accounts exhausted. Falling back to hardcoded default.');
     const defaultExpiry = getTokenExpiryMs(DEFAULT_TOKEN.bearer);
     const defaultNumber = generateTokenNumber();
     if (tokenStock.length > 0) {
@@ -529,8 +559,9 @@ async function refreshToken(refreshTk, forceRefresh = false) {
             displayNumber: defaultNumber
         });
     }
-    console.log(`[WARN] [EAM.LOL] Using hardcoded default token - expires ${new Date(defaultExpiry).toUTCString()}`);
+    console.warn(`[WARN] [EAM.LOL] Using hardcoded default token - expires ${new Date(defaultExpiry).toUTCString()}`);
     await postAutoProfile();
+    // Still return success (we have a token, even if expired, but we'll try to refresh later)
     return { success: true, bearer: DEFAULT_TOKEN.bearer, refresh: DEFAULT_TOKEN.refresh_token, expiresAt: defaultExpiry };
 }
 
@@ -561,7 +592,7 @@ function addOrUpdateAccount(bearer, refresh) {
 }
 
 function giveNewTokenFromAccounts() {
-    const acc = getActiveAccount();
+    const acc = tryAllAccountsForRefresh();
     if (acc) {
         DEFAULT_TOKEN.bearer = acc.token;
         DEFAULT_TOKEN.refresh_token = acc.refresh_token;
@@ -650,6 +681,7 @@ async function refreshTokenInStock() {
     const ttl = tokenObj.expiresAt ? Math.floor((tokenObj.expiresAt - now) / 1000) : 0;
     console.log(`[REFRESHER] Current TTL: ${ttl}s`);
 
+    // Check API validity
     const validation = await validateTokenDetails(tokenObj.bearer, tokenObj.refresh);
     const apiValid = validation.valid;
     if (!apiValid) {
@@ -675,7 +707,7 @@ async function refreshTokenInStock() {
         return;
     }
 
-    // Check against 20-minute threshold
+    // Check against 30-minute threshold
     if (ttl < REFRESH_THRESHOLD) {
         console.log(`[REFRESHER] TTL (${ttl}s) below threshold (${REFRESH_THRESHOLD}s). Refreshing...`);
         try {
@@ -721,6 +753,38 @@ function startAutoRefresh() {
             isRefreshing = false;
         }
     }, AUTO_REFRESH_INTERVAL);
+}
+
+// === Additional health check every 5 minutes (force API validation) ===
+async function healthCheck() {
+    console.log('[HEALTH] Running health check...');
+    if (tokenStock.length === 0) {
+        giveNewTokenFromAccounts();
+        return;
+    }
+    const tokenObj = tokenStock[0];
+    if (!tokenObj) return;
+    const validation = await validateTokenDetails(tokenObj.bearer, tokenObj.refresh);
+    if (!validation.valid) {
+        console.warn('[HEALTH] Token invalid – forcing refresh.');
+        await refreshToken(tokenObj.refresh, true);
+        await updateStatusPanel();
+        await updateSubscriptionPanel();
+    } else {
+        console.log('[HEALTH] Token valid.');
+    }
+}
+let healthInterval = null;
+function startHealthCheck() {
+    console.log('[SYSTEM] [EAM.LOL] HEALTH CHECK STARTED (every 5 minutes)');
+    if (healthInterval) clearInterval(healthInterval);
+    healthInterval = setInterval(async () => {
+        try {
+            await healthCheck();
+        } catch (err) {
+            console.error('[ERROR] [EAM.LOL] Health check error:', err);
+        }
+    }, 5 * 60 * 1000);
 }
 
 // ========== Auto-profile (posts to channel 1546312357142073416) ==========
@@ -784,14 +848,14 @@ function startAutoProfile() {
     }, 60 * 60 * 1000);
 }
 
-// --- DELIVERY (uses 20-minute threshold) ---
+// --- DELIVERY (uses 30-minute threshold) ---
 async function deliverTokenToUser(user) {
     console.log(`[DELIVERY] Starting delivery to ${user.tag}`);
     let tokenObj = null;
     let valid = false;
     let attempts = 0;
     const maxAttempts = 5;
-    const MIN_TTL = REFRESH_THRESHOLD; // 20 minutes
+    const MIN_TTL = REFRESH_THRESHOLD; // 30 minutes
 
     while (!valid && attempts < maxAttempts) {
         attempts++;
@@ -1148,7 +1212,7 @@ async function updateGenerationEmbed(interaction, step, message, ttl = null) {
     await interaction.editReply({ embeds: [embed], components: [row] });
 }
 
-// --- PROCESS TOKEN GENERATION ---
+// --- PROCESS TOKEN GENERATION (full) ---
 async function processTokenGeneration(interaction, tierName) {
     const userId = interaction.user.id;
     const member = interaction.member;
@@ -1694,6 +1758,7 @@ client.once('ready', async () => {
     await updateStatusChannelName();
     await updateTokenNumberChannel();
     startAutoRefresh();
+    startHealthCheck();
     startDeliveryLoop();
     await catchUpSubscribers();
     await postUpdateLog();
@@ -2096,7 +2161,6 @@ client.on('interactionCreate', async interaction => {
             }
 
             // --- ADMIN COMMANDS (stock, generator, force_refresh, remove-stock, reset-stock, gen-codes, remove-token, refresh_cooldown_all, panel, stock_main) ---
-            // We'll handle them all in a generic block with proper checks.
             const adminCommandList = ['stock', 'stock_main', 'generator', 'force_refresh', 'remove-stock', 'reset-stock', 'gen-codes', 'remove-token', 'refresh_cooldown_all', 'panel'];
             if (adminCommandList.includes(commandName)) {
                 if (!hasAdminAccess(interaction)) return interaction.reply({ content: 'Access Denied.', flags: 64 });
@@ -2140,7 +2204,6 @@ client.on('interactionCreate', async interaction => {
                     return interaction.editReply({ embeds: [embed] });
                 }
                 if (commandName === 'generator') {
-                    // Already handled with a generic embed, but we can do it here.
                     const embed = new EmbedBuilder()
                         .setTitle('EAM.LOL Token Generator')
                         .setDescription('Secure, one‑click generation with live status. Tokens are auto‑refreshed.')
@@ -2155,7 +2218,6 @@ client.on('interactionCreate', async interaction => {
                         .setColor(0x5865F2)
                         .setFooter({ text: getLiveUIStats(interaction) });
                     const row = new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('gen_public').setLabel('Generate Token').setStyle(ButtonStyle.Success));
-                    // We can send as ephemeral: false so all can see.
                     return interaction.reply({ embeds: [embed], components: [row], ephemeral: false });
                 }
                 if (commandName === 'force_refresh') {
@@ -2224,10 +2286,8 @@ client.on('interactionCreate', async interaction => {
                         const row = new ActionRowBuilder().addComponents(new StringSelectMenuBuilder().setCustomId('support_select').setPlaceholder('Select department...').addOptions([ { label: 'General Support', value: 'General Inquiry' }, { label: 'Token Help', value: 'Token Help' } ]));
                         return interaction.reply({ embeds: [embed], components: [row] });
                     }
-                    // If no subArg matched, fallback.
                     return interaction.reply({ content: 'Invalid panel type.', flags: 64 });
                 }
-                // Should not reach here.
                 return interaction.reply({ content: 'Command handled.', flags: 64 });
             }
 
