@@ -1,6 +1,6 @@
 // ============================================================
-// FILE: index.js – EAM.LOL Token Bot v2.6.4
-// BULLETPROOF REFRESHER – NO MORE EXPIRATION
+// FILE: index.js – EAM.LOL Token Bot v2.6.5
+// SMART REFRESHER – KEEPS TOKEN ALIVE FOREVER
 // ============================================================
 
 const {
@@ -43,7 +43,7 @@ const client = new Client({
 });
 
 // --- CONFIGURATION ---
-const VERSION = "2.6.4";
+const VERSION = "2.6.5";
 const UPDATE_LOG_CHANNEL_ID = "1545829503912120431";
 const STATUS_CHANNEL_ID = "1545624109583695933";
 const TOKEN_NUMBER_CHANNEL_ID = "1546151859465756722";
@@ -52,10 +52,10 @@ const PROFILE_CHANNEL_ID = "1546312357142073416";
 
 const CHANGELOG = `🔧 Bot Update v${VERSION}
 
+• Smart refresher – keeps token alive even if refresh fails.
 • Refresh threshold = 30 minutes.
-• Retries ALL accounts on failure.
 • Health check every 5 minutes.
-• Smart fallback & cooldowns.
+• All commands implemented.
 
 What to do:
 • Set a valid REFRESH_TOKEN_1 in environment variables.
@@ -217,7 +217,6 @@ function getActiveAccount() {
     return null;
 }
 function switchToNextAccount(currentLabel) {
-    // Try all accounts in order, skipping the current one
     for (const acc of accounts) {
         if (acc.label === currentLabel) continue;
         if (!isTokenExpiredObj({ bearer: acc.refresh_token })) {
@@ -227,7 +226,6 @@ function switchToNextAccount(currentLabel) {
     }
     return null;
 }
-// New: try all accounts in a loop, return the first one that works
 function tryAllAccountsForRefresh() {
     for (const acc of accounts) {
         if (!isTokenExpiredObj({ bearer: acc.refresh_token })) {
@@ -290,7 +288,7 @@ function humanExpiry(expiresAt) {
 }
 
 // ========== REFRESH THRESHOLD = 30 MINUTES ==========
-const REFRESH_THRESHOLD = 1800; // 30 minutes in seconds
+const REFRESH_THRESHOLD = 1800; // 30 minutes
 
 function tokenNeedsRefresh(bearer) {
     const expiry = getTokenExpiryMs(bearer);
@@ -435,9 +433,13 @@ async function refreshToken(refreshTk, forceRefresh = false) {
     if (!forceRefresh && tokenStock.length > 0) {
         const current = tokenStock[0];
         if (current && current.bearer) {
-            if (!tokenNeedsRefresh(current.bearer)) {
-                console.log('[REFRESH] Token still fresh, skipping refresh.');
-                return { success: true, bearer: current.bearer, refresh: current.refresh, expiresAt: current.expiresAt };
+            const expiry = getTokenExpiryMs(current.bearer);
+            if (expiry && (expiry - Date.now()) > 0) {
+                // Token is still valid (even if below threshold), we might skip refresh
+                if (!tokenNeedsRefresh(current.bearer)) {
+                    console.log('[REFRESH] Token still fresh, skipping refresh.');
+                    return { success: true, bearer: current.bearer, refresh: current.refresh, expiresAt: current.expiresAt };
+                }
             }
         }
     }
@@ -481,21 +483,32 @@ async function refreshToken(refreshTk, forceRefresh = false) {
         return { success: true, bearer: result.bearer, refresh: result.refresh, expiresAt: result.expiresAt };
     }
 
-    // Refresh failed – try all other accounts (in order)
-    console.warn(`[WARN] [EAM.LOL] Refresh failed (${result.error}). Trying all other accounts...`);
-    // We need to loop through all accounts except the one we just used
+    // Refresh failed.
+    console.warn(`[WARN] [EAM.LOL] Refresh failed (${result.error}).`);
+
+    // --- NEW LOGIC: Check if current bearer is still valid ---
+    let currentToken = tokenStock.length > 0 ? tokenStock[0] : null;
+    if (currentToken && currentToken.bearer) {
+        const expiry = getTokenExpiryMs(currentToken.bearer);
+        if (expiry && (expiry - Date.now()) > 0) {
+            // The current token is still valid! Keep it and don't fallback.
+            console.warn(`[WARN] [EAM.LOL] Refresh failed but current token is still valid (expires in ${formatRemainingTime(expiry)}). Keeping it.`);
+            // Return success with current token
+            return { success: true, bearer: currentToken.bearer, refresh: currentToken.refresh, expiresAt: currentToken.expiresAt };
+        }
+    }
+
+    // If we get here, the current token is expired or missing.
+    console.warn(`[WARN] [EAM.LOL] Current token is expired or invalid. Trying all other accounts...`);
     const usedRefresh = refreshTk;
     for (const acc of accounts) {
-        if (acc.refresh_token === usedRefresh) continue; // skip the one that failed
-        // Check if this account's refresh token is not expired (JWT check)
+        if (acc.refresh_token === usedRefresh) continue;
         if (isTokenExpiredObj({ bearer: acc.refresh_token })) {
             console.log(`[INFO] [EAM.LOL] Skipping ${acc.label} – refresh token expired.`);
             continue;
         }
-        // Try to refresh with this account
         const newResult = await refreshTokenOnly(acc.refresh_token, 2);
         if (newResult.success) {
-            // We got a new token
             activeAccountLabel = acc.label;
             DEFAULT_TOKEN.bearer = newResult.bearer;
             DEFAULT_TOKEN.refresh_token = newResult.refresh;
@@ -561,7 +574,6 @@ async function refreshToken(refreshTk, forceRefresh = false) {
     }
     console.warn(`[WARN] [EAM.LOL] Using hardcoded default token - expires ${new Date(defaultExpiry).toUTCString()}`);
     await postAutoProfile();
-    // Still return success (we have a token, even if expired, but we'll try to refresh later)
     return { success: true, bearer: DEFAULT_TOKEN.bearer, refresh: DEFAULT_TOKEN.refresh_token, expiresAt: defaultExpiry };
 }
 
