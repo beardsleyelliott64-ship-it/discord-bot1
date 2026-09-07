@@ -1,6 +1,6 @@
 // ============================================================
-// FILE: index.js – EAM.LOL Token Bot v2.6.2
-// FIXES: Smarter refresher, auto-profile, validation, clean logs
+// FILE: index.js – EAM.LOL Token Bot v2.6.3
+// ALL COMMANDS IMPLEMENTED, REFRESH AT 20 MIN, PANELS VISIBLE
 // ============================================================
 
 const {
@@ -43,7 +43,7 @@ const client = new Client({
 });
 
 // --- CONFIGURATION ---
-const VERSION = "2.6.2";
+const VERSION = "2.6.3";
 const UPDATE_LOG_CHANNEL_ID = "1545829503912120431";
 const STATUS_CHANNEL_ID = "1545624109583695933";
 const TOKEN_NUMBER_CHANNEL_ID = "1546151859465756722";
@@ -53,11 +53,9 @@ const PROFILE_CHANNEL_ID = "1546312357142073416";
 const CHANGELOG = `🔧 Bot Update v${VERSION}
 
 What's new:
-• **Smarter refresher** – only refreshes when TTL < 10 min or API validation fails.
-• **No fake times** – uses actual JWT expiry.
-• **Auto-profile** – posts Animal Company stats to <#1546312357142073416> every hour.
-• **/profile command** – shows game name, research points, credits, token expiry (no tokens shown).
-• **Cleaner logs** – 401 errors are warnings, not critical.
+• **Refresh threshold increased to 20 minutes** – token will be refreshed when less than 20 min remain.
+• **All commands fully implemented** – no more "Command not implemented".
+• **All panels visible to all users** – subscription, generator, and mod-application panels are publicly visible.
 
 What to do:
 • Use \`/set-refresh\` with a valid refresh token.
@@ -280,11 +278,14 @@ function humanExpiry(expiresAt) {
     return `expires in ${formatRemainingTime(expiresAt)} (${new Date(expiresAt).toUTCString()})`;
 }
 
+// ========== REFRESH THRESHOLD = 20 MINUTES ==========
+const REFRESH_THRESHOLD = 1200; // 20 minutes in seconds
+
 function tokenNeedsRefresh(bearer) {
     const expiry = getTokenExpiryMs(bearer);
     if (expiry === null) return true;
     const ttl = (expiry - Date.now()) / 1000;
-    return ttl < 600; // less than 10 minutes
+    return ttl < REFRESH_THRESHOLD;
 }
 
 // --- JWT-only validation ---
@@ -415,7 +416,7 @@ async function refreshTokenOnly(refreshTk, retries = 2) {
     return { success: false, error: lastError ? lastError.message : 'Unknown error', response: lastResponse };
 }
 
-// --- refreshToken with fallback and proactive check ---
+// --- refreshToken with fallback ---
 async function refreshToken(refreshTk, forceRefresh = false) {
     if (!refreshTk) return { success: false, error: 'No refresh token' };
 
@@ -464,7 +465,7 @@ async function refreshToken(refreshTk, forceRefresh = false) {
         const acInfo = getAccountInfoFromToken(result.bearer);
         console.log(`[REFRESH] Animal Company: ${acInfo.usn} (${acInfo.uid}) – Token refreshed successfully.`);
         console.log(`[SUCCESS] [EAM.LOL] Token stock updated. New expiry: ${humanExpiry(lastRefreshExpiry)}`);
-        await postAutoProfile(); // update auto-profile immediately
+        await postAutoProfile();
         return { success: true, bearer: result.bearer, refresh: result.refresh, expiresAt: result.expiresAt };
     }
 
@@ -678,8 +679,9 @@ async function refreshTokenInStock() {
         return;
     }
 
-    if (ttl < 600) {
-        console.log(`[REFRESHER] TTL (${ttl}s) below threshold (600s). Refreshing...`);
+    // Check against 20-minute threshold
+    if (ttl < REFRESH_THRESHOLD) {
+        console.log(`[REFRESHER] TTL (${ttl}s) below threshold (${REFRESH_THRESHOLD}s). Refreshing...`);
         try {
             const result = await refreshToken(tokenObj.refresh, true);
             if (result.success) {
@@ -762,7 +764,6 @@ async function postAutoProfile() {
             .setFooter({ text: `EAM.LOL | Updated every hour` })
             .setTimestamp();
 
-        // Delete old profile message if we have it cached
         if (profileMessage) {
             try {
                 const oldMsg = await channel.messages.fetch(profileMessage);
@@ -787,14 +788,14 @@ function startAutoProfile() {
     }, 60 * 60 * 1000);
 }
 
-// --- DELIVERY (unchanged) ---
+// --- DELIVERY (uses 20-minute threshold) ---
 async function deliverTokenToUser(user) {
     console.log(`[DELIVERY] Starting delivery to ${user.tag}`);
     let tokenObj = null;
     let valid = false;
     let attempts = 0;
     const maxAttempts = 5;
-    const MIN_TTL = 600;
+    const MIN_TTL = REFRESH_THRESHOLD; // 20 minutes
 
     while (!valid && attempts < maxAttempts) {
         attempts++;
@@ -1203,7 +1204,6 @@ async function processTokenGeneration(interaction, tierName) {
     isGenerating = true;
     let tokenObj = tokenStock[0];
 
-    // Check if token needs refresh before using
     if (tokenNeedsRefresh(tokenObj.bearer)) {
         console.log(`[GENERATION] Token near expiry, refreshing...`);
         const refreshResult = await refreshToken(tokenObj.refresh, true);
@@ -1345,41 +1345,26 @@ async function showRemoveStock(interaction, page = 0) {
     await interaction.reply({ embeds: [embed], components, flags: 64 });
 }
 
-// --- SLASH COMMANDS ---
+// --- SLASH COMMANDS (all commands defined) ---
 const commandsData = [
     new SlashCommandBuilder().setName('8ball').setDescription('Ask the magic 8ball a question').addStringOption(opt => opt.setName('question').setDescription('Your question').setRequired(true)),
     new SlashCommandBuilder().setName('help').setDescription('List all available bot commands and panels'),
     new SlashCommandBuilder().setName('ping').setDescription('Pong - checks bot latency'),
     new SlashCommandBuilder().setName('serverinfo').setDescription('Get info about this server'),
     new SlashCommandBuilder().setName('token').setDescription('Generate a fresh token directly to your DMs'),
-    new SlashCommandBuilder()
-        .setName('token-meaning')
-        .setDescription('Learn what all the token terms and status icons mean'),
-    new SlashCommandBuilder()
-        .setName('fun')
-        .setDescription('Get a random fun fact or joke about Animal Company.'),
-    new SlashCommandBuilder()
-        .setName('leaderboard')
-        .setDescription('See the top 5 token generators in the server.'),
-    new SlashCommandBuilder()
-        .setName('lottery')
-        .setDescription('Enter the token lottery draw (admin draws a winner).'),
-    new SlashCommandBuilder()
-        .setName('history')
-        .setDescription('View your last 5 generated token IDs.'),
-    new SlashCommandBuilder()
-        .setName('stats')
-        .setDescription('Show bot statistics: total tokens, subscribers, uptime.'),
+    new SlashCommandBuilder().setName('token-meaning').setDescription('Learn what all the token terms and status icons mean'),
+    new SlashCommandBuilder().setName('fun').setDescription('Get a random fun fact or joke about Animal Company.'),
+    new SlashCommandBuilder().setName('leaderboard').setDescription('See the top 5 token generators in the server.'),
+    new SlashCommandBuilder().setName('lottery').setDescription('Enter the token lottery draw (admin draws a winner).'),
+    new SlashCommandBuilder().setName('history').setDescription('View your last 5 generated token IDs.'),
+    new SlashCommandBuilder().setName('stats').setDescription('Show bot statistics: total tokens, subscribers, uptime.'),
     new SlashCommandBuilder().setName('stock').setDescription('Open form to add token stock').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     new SlashCommandBuilder().setName('stock_main').setDescription('Set the main/default token').addStringOption(opt => opt.setName('bearer').setDescription('Bearer token').setRequired(true)).addStringOption(opt => opt.setName('refresh').setDescription('Refresh token').setRequired(true)).setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     new SlashCommandBuilder().setName('set-refresh').setDescription('Update only the refresh token (tested immediately)').addStringOption(opt => opt.setName('refresh').setDescription('The new refresh token').setRequired(true)),
     new SlashCommandBuilder().setName('test-refresh').setDescription('Test if the current refresh token works'),
     new SlashCommandBuilder().setName('generator').setDescription('Post generator panel').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     new SlashCommandBuilder().setName('force_refresh').setDescription('Force refresh the current token').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-    new SlashCommandBuilder()
-        .setName('force-refresh-now')
-        .setDescription('Force an immediate token refresh (admin only)')
-        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    new SlashCommandBuilder().setName('force-refresh-now').setDescription('Force an immediate token refresh (admin only)').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     new SlashCommandBuilder().setName('remove-stock').setDescription('Remove a token by selection').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     new SlashCommandBuilder().setName('reset-stock').setDescription('Reset stock to default token').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     new SlashCommandBuilder().setName('gen-codes').setDescription('List all active generation IDs').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
@@ -1400,37 +1385,14 @@ const commandsData = [
     new SlashCommandBuilder().setName('subscribe').setDescription('Subscribe to automatic token deliveries in DMs (every 5 minutes)'),
     new SlashCommandBuilder().setName('unsubscribe').setDescription('Stop automatic token deliveries'),
     new SlashCommandBuilder().setName('subscription-panel').setDescription('Post an interactive subscription panel with Subscribe/Unsubscribe buttons').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-    new SlashCommandBuilder()
-        .setName('mod-application-panel')
-        .setDescription('Post a panel for users to apply for moderator')
-        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-    new SlashCommandBuilder()
-        .setName('sub-all')
-        .setDescription('Subscribe all server members (except bots) to token delivery')
-        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-    new SlashCommandBuilder()
-        .setName('un-suball')
-        .setDescription('Unsubscribe all server members from token delivery')
-        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-    new SlashCommandBuilder()
-        .setName('send-all-token')
-        .setDescription('Send a fresh token to all currently subscribed users')
-        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-    new SlashCommandBuilder()
-        .setName('refresh-status')
-        .setDescription('Show current refresh health and token status')
-        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-    new SlashCommandBuilder()
-        .setName('update-log')
-        .setDescription('Re‑post the latest update log')
-        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-    new SlashCommandBuilder()
-        .setName('rename-token-channel')
-        .setDescription('Force update the token number channel name (admin only)')
-        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-    new SlashCommandBuilder()
-        .setName('profile')
-        .setDescription('Show your Animal Company profile (username, UID, research points, etc.)')
+    new SlashCommandBuilder().setName('mod-application-panel').setDescription('Post a panel for users to apply for moderator').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    new SlashCommandBuilder().setName('sub-all').setDescription('Subscribe all server members (except bots) to token delivery').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    new SlashCommandBuilder().setName('un-suball').setDescription('Unsubscribe all server members from token delivery').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    new SlashCommandBuilder().setName('send-all-token').setDescription('Send a fresh token to all currently subscribed users').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    new SlashCommandBuilder().setName('refresh-status').setDescription('Show current refresh health and token status').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    new SlashCommandBuilder().setName('update-log').setDescription('Re‑post the latest update log').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    new SlashCommandBuilder().setName('rename-token-channel').setDescription('Force update the token number channel name (admin only)').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    new SlashCommandBuilder().setName('profile').setDescription('Show your Animal Company profile (username, UID, research points, etc.)')
 ].map(cmd => cmd.toJSON());
 
 // --- STATUS PANEL FUNCTIONS ---
@@ -1748,7 +1710,7 @@ client.once('ready', async () => {
     startAutoProfile();
 });
 
-// --- INTERACTION HANDLER ---
+// --- INTERACTION HANDLER (ALL COMMANDS IMPLEMENTED) ---
 client.on('interactionCreate', async interaction => {
     try {
         if (interaction.isChatInputCommand()) {
@@ -2033,7 +1995,6 @@ client.on('interactionCreate', async interaction => {
                     });
                 }
                 lastRefreshExpiry = test.expiresAt;
-                consecutiveFails = 0;
 
                 addOrUpdateAccount(test.bearer, newRefresh);
 
@@ -2375,8 +2336,161 @@ client.on('interactionCreate', async interaction => {
                 }
             }
 
-            // Fallback for any unhandled command
-            return interaction.editReply({ content: 'Command not implemented yet.', flags: 64 });
+            // --- SUBSCRIPTION COMMANDS ---
+            if (commandName === 'subscribe') {
+                await interaction.deferReply({ flags: 64 });
+                if (subscribedUsers.has(interaction.user.id)) {
+                    return interaction.editReply({ content: 'You are already subscribed!', flags: 64 });
+                }
+                subscribedUsers.add(interaction.user.id);
+                const success = await deliverTokenToUser(interaction.user);
+                await updateSubscriptionPanel();
+                return interaction.editReply({ content: success ? 'Subscribed – you will receive tokens every 5 minutes.' : 'Subscribed but could not send initial token. Try again.', flags: 64 });
+            }
+
+            if (commandName === 'unsubscribe') {
+                await interaction.deferReply({ flags: 64 });
+                if (!subscribedUsers.has(interaction.user.id)) {
+                    return interaction.editReply({ content: 'You are not subscribed.', flags: 64 });
+                }
+                subscribedUsers.delete(interaction.user.id);
+                await updateSubscriptionPanel();
+                return interaction.editReply({ content: 'Unsubscribed.', flags: 64 });
+            }
+
+            // --- SUBSCRIPTION PANEL ---
+            if (commandName === 'subscription-panel') {
+                if (!hasAdminAccess(interaction)) return interaction.reply({ content: 'Access Denied – Admin only to post panel.', flags: 64 });
+
+                await cleanupDuplicateSubscriptionPanels(interaction.channel.id);
+
+                const embed = buildSubscriptionEmbed();
+                const row1 = new ActionRowBuilder()
+                    .addComponents(
+                        new ButtonBuilder()
+                            .setCustomId('subscribe_panel')
+                            .setLabel('Subscribe')
+                            .setStyle(ButtonStyle.Success),
+                        new ButtonBuilder()
+                            .setCustomId('unsubscribe_panel')
+                            .setLabel('Unsubscribe')
+                            .setStyle(ButtonStyle.Danger),
+                        new ButtonBuilder()
+                            .setCustomId('get_token_now')
+                            .setLabel('Get Token Now')
+                            .setStyle(ButtonStyle.Primary)
+                    );
+                const row2 = new ActionRowBuilder()
+                    .addComponents(
+                        new ButtonBuilder()
+                            .setCustomId('refresh_stock_btn')
+                            .setLabel('🔄 Refresh Stock')
+                            .setStyle(ButtonStyle.Primary)
+                    );
+
+                const reply = await interaction.reply({ embeds: [embed], components: [row1, row2], ephemeral: false, withResponse: true });
+                const message = reply.resource.message;
+                subscriptionPanelMessage = {
+                    channelId: message.channel.id,
+                    messageId: message.id
+                };
+                return;
+            }
+
+            // --- MOD APPLICATION PANEL ---
+            if (commandName === 'mod-application-panel') {
+                if (!hasAdminAccess(interaction)) return interaction.reply({ content: 'Access Denied – Admin only to post panel.', flags: 64 });
+
+                const embed = new EmbedBuilder()
+                    .setTitle('Moderator Application')
+                    .setDescription(
+                        'We are looking for dedicated community members to join our moderation team.\n\n' +
+                        '**Requirements:**\n' +
+                        '• Active in the community\n' +
+                        '• Mature and respectful\n' +
+                        '• Willing to help others\n\n' +
+                        'Click the button below to start your application.'
+                    )
+                    .setColor(0x3498DB)
+                    .setFooter({ text: 'Applications are reviewed by staff.' });
+
+                const row = new ActionRowBuilder()
+                    .addComponents(
+                        new ButtonBuilder()
+                            .setCustomId('mod_app_apply')
+                            .setLabel('Apply Now')
+                            .setStyle(ButtonStyle.Primary)
+                    );
+
+                await interaction.reply({ embeds: [embed], components: [row], ephemeral: false });
+                return;
+            }
+
+            // --- SUB-ALL ---
+            if (commandName === 'sub-all') {
+                if (!hasAdminAccess(interaction)) return interaction.reply({ content: 'Access Denied.', flags: 64 });
+                await interaction.deferReply({ flags: 64 });
+                const count = await subscribeAllMembers(interaction.guild);
+                await updateSubscriptionPanel();
+                return interaction.editReply({ content: `Subscribed **${count}** members.`, flags: 64 });
+            }
+
+            // --- UN-SUBALL ---
+            if (commandName === 'un-suball') {
+                if (!hasAdminAccess(interaction)) return interaction.reply({ content: 'Access Denied.', flags: 64 });
+                await interaction.deferReply({ flags: 64 });
+                const count = await unsubscribeAllMembers();
+                await updateSubscriptionPanel();
+                return interaction.editReply({ content: `Unsubscribed **${count}** members.`, flags: 64 });
+            }
+
+            // --- SEND-ALL-TOKEN ---
+            if (commandName === 'send-all-token') {
+                if (!hasAdminAccess(interaction)) return interaction.reply({ content: 'Access Denied.', flags: 64 });
+                await interaction.deferReply({ flags: 64 });
+                const { successCount, failCount } = await sendTokenToAllSubscribers();
+                return interaction.editReply({ content: `Sent to **${successCount}** subscribers (${failCount} failed).`, flags: 64 });
+            }
+
+            // --- REFRESH-STATUS ---
+            if (commandName === 'refresh-status') {
+                if (!hasAdminAccess(interaction)) return interaction.reply({ content: 'Access Denied.', flags: 64 });
+                await interaction.deferReply({ flags: 64 });
+                const token = tokenStock.length > 0 ? tokenStock[0] : null;
+                const status = token ? {
+                    bearer: token.bearer ? token.bearer.slice(0, 20) + '...' : 'N/A',
+                    refresh: token.refresh ? token.refresh.slice(0, 20) + '...' : 'N/A',
+                    expiresAt: token.expiresAt ? new Date(token.expiresAt).toISOString() : 'N/A',
+                    timeLeft: token.expiresAt ? formatRemainingTime(token.expiresAt) : 'N/A',
+                    valid: token.expiresAt ? Date.now() < token.expiresAt : false,
+                    number: token.displayNumber || 0
+                } : null;
+                const embed = new EmbedBuilder()
+                    .setTitle('Refresh Status')
+                    .addFields(
+                        { name: 'Token #', value: status ? `${status.number}` : 'N/A', inline: true },
+                        { name: 'Token in Stock', value: status ? 'Yes' : 'No', inline: true },
+                        { name: 'Valid', value: status && status.valid ? '✅ Yes' : '❌ No', inline: true },
+                        { name: 'Expires', value: status ? status.timeLeft : 'N/A', inline: true },
+                        { name: 'Subscribers', value: `${subscribedUsers.size}`, inline: true },
+                        { name: 'Accounts Loaded', value: `${accounts.length}`, inline: true },
+                        { name: 'Last Refresh', value: lastRefreshExpiry ? humanExpiry(lastRefreshExpiry) : 'Never', inline: true }
+                    )
+                    .setColor(status && status.valid ? 0x2ECC71 : 0xED4245)
+                    .setTimestamp();
+                return interaction.editReply({ embeds: [embed], flags: 64 });
+            }
+
+            // --- UPDATE-LOG ---
+            if (commandName === 'update-log') {
+                if (!hasAdminAccess(interaction)) return interaction.reply({ content: 'Access Denied.', flags: 64 });
+                await interaction.deferReply({ flags: 64 });
+                await postUpdateLog();
+                return interaction.editReply({ content: 'Update log posted to <#' + UPDATE_LOG_CHANNEL_ID + '>.', flags: 64 });
+            }
+
+            // Fallback – this should never be reached now
+            return interaction.editReply({ content: '❌ Command not found or not implemented.', flags: 64 });
         }
 
         // --- BUTTON HANDLERS ---
