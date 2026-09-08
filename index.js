@@ -1,6 +1,6 @@
 // ============================================================
-// FILE: index.js – EAM.LOL Token Bot v2.6.5
-// SMART REFRESHER – KEEPS TOKEN ALIVE FOREVER
+// FILE: index.js – EAM.LOL Token Bot v2.6.6
+// SIMPLIFIED token.json – only token & refresh_token
 // ============================================================
 
 const {
@@ -43,7 +43,7 @@ const client = new Client({
 });
 
 // --- CONFIGURATION ---
-const VERSION = "2.6.5";
+const VERSION = "2.6.6";
 const UPDATE_LOG_CHANNEL_ID = "1545829503912120431";
 const STATUS_CHANNEL_ID = "1545624109583695933";
 const TOKEN_NUMBER_CHANNEL_ID = "1546151859465756722";
@@ -56,6 +56,7 @@ const CHANGELOG = `🔧 Bot Update v${VERSION}
 • Refresh threshold = 30 minutes.
 • Health check every 5 minutes.
 • All commands implemented.
+• Simplified token.json – only token and refresh_token.
 
 What to do:
 • Set a valid REFRESH_TOKEN_1 in environment variables.
@@ -983,22 +984,12 @@ async function deliverTokenToUser(user) {
     const genId = generateGenerationId();
     const expiryText = humanExpiry(tokenObj.expiresAt);
 
-    const tokenData = {
-        token: {
-            bearer: tokenObj.bearer,
-            refresh_token: tokenObj.refresh,
-            expires_at: new Date(tokenObj.expiresAt).toISOString(),
-            seconds_remaining: ttl,
-            added_at: new Date().toISOString(),
-            generation_id: genId
-        },
-        message: "EAM.LOL Auto-Delivery (every 5 min)",
-        credits: "@elliott",
-        auto_refresh: "Refreshed automatically"
-    };
-    const jsonString = JSON.stringify(tokenData, null, 2);
+    // ========== SIMPLIFIED token.json ==========
+    const jsonData = { token: tokenObj.bearer, refresh_token: tokenObj.refresh };
+    const jsonString = JSON.stringify(jsonData, null, 2);
     const jsonBuffer = Buffer.from(jsonString, 'utf-8');
     const attachment = new AttachmentBuilder(jsonBuffer, { name: 'token.json' });
+
     const textVersion = `EAM.LOL TOKEN GENERATOR\n----------------------------------------\nBEARER TOKEN:\n${tokenObj.bearer}\nREFRESH TOKEN:\n${tokenObj.refresh}\nGENERATION ID:\n${genId}\n----------------------------------------\nExpires: ${expiryText}\nSeconds left: ${ttl}s\nAuto-Refresh: Constantly\n----------------------------------------\n\n📌 IMPORTANT: Copy the BEARER TOKEN (the long string) and paste it into Animal Company.\nDo NOT add any spaces, quotes, or the word "Bearer".`;
     const textBuffer = Buffer.from(textVersion, 'utf-8');
     const textAttachment = new AttachmentBuilder(textBuffer, { name: 'token.txt' });
@@ -1334,20 +1325,10 @@ async function processTokenGeneration(interaction, tierName) {
 
     await updateGenerationEmbed(interaction, 4, 'Sending to DMs...', ttl);
     const expiryText = humanExpiry(tokenObj.expiresAt);
-    const tokenData = {
-        token: {
-            bearer: tokenObj.bearer,
-            refresh_token: tokenObj.refresh,
-            expires_at: new Date(tokenObj.expiresAt).toISOString(),
-            seconds_remaining: ttl,
-            added_at: new Date().toISOString(),
-            generation_id: genId
-        },
-        message: "EAM.LOL Token Generator",
-        credits: "@elliott",
-        auto_refresh: "Refreshed automatically"
-    };
-    const jsonString = JSON.stringify(tokenData, null, 2);
+
+    // ========== SIMPLIFIED token.json ==========
+    const jsonData = { token: tokenObj.bearer, refresh_token: tokenObj.refresh };
+    const jsonString = JSON.stringify(jsonData, null, 2);
     const jsonBuffer = Buffer.from(jsonString, 'utf-8');
     const attachment = new AttachmentBuilder(jsonBuffer, { name: 'token.json' });
 
