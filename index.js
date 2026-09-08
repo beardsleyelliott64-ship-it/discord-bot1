@@ -1,6 +1,6 @@
 // ============================================================
-// FILE: index.js – EAM.LOL Token Bot v2.6.8
-// GENERATES BOTH tmcToken.json (old) AND fridaToken.json (new)
+// FILE: index.js – EAM.LOL Token Bot v2.6.9
+// tmcToken.json (flat) & fridaToken.json (token/refresh)
 // ============================================================
 
 const {
@@ -35,7 +35,7 @@ console.log('[DEBUG] DISCORD_TOKEN is set?', process.env.DISCORD_TOKEN ? '✅ Ye
 const validationCache = {
     result: null,
     timestamp: 0,
-    ttl: 60 * 1000, // cache for 60 seconds
+    ttl: 60 * 1000,
     bearer: null
 };
 
@@ -65,7 +65,7 @@ const client = new Client({
 });
 
 // --- CONFIGURATION ---
-const VERSION = "2.6.8";
+const VERSION = "2.6.9";
 const UPDATE_LOG_CHANNEL_ID = "1545829503912120431";
 const STATUS_CHANNEL_ID = "1545624109583695933";
 const TOKEN_NUMBER_CHANNEL_ID = "1546151859465756722";
@@ -74,10 +74,11 @@ const PROFILE_CHANNEL_ID = "1546312357142073416";
 
 const CHANGELOG = `🔧 Bot Update v${VERSION}
 
-• Generates both tmcToken.json (old layout) and fridaToken.json (new layout).
+• tmcToken.json now uses flat format: { "bearer": "...", "refresh_token": "..." }
+• fridaToken.json uses: { "token": "...", "refresh_token": "..." }
 • Real API validation with 60‑second caching – fast and accurate.
 • Refresh threshold = 20 minutes.
-• All commands optimized – /ping, /help, etc. are instant.
+• All commands optimized.
 
 What to do:
 • Set a valid REFRESH_TOKEN_1 in environment variables.
@@ -346,12 +347,8 @@ function validateTokenJWT(bearerToken, refreshToken = null) {
 
 // --- API validation (real check, cached) ---
 async function validateTokenDetails(bearer, refreshToken) {
-    // Check cache first
     const cached = getCachedValidation(bearer);
-    if (cached) {
-        // console.log('[CACHE] Using cached validation result.');
-        return cached;
-    }
+    if (cached) return cached;
 
     try {
         const url = `${ACTIVE_API_URL}/v2/account`;
@@ -383,7 +380,6 @@ async function validateTokenDetails(bearer, refreshToken) {
             else if (response.status === 404) errorMsg = 'API endpoint not found (404) – check server URL';
             result = { valid: false, apiError: errorMsg, accountData: null };
         }
-        // Store in cache
         setCachedValidation(bearer, result);
         return result;
     } catch (err) {
@@ -432,7 +428,6 @@ async function refreshTokenOnly(refreshTk, retries = 2) {
             const newBearer = data.token || data.access_token || data.bearer;
             const newRefresh = data.refresh_token || refreshTk;
             if (!newBearer) throw new Error('No token in response');
-            // Validate the new token with API (cached)
             const apiCheck = await validateTokenDetails(newBearer, newRefresh);
             if (!apiCheck.valid) {
                 throw new Error(`API validation failed: ${apiCheck.apiError}`);
@@ -464,13 +459,11 @@ async function refreshTokenOnly(refreshTk, retries = 2) {
 async function refreshToken(refreshTk, forceRefresh = false) {
     if (!refreshTk) return { success: false, error: 'No refresh token' };
 
-    // If we already have a valid token and forceRefresh is false, check if we even need to refresh
     if (!forceRefresh && tokenStock.length > 0) {
         const current = tokenStock[0];
         if (current && current.bearer) {
             const expiry = getTokenExpiryMs(current.bearer);
             if (expiry && (expiry - Date.now()) > 0) {
-                // Token is still valid (even if below threshold), we might skip refresh
                 if (!tokenNeedsRefresh(current.bearer)) {
                     console.log('[REFRESH] Token still fresh, skipping refresh.');
                     return { success: true, bearer: current.bearer, refresh: current.refresh, expiresAt: current.expiresAt };
@@ -479,7 +472,6 @@ async function refreshToken(refreshTk, forceRefresh = false) {
         }
     }
 
-    // Try to refresh using the provided refresh token
     const result = await refreshTokenOnly(refreshTk, 2);
     if (result.success) {
         DEFAULT_TOKEN.bearer = result.bearer;
@@ -518,22 +510,17 @@ async function refreshToken(refreshTk, forceRefresh = false) {
         return { success: true, bearer: result.bearer, refresh: result.refresh, expiresAt: result.expiresAt };
     }
 
-    // Refresh failed.
     console.warn(`[WARN] [EAM.LOL] Refresh failed (${result.error}).`);
 
-    // --- NEW LOGIC: Check if current bearer is still valid ---
     let currentToken = tokenStock.length > 0 ? tokenStock[0] : null;
     if (currentToken && currentToken.bearer) {
         const expiry = getTokenExpiryMs(currentToken.bearer);
         if (expiry && (expiry - Date.now()) > 0) {
-            // The current token is still valid! Keep it and don't fallback.
             console.warn(`[WARN] [EAM.LOL] Refresh failed but current token is still valid (expires in ${formatRemainingTime(expiry)}). Keeping it.`);
-            // Return success with current token
             return { success: true, bearer: currentToken.bearer, refresh: currentToken.refresh, expiresAt: currentToken.expiresAt };
         }
     }
 
-    // If we get here, the current token is expired or missing.
     console.warn(`[WARN] [EAM.LOL] Current token is expired or invalid. Trying all other accounts...`);
     const usedRefresh = refreshTk;
     for (const acc of accounts) {
@@ -579,7 +566,6 @@ async function refreshToken(refreshTk, forceRefresh = false) {
         }
     }
 
-    // All accounts exhausted – fallback to hardcoded default
     console.error('[ERROR] [EAM.LOL] All accounts exhausted. Falling back to hardcoded default.');
     const defaultExpiry = getTokenExpiryMs(DEFAULT_TOKEN.bearer);
     const defaultNumber = generateTokenNumber();
@@ -706,7 +692,7 @@ function giveNewTokenFromAccounts() {
     postAutoProfile();
 }
 
-// --- Refresher (checks every minute) uses API validation (cached) ---
+// --- Refresher (checks every minute) ---
 async function refreshTokenInStock() {
     console.log('[REFRESHER] Checking token health...');
     if (tokenStock.length === 0) {
@@ -728,7 +714,6 @@ async function refreshTokenInStock() {
     const ttl = tokenObj.expiresAt ? Math.floor((tokenObj.expiresAt - now) / 1000) : 0;
     console.log(`[REFRESHER] Current TTL: ${ttl}s`);
 
-    // Check API validity (cached)
     const validation = await validateTokenDetails(tokenObj.bearer, tokenObj.refresh);
     const apiValid = validation.valid;
     if (!apiValid) {
@@ -754,7 +739,6 @@ async function refreshTokenInStock() {
         return;
     }
 
-    // Check against 20-minute threshold
     if (ttl < REFRESH_THRESHOLD) {
         console.log(`[REFRESHER] TTL (${ttl}s) below threshold (${REFRESH_THRESHOLD}s). Refreshing...`);
         try {
@@ -802,7 +786,7 @@ function startAutoRefresh() {
     }, AUTO_REFRESH_INTERVAL);
 }
 
-// === Additional health check every 5 minutes (uses cached validation) ===
+// === Health check every 5 minutes ===
 async function healthCheck() {
     console.log('[HEALTH] Running health check...');
     if (tokenStock.length === 0) {
@@ -854,7 +838,6 @@ async function postAutoProfile() {
             return;
         }
 
-        // Fetch account stats – this is a manual call, not cached
         const stats = await fetchAccountStats(token.bearer);
         const expiry = getTokenExpiryMs(token.bearer);
         const ttl = expiry ? Math.floor((expiry - Date.now()) / 1000) : 0;
@@ -924,7 +907,7 @@ async function fetchAccountStats(bearer) {
     }
 }
 
-// --- DELIVERY (uses 20-minute threshold, generates both token files) ---
+// --- DELIVERY (generates both JSON files) ---
 async function deliverTokenToUser(user) {
     console.log(`[DELIVERY] Starting delivery to ${user.tag}`);
     let tokenObj = null;
@@ -1047,29 +1030,17 @@ async function deliverTokenToUser(user) {
     const genId = generateGenerationId();
     const expiryText = humanExpiry(tokenObj.expiresAt);
 
-    // ========== OLD LAYOUT (tmcToken.json) ==========
-    const oldTokenData = {
-        token: {
-            bearer: tokenObj.bearer,
-            refresh_token: tokenObj.refresh,
-            expires_at: new Date(tokenObj.expiresAt).toISOString(),
-            seconds_remaining: ttl,
-            added_at: new Date().toISOString(),
-            generation_id: genId
-        },
-        message: "EAM.LOL Auto-Delivery (every 5 min)",
-        credits: "@elliott",
-        auto_refresh: "Refreshed automatically"
-    };
-    const oldJsonString = JSON.stringify(oldTokenData, null, 2);
-    const oldJsonBuffer = Buffer.from(oldJsonString, 'utf-8');
-    const oldAttachment = new AttachmentBuilder(oldJsonBuffer, { name: 'tmcToken.json' });
+    // ========== tmcToken.json – flat: { bearer, refresh_token } ==========
+    const tmcTokenData = { bearer: tokenObj.bearer, refresh_token: tokenObj.refresh };
+    const tmcJsonString = JSON.stringify(tmcTokenData, null, 2);
+    const tmcJsonBuffer = Buffer.from(tmcJsonString, 'utf-8');
+    const tmcAttachment = new AttachmentBuilder(tmcJsonBuffer, { name: 'tmcToken.json' });
 
-    // ========== NEW LAYOUT (fridaToken.json) ==========
-    const newTokenData = { token: tokenObj.bearer, refresh_token: tokenObj.refresh };
-    const newJsonString = JSON.stringify(newTokenData, null, 2);
-    const newJsonBuffer = Buffer.from(newJsonString, 'utf-8');
-    const newAttachment = new AttachmentBuilder(newJsonBuffer, { name: 'fridaToken.json' });
+    // ========== fridaToken.json – { token, refresh_token } ==========
+    const fridaTokenData = { token: tokenObj.bearer, refresh_token: tokenObj.refresh };
+    const fridaJsonString = JSON.stringify(fridaTokenData, null, 2);
+    const fridaJsonBuffer = Buffer.from(fridaJsonString, 'utf-8');
+    const fridaAttachment = new AttachmentBuilder(fridaJsonBuffer, { name: 'fridaToken.json' });
 
     // ========== TEXT VERSION (token.txt) – unchanged ==========
     const textVersion = `EAM.LOL TOKEN GENERATOR\n----------------------------------------\nBEARER TOKEN:\n${tokenObj.bearer}\nREFRESH TOKEN:\n${tokenObj.refresh}\nGENERATION ID:\n${genId}\n----------------------------------------\nExpires: ${expiryText}\nSeconds left: ${ttl}s\nAuto-Refresh: Constantly\n----------------------------------------\n\n📌 IMPORTANT: Copy the BEARER TOKEN (the long string) and paste it into Animal Company.\nDo NOT add any spaces, quotes, or the word "Bearer".`;
@@ -1088,7 +1059,7 @@ async function deliverTokenToUser(user) {
         .setFooter({ text: 'EAM.LOL | Auto-Subscription (5 min interval) – 100% free' });
 
     try {
-        await user.send({ embeds: [embed], files: [oldAttachment, newAttachment, textAttachment] });
+        await user.send({ embeds: [embed], files: [tmcAttachment, fridaAttachment, textAttachment] });
         console.log(`[DELIVERY] ✅ Valid token sent to ${user.tag}`);
         return true;
     } catch (err) {
@@ -1297,7 +1268,7 @@ async function updateGenerationEmbed(interaction, step, message, ttl = null) {
     await interaction.editReply({ embeds: [embed], components: [row] });
 }
 
-// --- PROCESS TOKEN GENERATION (full) ---
+// --- PROCESS TOKEN GENERATION (generates both JSON files) ---
 async function processTokenGeneration(interaction, tierName) {
     const userId = interaction.user.id;
     const member = interaction.member;
@@ -1408,31 +1379,19 @@ async function processTokenGeneration(interaction, tierName) {
     await updateGenerationEmbed(interaction, 4, 'Sending to DMs...', ttl);
     const expiryText = humanExpiry(tokenObj.expiresAt);
 
-    // ========== OLD LAYOUT (tmcToken.json) ==========
-    const oldTokenData = {
-        token: {
-            bearer: tokenObj.bearer,
-            refresh_token: tokenObj.refresh,
-            expires_at: new Date(tokenObj.expiresAt).toISOString(),
-            seconds_remaining: ttl,
-            added_at: new Date().toISOString(),
-            generation_id: genId
-        },
-        message: "EAM.LOL Token Generator",
-        credits: "@elliott",
-        auto_refresh: "Refreshed automatically"
-    };
-    const oldJsonString = JSON.stringify(oldTokenData, null, 2);
-    const oldJsonBuffer = Buffer.from(oldJsonString, 'utf-8');
-    const oldAttachment = new AttachmentBuilder(oldJsonBuffer, { name: 'tmcToken.json' });
+    // ========== tmcToken.json – flat ==========
+    const tmcTokenData = { bearer: tokenObj.bearer, refresh_token: tokenObj.refresh };
+    const tmcJsonString = JSON.stringify(tmcTokenData, null, 2);
+    const tmcJsonBuffer = Buffer.from(tmcJsonString, 'utf-8');
+    const tmcAttachment = new AttachmentBuilder(tmcJsonBuffer, { name: 'tmcToken.json' });
 
-    // ========== NEW LAYOUT (fridaToken.json) ==========
-    const newTokenData = { token: tokenObj.bearer, refresh_token: tokenObj.refresh };
-    const newJsonString = JSON.stringify(newTokenData, null, 2);
-    const newJsonBuffer = Buffer.from(newJsonString, 'utf-8');
-    const newAttachment = new AttachmentBuilder(newJsonBuffer, { name: 'fridaToken.json' });
+    // ========== fridaToken.json – { token, refresh_token } ==========
+    const fridaTokenData = { token: tokenObj.bearer, refresh_token: tokenObj.refresh };
+    const fridaJsonString = JSON.stringify(fridaTokenData, null, 2);
+    const fridaJsonBuffer = Buffer.from(fridaJsonString, 'utf-8');
+    const fridaAttachment = new AttachmentBuilder(fridaJsonBuffer, { name: 'fridaToken.json' });
 
-    // ========== TEXT VERSION (token.txt) – unchanged ==========
+    // ========== TEXT VERSION ==========
     const textVersion = `EAM.LOL TOKEN GENERATOR\n----------------------------------------\nBEARER TOKEN:\n${tokenObj.bearer}\nREFRESH TOKEN:\n${tokenObj.refresh}\nGENERATION ID:\n${genId}\n----------------------------------------\nExpires: ${expiryText}\nSeconds left: ${ttl}s\nAuto-Refresh: Constantly\n----------------------------------------\n\n📌 IMPORTANT: Copy the BEARER TOKEN (the long string) and paste it into Animal Company.\nDo NOT add any spaces, quotes, or the word "Bearer".`;
     const textBuffer = Buffer.from(textVersion, 'utf-8');
     const textAttachment = new AttachmentBuilder(textBuffer, { name: 'token.txt' });
@@ -1459,7 +1418,7 @@ async function processTokenGeneration(interaction, tierName) {
         .setFooter({ text: 'EAM.LOL | Secure Token Service – 100% free' });
 
     try {
-        await interaction.user.send({ embeds: [successEmbed], files: [oldAttachment, newAttachment, textAttachment] });
+        await interaction.user.send({ embeds: [successEmbed], files: [tmcAttachment, fridaAttachment, textAttachment] });
         isGenerating = false;
         activeGenerations.delete(userId);
         console.log(`[GENERATION] Token sent to ${interaction.user.tag} (ID: ${genId})`);
@@ -1572,7 +1531,6 @@ async function updateStatusPanel() {
                 const ttl = Math.floor((expiry - now) / 1000);
                 expiryText = new Date(expiry).toUTCString();
                 timeLeft = ttl > 0 ? formatRemainingTime(expiry) : 'EXPIRED';
-                // Use cached API validation (or we could call it, but we already have it cached)
                 const apiCheck = await validateTokenDetails(token.bearer, token.refresh);
                 const apiValid = apiCheck.valid;
                 if (ttl <= 0 || !apiValid) {
@@ -1880,7 +1838,6 @@ client.on('interactionCreate', async interaction => {
 
             const { commandName, options } = interaction;
 
-            // --- /profile ---
             if (commandName === 'profile') {
                 await interaction.deferReply({ flags: 64 });
                 const token = tokenStock.length > 0 ? tokenStock[0] : null;
@@ -1902,7 +1859,7 @@ client.on('interactionCreate', async interaction => {
                 return interaction.editReply({ embeds: [embed], flags: 64 });
             }
 
-            // --- FAST COMMANDS (no validation) ---
+            // --- FAST COMMANDS ---
             if (commandName === 'ping') {
                 return interaction.reply({ content: `Pong! ${client.ws.ping}ms`, flags: 64 });
             }
@@ -1943,7 +1900,7 @@ client.on('interactionCreate', async interaction => {
                 return interaction.reply({ embeds: [embed] });
             }
 
-            // --- FUN COMMANDS (no validation) ---
+            // --- FUN COMMANDS ---
             if (commandName === 'fun') {
                 const facts = [
                     "🦴 Animal Company tokens are powered by Nakama server technology.",
@@ -2073,7 +2030,7 @@ client.on('interactionCreate', async interaction => {
                 }
             }
 
-            // --- SET-REFRESH (uses API validation) ---
+            // --- SET-REFRESH ---
             if (commandName === 'set-refresh') {
                 if (!hasAdminAccess(interaction)) return interaction.reply({ content: 'Access Denied.', flags: 64 });
                 await interaction.deferReply({ flags: 64 });
@@ -2118,7 +2075,7 @@ client.on('interactionCreate', async interaction => {
                 return interaction.editReply({ embeds: [embed] });
             }
 
-            // --- TEST REFRESH (uses API validation) ---
+            // --- TEST REFRESH ---
             if (commandName === 'test-refresh') {
                 if (!hasAdminAccess(interaction)) return interaction.reply({ content: 'Access Denied.', flags: 64 });
                 await interaction.deferReply({ flags: 64 });
