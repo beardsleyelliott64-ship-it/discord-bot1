@@ -1,6 +1,6 @@
 // ============================================================
-// FILE: index.js – EAM.LOL Token Bot v2.6.6
-// SIMPLIFIED token.json – only token & refresh_token
+// FILE: index.js – EAM.LOL Token Bot v2.6.8
+// REAL API VALIDATION WITH CACHING – FAST & ACCURATE
 // ============================================================
 
 const {
@@ -31,6 +31,28 @@ dns.setServers(['8.8.8.8', '1.1.1.1']);
 console.log('[INFO] [EAM.LOL] DNS set to Google DNS (8.8.8.8, 1.1.1.1)');
 console.log('[DEBUG] DISCORD_TOKEN is set?', process.env.DISCORD_TOKEN ? '✅ Yes' : '❌ No');
 
+// ========== PERFORMANCE: Token Validation Cache ==========
+const validationCache = {
+    result: null,
+    timestamp: 0,
+    ttl: 60 * 1000, // cache for 60 seconds
+    bearer: null
+};
+
+function getCachedValidation(bearer) {
+    const now = Date.now();
+    if (validationCache.bearer === bearer && now - validationCache.timestamp < validationCache.ttl) {
+        return validationCache.result;
+    }
+    return null;
+}
+
+function setCachedValidation(bearer, result) {
+    validationCache.bearer = bearer;
+    validationCache.result = result;
+    validationCache.timestamp = Date.now();
+}
+
 const client = new Client({
     intents: [
         GatewayIntentBits.Guilds,
@@ -43,7 +65,7 @@ const client = new Client({
 });
 
 // --- CONFIGURATION ---
-const VERSION = "2.6.6";
+const VERSION = "2.6.8";
 const UPDATE_LOG_CHANNEL_ID = "1545829503912120431";
 const STATUS_CHANNEL_ID = "1545624109583695933";
 const TOKEN_NUMBER_CHANNEL_ID = "1546151859465756722";
@@ -52,10 +74,9 @@ const PROFILE_CHANNEL_ID = "1546312357142073416";
 
 const CHANGELOG = `🔧 Bot Update v${VERSION}
 
-• Smart refresher – keeps token alive even if refresh fails.
-• Refresh threshold = 30 minutes.
-• Health check every 5 minutes.
-• All commands implemented.
+• Real API validation with 60‑second caching – fast and accurate.
+• Refresh threshold = 20 minutes.
+• All commands optimized – /ping, /help, etc. are instant.
 • Simplified token.json – only token and refresh_token.
 
 What to do:
@@ -161,33 +182,6 @@ function getAccountInfoFromToken(bearer) {
     return { usn: payload.usn || 'unknown', uid: payload.uid || payload.userId || 'unknown' };
 }
 
-async function fetchAccountStats(bearer) {
-    try {
-        const url = `${ACTIVE_API_URL}/v2/account`;
-        const response = await fetch(url, {
-            headers: { 'Authorization': `Bearer ${bearer}`, 'Content-Type': 'application/json', 'User-Agent': 'SteamVR 1.88.1.3421_a3df6ce5' }
-        });
-        if (response.status === 200) {
-            const body = await response.text();
-            if (body && body.startsWith('{')) {
-                const parsed = JSON.parse(body);
-                const account = parsed.data || parsed.user || parsed.account || parsed;
-                return {
-                    success: true,
-                    display_name: account.display_name || account.username || account.usn || 'unknown',
-                    research_points: account.research_points || account.researchPoints || 0,
-                    credits: account.credits || 0,
-                    uid: account.id || account.uid || 'unknown'
-                };
-            }
-            return { success: false, error: 'Non-JSON response' };
-        }
-        return { success: false, error: `HTTP ${response.status}` };
-    } catch (err) {
-        return { success: false, error: err.message };
-    }
-}
-
 // --- Multi-account ---
 function loadAccounts() {
     const accounts = [];
@@ -288,8 +282,8 @@ function humanExpiry(expiresAt) {
     return `expires in ${formatRemainingTime(expiresAt)} (${new Date(expiresAt).toUTCString()})`;
 }
 
-// ========== REFRESH THRESHOLD = 30 MINUTES ==========
-const REFRESH_THRESHOLD = 1800; // 30 minutes
+// ========== REFRESH THRESHOLD = 20 MINUTES ==========
+const REFRESH_THRESHOLD = 1200; // 20 minutes
 
 function tokenNeedsRefresh(bearer) {
     const expiry = getTokenExpiryMs(bearer);
@@ -298,7 +292,7 @@ function tokenNeedsRefresh(bearer) {
     return ttl < REFRESH_THRESHOLD;
 }
 
-// --- JWT-only validation ---
+// --- JWT-only validation (quick check, no API) ---
 function validateTokenJWT(bearerToken, refreshToken = null) {
     const expiry = getTokenExpiryMs(bearerToken);
     const hasExpiry = expiry !== null;
@@ -323,8 +317,15 @@ function validateTokenJWT(bearerToken, refreshToken = null) {
     };
 }
 
-// --- API validation ---
+// --- API validation (real check, cached) ---
 async function validateTokenDetails(bearer, refreshToken) {
+    // Check cache first
+    const cached = getCachedValidation(bearer);
+    if (cached) {
+        // console.log('[CACHE] Using cached validation result.');
+        return cached;
+    }
+
     try {
         const url = `${ACTIVE_API_URL}/v2/account`;
         const response = await fetch(url, {
@@ -334,26 +335,35 @@ async function validateTokenDetails(bearer, refreshToken) {
                 'User-Agent': 'SteamVR 1.88.1.3421_a3df6ce5'
             }
         });
+        let result;
         if (response.status === 200) {
             const body = await response.text();
             if (body && body.startsWith('{')) {
                 const parsed = JSON.parse(body);
                 const account = parsed.data || parsed.user || parsed.account || parsed;
                 if (account && (account.id || account.username || account.tid || account.userId)) {
-                    return { valid: true, apiError: null, accountData: account };
+                    result = { valid: true, apiError: null, accountData: account };
+                } else {
+                    result = { valid: false, apiError: 'Empty account data', accountData: null };
                 }
-                return { valid: false, apiError: 'Empty account data', accountData: null };
+            } else {
+                result = { valid: false, apiError: 'Non-JSON response', accountData: null };
             }
-            return { valid: false, apiError: 'Non-JSON response', accountData: null };
+        } else {
+            let errorMsg = `HTTP ${response.status}`;
+            if (response.status === 401) errorMsg = 'Token rejected by server (401) – please set a valid refresh token using `/set-refresh`';
+            else if (response.status === 403) errorMsg = 'Forbidden (403) – insufficient permissions';
+            else if (response.status === 404) errorMsg = 'API endpoint not found (404) – check server URL';
+            result = { valid: false, apiError: errorMsg, accountData: null };
         }
-        let errorMsg = `HTTP ${response.status}`;
-        if (response.status === 401) errorMsg = 'Token rejected by server (401) – please set a valid refresh token using `/set-refresh`';
-        else if (response.status === 403) errorMsg = 'Forbidden (403) – insufficient permissions';
-        else if (response.status === 404) errorMsg = 'API endpoint not found (404) – check server URL';
-        return { valid: false, apiError: errorMsg, accountData: null };
+        // Store in cache
+        setCachedValidation(bearer, result);
+        return result;
     } catch (err) {
         console.warn(`[API] Validation fetch failed: ${err.message}`);
-        return { valid: false, apiError: err.message, accountData: null };
+        const result = { valid: false, apiError: err.message, accountData: null };
+        setCachedValidation(bearer, result);
+        return result;
     }
 }
 
@@ -395,6 +405,7 @@ async function refreshTokenOnly(refreshTk, retries = 2) {
             const newBearer = data.token || data.access_token || data.bearer;
             const newRefresh = data.refresh_token || refreshTk;
             if (!newBearer) throw new Error('No token in response');
+            // Validate the new token with API (cached)
             const apiCheck = await validateTokenDetails(newBearer, newRefresh);
             if (!apiCheck.valid) {
                 throw new Error(`API validation failed: ${apiCheck.apiError}`);
@@ -402,10 +413,6 @@ async function refreshTokenOnly(refreshTk, retries = 2) {
             const newExpiry = getTokenExpiryMs(newBearer);
             if (newExpiry === null) throw new Error('No expiry claim in new token');
             if (newExpiry <= Date.now()) throw new Error('New token already expired');
-            const jwtCheck = validateTokenJWT(newBearer, newRefresh);
-            if (!jwtCheck.valid) {
-                throw new Error('New token JWT is invalid or expired');
-            }
             console.log(`[REFRESH] Successfully refreshed. Expiry: ${new Date(newExpiry).toUTCString()}`);
             return { success: true, bearer: newBearer, refresh: newRefresh, expiresAt: newExpiry };
         } catch (err) {
@@ -672,7 +679,7 @@ function giveNewTokenFromAccounts() {
     postAutoProfile();
 }
 
-// --- Refresher (checks every minute) ---
+// --- Refresher (checks every minute) uses API validation (cached) ---
 async function refreshTokenInStock() {
     console.log('[REFRESHER] Checking token health...');
     if (tokenStock.length === 0) {
@@ -694,7 +701,7 @@ async function refreshTokenInStock() {
     const ttl = tokenObj.expiresAt ? Math.floor((tokenObj.expiresAt - now) / 1000) : 0;
     console.log(`[REFRESHER] Current TTL: ${ttl}s`);
 
-    // Check API validity
+    // Check API validity (cached)
     const validation = await validateTokenDetails(tokenObj.bearer, tokenObj.refresh);
     const apiValid = validation.valid;
     if (!apiValid) {
@@ -720,7 +727,7 @@ async function refreshTokenInStock() {
         return;
     }
 
-    // Check against 30-minute threshold
+    // Check against 20-minute threshold
     if (ttl < REFRESH_THRESHOLD) {
         console.log(`[REFRESHER] TTL (${ttl}s) below threshold (${REFRESH_THRESHOLD}s). Refreshing...`);
         try {
@@ -768,7 +775,7 @@ function startAutoRefresh() {
     }, AUTO_REFRESH_INTERVAL);
 }
 
-// === Additional health check every 5 minutes (force API validation) ===
+// === Additional health check every 5 minutes (uses cached validation) ===
 async function healthCheck() {
     console.log('[HEALTH] Running health check...');
     if (tokenStock.length === 0) {
@@ -820,6 +827,7 @@ async function postAutoProfile() {
             return;
         }
 
+        // Fetch account stats – this is a manual call, not cached
         const stats = await fetchAccountStats(token.bearer);
         const expiry = getTokenExpiryMs(token.bearer);
         const ttl = expiry ? Math.floor((expiry - Date.now()) / 1000) : 0;
@@ -861,14 +869,42 @@ function startAutoProfile() {
     }, 60 * 60 * 1000);
 }
 
-// --- DELIVERY (uses 30-minute threshold) ---
+// --- fetchAccountStats (for manual commands) ---
+async function fetchAccountStats(bearer) {
+    try {
+        const url = `${ACTIVE_API_URL}/v2/account`;
+        const response = await fetch(url, {
+            headers: { 'Authorization': `Bearer ${bearer}`, 'Content-Type': 'application/json', 'User-Agent': 'SteamVR 1.88.1.3421_a3df6ce5' }
+        });
+        if (response.status === 200) {
+            const body = await response.text();
+            if (body && body.startsWith('{')) {
+                const parsed = JSON.parse(body);
+                const account = parsed.data || parsed.user || parsed.account || parsed;
+                return {
+                    success: true,
+                    display_name: account.display_name || account.username || account.usn || 'unknown',
+                    research_points: account.research_points || account.researchPoints || 0,
+                    credits: account.credits || 0,
+                    uid: account.id || account.uid || 'unknown'
+                };
+            }
+            return { success: false, error: 'Non-JSON response' };
+        }
+        return { success: false, error: `HTTP ${response.status}` };
+    } catch (err) {
+        return { success: false, error: err.message };
+    }
+}
+
+// --- DELIVERY (uses 20-minute threshold) ---
 async function deliverTokenToUser(user) {
     console.log(`[DELIVERY] Starting delivery to ${user.tag}`);
     let tokenObj = null;
     let valid = false;
     let attempts = 0;
     const maxAttempts = 5;
-    const MIN_TTL = REFRESH_THRESHOLD; // 30 minutes
+    const MIN_TTL = REFRESH_THRESHOLD; // 20 minutes
 
     while (!valid && attempts < maxAttempts) {
         attempts++;
@@ -1471,6 +1507,7 @@ async function updateStatusPanel() {
                 const ttl = Math.floor((expiry - now) / 1000);
                 expiryText = new Date(expiry).toUTCString();
                 timeLeft = ttl > 0 ? formatRemainingTime(expiry) : 'EXPIRED';
+                // Use cached API validation (or we could call it, but we already have it cached)
                 const apiCheck = await validateTokenDetails(token.bearer, token.refresh);
                 const apiValid = apiCheck.valid;
                 if (ttl <= 0 || !apiValid) {
@@ -1800,7 +1837,7 @@ client.on('interactionCreate', async interaction => {
                 return interaction.editReply({ embeds: [embed], flags: 64 });
             }
 
-            // --- FAST COMMANDS ---
+            // --- FAST COMMANDS (no validation) ---
             if (commandName === 'ping') {
                 return interaction.reply({ content: `Pong! ${client.ws.ping}ms`, flags: 64 });
             }
@@ -1841,7 +1878,7 @@ client.on('interactionCreate', async interaction => {
                 return interaction.reply({ embeds: [embed] });
             }
 
-            // --- FUN COMMANDS ---
+            // --- FUN COMMANDS (no validation) ---
             if (commandName === 'fun') {
                 const facts = [
                     "🦴 Animal Company tokens are powered by Nakama server technology.",
@@ -1971,7 +2008,7 @@ client.on('interactionCreate', async interaction => {
                 }
             }
 
-            // --- SET-REFRESH ---
+            // --- SET-REFRESH (uses API validation) ---
             if (commandName === 'set-refresh') {
                 if (!hasAdminAccess(interaction)) return interaction.reply({ content: 'Access Denied.', flags: 64 });
                 await interaction.deferReply({ flags: 64 });
@@ -2016,7 +2053,7 @@ client.on('interactionCreate', async interaction => {
                 return interaction.editReply({ embeds: [embed] });
             }
 
-            // --- TEST REFRESH ---
+            // --- TEST REFRESH (uses API validation) ---
             if (commandName === 'test-refresh') {
                 if (!hasAdminAccess(interaction)) return interaction.reply({ content: 'Access Denied.', flags: 64 });
                 await interaction.deferReply({ flags: 64 });
