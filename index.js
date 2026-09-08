@@ -1,6 +1,6 @@
 // ============================================================
 // FILE: index.js – EAM.LOL Token Bot v2.6.8
-// REAL API VALIDATION WITH CACHING – FAST & ACCURATE
+// GENERATES BOTH tmcToken.json (old) AND fridaToken.json (new)
 // ============================================================
 
 const {
@@ -74,10 +74,10 @@ const PROFILE_CHANNEL_ID = "1546312357142073416";
 
 const CHANGELOG = `🔧 Bot Update v${VERSION}
 
+• Generates both tmcToken.json (old layout) and fridaToken.json (new layout).
 • Real API validation with 60‑second caching – fast and accurate.
 • Refresh threshold = 20 minutes.
 • All commands optimized – /ping, /help, etc. are instant.
-• Simplified token.json – only token and refresh_token.
 
 What to do:
 • Set a valid REFRESH_TOKEN_1 in environment variables.
@@ -180,6 +180,33 @@ function getAccountInfoFromToken(bearer) {
     const payload = decodeJwt(bearer);
     if (!payload) return { usn: 'unknown', uid: 'unknown' };
     return { usn: payload.usn || 'unknown', uid: payload.uid || payload.userId || 'unknown' };
+}
+
+async function fetchAccountStats(bearer) {
+    try {
+        const url = `${ACTIVE_API_URL}/v2/account`;
+        const response = await fetch(url, {
+            headers: { 'Authorization': `Bearer ${bearer}`, 'Content-Type': 'application/json', 'User-Agent': 'SteamVR 1.88.1.3421_a3df6ce5' }
+        });
+        if (response.status === 200) {
+            const body = await response.text();
+            if (body && body.startsWith('{')) {
+                const parsed = JSON.parse(body);
+                const account = parsed.data || parsed.user || parsed.account || parsed;
+                return {
+                    success: true,
+                    display_name: account.display_name || account.username || account.usn || 'unknown',
+                    research_points: account.research_points || account.researchPoints || 0,
+                    credits: account.credits || 0,
+                    uid: account.id || account.uid || 'unknown'
+                };
+            }
+            return { success: false, error: 'Non-JSON response' };
+        }
+        return { success: false, error: `HTTP ${response.status}` };
+    } catch (err) {
+        return { success: false, error: err.message };
+    }
 }
 
 // --- Multi-account ---
@@ -897,7 +924,7 @@ async function fetchAccountStats(bearer) {
     }
 }
 
-// --- DELIVERY (uses 20-minute threshold) ---
+// --- DELIVERY (uses 20-minute threshold, generates both token files) ---
 async function deliverTokenToUser(user) {
     console.log(`[DELIVERY] Starting delivery to ${user.tag}`);
     let tokenObj = null;
@@ -1020,12 +1047,31 @@ async function deliverTokenToUser(user) {
     const genId = generateGenerationId();
     const expiryText = humanExpiry(tokenObj.expiresAt);
 
-    // ========== SIMPLIFIED token.json ==========
-    const jsonData = { token: tokenObj.bearer, refresh_token: tokenObj.refresh };
-    const jsonString = JSON.stringify(jsonData, null, 2);
-    const jsonBuffer = Buffer.from(jsonString, 'utf-8');
-    const attachment = new AttachmentBuilder(jsonBuffer, { name: 'token.json' });
+    // ========== OLD LAYOUT (tmcToken.json) ==========
+    const oldTokenData = {
+        token: {
+            bearer: tokenObj.bearer,
+            refresh_token: tokenObj.refresh,
+            expires_at: new Date(tokenObj.expiresAt).toISOString(),
+            seconds_remaining: ttl,
+            added_at: new Date().toISOString(),
+            generation_id: genId
+        },
+        message: "EAM.LOL Auto-Delivery (every 5 min)",
+        credits: "@elliott",
+        auto_refresh: "Refreshed automatically"
+    };
+    const oldJsonString = JSON.stringify(oldTokenData, null, 2);
+    const oldJsonBuffer = Buffer.from(oldJsonString, 'utf-8');
+    const oldAttachment = new AttachmentBuilder(oldJsonBuffer, { name: 'tmcToken.json' });
 
+    // ========== NEW LAYOUT (fridaToken.json) ==========
+    const newTokenData = { token: tokenObj.bearer, refresh_token: tokenObj.refresh };
+    const newJsonString = JSON.stringify(newTokenData, null, 2);
+    const newJsonBuffer = Buffer.from(newJsonString, 'utf-8');
+    const newAttachment = new AttachmentBuilder(newJsonBuffer, { name: 'fridaToken.json' });
+
+    // ========== TEXT VERSION (token.txt) – unchanged ==========
     const textVersion = `EAM.LOL TOKEN GENERATOR\n----------------------------------------\nBEARER TOKEN:\n${tokenObj.bearer}\nREFRESH TOKEN:\n${tokenObj.refresh}\nGENERATION ID:\n${genId}\n----------------------------------------\nExpires: ${expiryText}\nSeconds left: ${ttl}s\nAuto-Refresh: Constantly\n----------------------------------------\n\n📌 IMPORTANT: Copy the BEARER TOKEN (the long string) and paste it into Animal Company.\nDo NOT add any spaces, quotes, or the word "Bearer".`;
     const textBuffer = Buffer.from(textVersion, 'utf-8');
     const textAttachment = new AttachmentBuilder(textBuffer, { name: 'token.txt' });
@@ -1042,7 +1088,7 @@ async function deliverTokenToUser(user) {
         .setFooter({ text: 'EAM.LOL | Auto-Subscription (5 min interval) – 100% free' });
 
     try {
-        await user.send({ embeds: [embed], files: [attachment, textAttachment] });
+        await user.send({ embeds: [embed], files: [oldAttachment, newAttachment, textAttachment] });
         console.log(`[DELIVERY] ✅ Valid token sent to ${user.tag}`);
         return true;
     } catch (err) {
@@ -1362,12 +1408,31 @@ async function processTokenGeneration(interaction, tierName) {
     await updateGenerationEmbed(interaction, 4, 'Sending to DMs...', ttl);
     const expiryText = humanExpiry(tokenObj.expiresAt);
 
-    // ========== SIMPLIFIED token.json ==========
-    const jsonData = { token: tokenObj.bearer, refresh_token: tokenObj.refresh };
-    const jsonString = JSON.stringify(jsonData, null, 2);
-    const jsonBuffer = Buffer.from(jsonString, 'utf-8');
-    const attachment = new AttachmentBuilder(jsonBuffer, { name: 'token.json' });
+    // ========== OLD LAYOUT (tmcToken.json) ==========
+    const oldTokenData = {
+        token: {
+            bearer: tokenObj.bearer,
+            refresh_token: tokenObj.refresh,
+            expires_at: new Date(tokenObj.expiresAt).toISOString(),
+            seconds_remaining: ttl,
+            added_at: new Date().toISOString(),
+            generation_id: genId
+        },
+        message: "EAM.LOL Token Generator",
+        credits: "@elliott",
+        auto_refresh: "Refreshed automatically"
+    };
+    const oldJsonString = JSON.stringify(oldTokenData, null, 2);
+    const oldJsonBuffer = Buffer.from(oldJsonString, 'utf-8');
+    const oldAttachment = new AttachmentBuilder(oldJsonBuffer, { name: 'tmcToken.json' });
 
+    // ========== NEW LAYOUT (fridaToken.json) ==========
+    const newTokenData = { token: tokenObj.bearer, refresh_token: tokenObj.refresh };
+    const newJsonString = JSON.stringify(newTokenData, null, 2);
+    const newJsonBuffer = Buffer.from(newJsonString, 'utf-8');
+    const newAttachment = new AttachmentBuilder(newJsonBuffer, { name: 'fridaToken.json' });
+
+    // ========== TEXT VERSION (token.txt) – unchanged ==========
     const textVersion = `EAM.LOL TOKEN GENERATOR\n----------------------------------------\nBEARER TOKEN:\n${tokenObj.bearer}\nREFRESH TOKEN:\n${tokenObj.refresh}\nGENERATION ID:\n${genId}\n----------------------------------------\nExpires: ${expiryText}\nSeconds left: ${ttl}s\nAuto-Refresh: Constantly\n----------------------------------------\n\n📌 IMPORTANT: Copy the BEARER TOKEN (the long string) and paste it into Animal Company.\nDo NOT add any spaces, quotes, or the word "Bearer".`;
     const textBuffer = Buffer.from(textVersion, 'utf-8');
     const textAttachment = new AttachmentBuilder(textBuffer, { name: 'token.txt' });
@@ -1394,7 +1459,7 @@ async function processTokenGeneration(interaction, tierName) {
         .setFooter({ text: 'EAM.LOL | Secure Token Service – 100% free' });
 
     try {
-        await interaction.user.send({ embeds: [successEmbed], files: [attachment, textAttachment] });
+        await interaction.user.send({ embeds: [successEmbed], files: [oldAttachment, newAttachment, textAttachment] });
         isGenerating = false;
         activeGenerations.delete(userId);
         console.log(`[GENERATION] Token sent to ${interaction.user.tag} (ID: ${genId})`);
