@@ -183,6 +183,7 @@ function getAccountInfoFromToken(bearer) {
     return { usn: payload.usn || 'unknown', uid: payload.uid || payload.userId || 'unknown' };
 }
 
+// ========== FIXED fetchAccountStats ==========
 async function fetchAccountStats(bearer) {
     try {
         const url = `${ACTIVE_API_URL}/v2/account`;
@@ -193,17 +194,35 @@ async function fetchAccountStats(bearer) {
             const body = await response.text();
             if (body && body.startsWith('{')) {
                 const parsed = JSON.parse(body);
-                const account = parsed.data || parsed.user || parsed.account || parsed;
-                // Extract mute info
-                const isMuted = account.is_muted || account.muted || false;
-                const muteReason = account.mute_reason || account.muted_reason || null;
-                const muteExpires = account.mute_expires || account.muted_until || null;
+
+                // Robustly find user and wallet objects
+                let user = parsed.user || parsed.data?.user || parsed.data || parsed;
+                let wallet = parsed.wallet || parsed.data?.wallet || {};
+
+                // If user is missing but parsed has display_name, use parsed as user
+                if (!user.display_name && !user.username && !user.id) {
+                    user = parsed.data || parsed;
+                }
+
+                // If wallet is missing, check if currencies are in user or root
+                if (!wallet.coins && !wallet.credits && !wallet.research_points) {
+                    if (parsed.coins !== undefined || parsed.credits !== undefined) {
+                        wallet = parsed;
+                    } else if (user.coins !== undefined || user.credits !== undefined) {
+                        wallet = user;
+                    }
+                }
+
+                const isMuted = user.is_muted || user.muted || false;
+                const muteReason = user.mute_reason || user.muted_reason || null;
+                const muteExpires = user.mute_expires || user.muted_until || null;
+
                 return {
                     success: true,
-                    display_name: account.display_name || account.username || account.usn || 'unknown',
-                    research_points: account.research_points || account.researchPoints || 0,
-                    credits: account.credits || 0,
-                    uid: account.id || account.uid || 'unknown',
+                    display_name: user.display_name || user.username || user.usn || 'unknown',
+                    research_points: wallet.research_points || wallet.researchPoints || 0,
+                    credits: wallet.coins || wallet.credits || 0,
+                    uid: user.id || user.uid || 'unknown',
                     isMuted: isMuted,
                     muteReason: muteReason,
                     muteExpires: muteExpires ? new Date(muteExpires).toISOString() : null
@@ -835,9 +854,36 @@ function startHealthCheck() {
     }, 5 * 60 * 1000);
 }
 
+// ========== CLEANUP for Auto-Profile duplicates ==========
+async function cleanupProfileChannel(channelId) {
+    try {
+        const channel = client.channels.cache.get(channelId);
+        if (!channel) return;
+        const messages = await channel.messages.fetch({ limit: 20 });
+        const botProfileMessages = messages.filter(m => m.author.id === client.user.id && m.embeds.length > 0 && m.embeds[0].title === '📊 Animal Company Profile');
+        if (botProfileMessages.size > 1) {
+            const sorted = botProfileMessages.sort((a, b) => b.createdTimestamp - a.createdTimestamp);
+            const latest = sorted.first();
+            let count = 0;
+            for (const [id, msg] of sorted) {
+                if (msg.id !== latest.id) {
+                    await msg.delete().catch(() => {});
+                    count++;
+                }
+            }
+            if (count > 0) console.log(`[CLEANUP] Deleted ${count} duplicate profile panels in ${channelId}`);
+        }
+    } catch (err) {
+        console.error('[CLEANUP] Error cleaning up profile channel:', err);
+    }
+}
+
 // ========== Auto-profile (posts to channel 1546312357142073416) ==========
 async function postAutoProfile() {
     try {
+        // --- DELETE duplicates and old ones ---
+        await cleanupProfileChannel(PROFILE_CHANNEL_ID);
+
         const channel = client.channels.cache.get(PROFILE_CHANNEL_ID);
         if (!channel) {
             console.error(`[AUTO-PROFILE] Channel ${PROFILE_CHANNEL_ID} not found.`);
@@ -905,41 +951,6 @@ function startAutoProfile() {
     setInterval(async () => {
         await postAutoProfile();
     }, 60 * 60 * 1000);
-}
-
-// --- fetchAccountStats (for manual commands) ---
-async function fetchAccountStats(bearer) {
-    try {
-        const url = `${ACTIVE_API_URL}/v2/account`;
-        const response = await fetch(url, {
-            headers: { 'Authorization': `Bearer ${bearer}`, 'Content-Type': 'application/json', 'User-Agent': 'SteamVR 1.88.1.3421_a3df6ce5' }
-        });
-        if (response.status === 200) {
-            const body = await response.text();
-            if (body && body.startsWith('{')) {
-                const parsed = JSON.parse(body);
-                const account = parsed.data || parsed.user || parsed.account || parsed;
-                // Extract mute info
-                const isMuted = account.is_muted || account.muted || false;
-                const muteReason = account.mute_reason || account.muted_reason || null;
-                const muteExpires = account.mute_expires || account.muted_until || null;
-                return {
-                    success: true,
-                    display_name: account.display_name || account.username || account.usn || 'unknown',
-                    research_points: account.research_points || account.researchPoints || 0,
-                    credits: account.credits || 0,
-                    uid: account.id || account.uid || 'unknown',
-                    isMuted: isMuted,
-                    muteReason: muteReason,
-                    muteExpires: muteExpires ? new Date(muteExpires).toISOString() : null
-                };
-            }
-            return { success: false, error: 'Non-JSON response' };
-        }
-        return { success: false, error: `HTTP ${response.status}` };
-    } catch (err) {
-        return { success: false, error: err.message };
-    }
 }
 
 // --- DELIVERY (generates both JSON files) ---
@@ -1894,6 +1905,7 @@ client.on('interactionCreate', async interaction => {
 
             const { commandName, options } = interaction;
 
+            // ========== FIXED /profile COMMAND ==========
             if (commandName === 'profile') {
                 await interaction.deferReply({ flags: 64 });
                 const token = tokenStock.length > 0 ? tokenStock[0] : null;
