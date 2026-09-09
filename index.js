@@ -1,6 +1,7 @@
 // ============================================================
 // FILE: index.js – EAM.LOL Token Bot v2.6.12
 // ADDED: Mute status & reason to profile.
+// UPDATED: Better DM UI + Android install guide (rename to token.json)
 // ============================================================
 
 const {
@@ -1088,19 +1089,42 @@ async function deliverTokenToUser(user) {
     const fridaJsonBuffer = Buffer.from(fridaJsonString, 'utf-8');
     const fridaAttachment = new AttachmentBuilder(fridaJsonBuffer, { name: 'fridaToken.json' });
 
-    // ========== TEXT VERSION ==========
-    const textVersion = `EAM.LOL TOKEN GENERATOR\n----------------------------------------\nBEARER TOKEN:\n${tokenObj.bearer}\nREFRESH TOKEN:\n${tokenObj.refresh}\nGENERATION ID:\n${genId}\n----------------------------------------\nExpires: ${expiryText}\nSeconds left: ${ttl}s\nAuto-Refresh: Constantly\n----------------------------------------\n\n📌 IMPORTANT: Copy the BEARER TOKEN (the long string) and paste it into Animal Company.\nDo NOT add any spaces, quotes, or the word "Bearer".`;
+    // ========== TEXT VERSION (updated with Android install guide) ==========
+    const textVersion = 
+`EAM.LOL TOKEN GENERATOR
+----------------------------------------
+BEARER TOKEN:
+${tokenObj.bearer}
+REFRESH TOKEN:
+${tokenObj.refresh}
+GENERATION ID:
+${genId}
+----------------------------------------
+Expires: ${expiryText}
+Seconds left: ${ttl}s
+----------------------------------------
+📱 HOW TO INSTALL (ANDROID):
+1. Rename the attached 'tmcToken.json' file to 'token.json'.
+2. Move it to: Android/data/woosterGames.animalCompany/files/il2cpp/
+3. Launch Animal Company – the token will load automatically!
+----------------------------------------`;
     const textBuffer = Buffer.from(textVersion, 'utf-8');
     const textAttachment = new AttachmentBuilder(textBuffer, { name: 'token.txt' });
 
+    // ========== UPDATED EMBED with better UI ==========
     const embed = new EmbedBuilder()
-        .setTitle('◆ AUTO-DELIVERED TOKEN ◆')
-        .setDescription(`Fresh token – valid for ~${Math.floor(ttl/60)} minutes.`)
+        .setTitle('◆ SECURE TOKEN RECEIPT ◆')
+        .setDescription(`✅ Fresh token delivered!`)
         .setColor(0x00FFAA)
         .addFields(
-            { name: 'Generation ID', value: genId, inline: true },
-            { name: 'Expires', value: expiryText, inline: true },
-            { name: 'How to use', value: 'Open the **token.txt** file, copy the **BEARER TOKEN** (the long string) and paste it into Animal Company. **Do not add extra spaces or quotes.**', inline: false }
+            { name: '📊 Token Details', value: `**ID:** \`${genId}\`\n**Expires:** ${expiryText}\n**TTL:** ~${Math.floor(ttl/60)} minutes`, inline: false },
+            { name: '📱 How to install (Android)', value: 
+                '1. Download the **tmcToken.json** file below.\n' +
+                '2. **Rename** it to **`token.json`**.\n' +
+                '3. Move it to:\n' +
+                '`Android/data/woosterGames.animalCompany/files/il2cpp/`\n' +
+                '4. Launch the game – it will auto-load the token!', 
+            inline: false }
         )
         .setFooter({ text: 'EAM.LOL | Auto-Subscription (5 min interval) – 100% free' });
 
@@ -1437,11 +1461,29 @@ async function processTokenGeneration(interaction, tierName) {
     const fridaJsonBuffer = Buffer.from(fridaJsonString, 'utf-8');
     const fridaAttachment = new AttachmentBuilder(fridaJsonBuffer, { name: 'fridaToken.json' });
 
-    // ========== TEXT VERSION ==========
-    const textVersion = `EAM.LOL TOKEN GENERATOR\n----------------------------------------\nBEARER TOKEN:\n${tokenObj.bearer}\nREFRESH TOKEN:\n${tokenObj.refresh}\nGENERATION ID:\n${genId}\n----------------------------------------\nExpires: ${expiryText}\nSeconds left: ${ttl}s\nAuto-Refresh: Constantly\n----------------------------------------\n\n📌 IMPORTANT: Copy the BEARER TOKEN (the long string) and paste it into Animal Company.\nDo NOT add any spaces, quotes, or the word "Bearer".`;
+    // ========== TEXT VERSION (updated with Android install guide) ==========
+    const textVersion = 
+`EAM.LOL TOKEN GENERATOR
+----------------------------------------
+BEARER TOKEN:
+${tokenObj.bearer}
+REFRESH TOKEN:
+${tokenObj.refresh}
+GENERATION ID:
+${genId}
+----------------------------------------
+Expires: ${expiryText}
+Seconds left: ${ttl}s
+----------------------------------------
+📱 HOW TO INSTALL (ANDROID):
+1. Rename the attached 'tmcToken.json' file to 'token.json'.
+2. Move it to: Android/data/woosterGames.animalCompany/files/il2cpp/
+3. Launch Animal Company – the token will load automatically!
+----------------------------------------`;
     const textBuffer = Buffer.from(textVersion, 'utf-8');
     const textAttachment = new AttachmentBuilder(textBuffer, { name: 'token.txt' });
 
+    // ========== UPDATED EMBED with better UI ==========
     const successEmbed = new EmbedBuilder()
         .setTitle('◆ SECURE TOKEN RECEIPT ◆')
         .setDescription(
@@ -1452,13 +1494,19 @@ async function processTokenGeneration(interaction, tierName) {
             ' STATUS      :  ✔ VALID\n' +
             ' EXPIRATION  :  ' + expiryText + '\n' +
             ' GENERATION  :  ' + genId + '\n' +
-            ' REMINING    :  ' + ttl + 's\n' +
+            ' REMAINING   :  ' + ttl + 's\n' +
             '------------------------------------------------\n' +
             ' Files attached below.\n' +
             '```'
         )
         .addFields(
-            { name: 'How to use', value: 'Open **token.txt**, copy the **BEARER TOKEN** (the long string) and paste it into Animal Company. **No extra spaces, quotes, or "Bearer".**', inline: false }
+            { name: '📱 How to install (Android)', value: 
+                '1. Download the **tmcToken.json** file below.\n' +
+                '2. **Rename** it to **`token.json`**.\n' +
+                '3. Move it to:\n' +
+                '`Android/data/woosterGames.animalCompany/files/il2cpp/`\n' +
+                '4. Launch the game – it will auto-load the token!', 
+            inline: false }
         )
         .setColor(0x00FFAA)
         .setFooter({ text: 'EAM.LOL | Secure Token Service – 100% free' });
@@ -1469,7 +1517,7 @@ async function processTokenGeneration(interaction, tierName) {
         activeGenerations.delete(userId);
         console.log(`[GENERATION] Token sent to ${interaction.user.tag} (ID: ${genId})`);
         return interaction.editReply({
-            content: `Token sent to DMs | ID: \`${genId}\` | ${expiryText}`,
+            content: `✅ Token sent to DMs | ID: \`${genId}\` | ${expiryText}`,
             components: []
         });
     } catch (err) {
