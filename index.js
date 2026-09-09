@@ -1,6 +1,6 @@
 // ============================================================
-// FILE: index.js – EAM.LOL Token Bot v2.6.11
-// FIX: Timeouts on validation – no more stuck commands.
+// FILE: index.js – EAM.LOL Token Bot v2.6.12
+// ADDED: Mute status & reason to profile.
 // ============================================================
 
 const {
@@ -65,7 +65,7 @@ const client = new Client({
 });
 
 // --- CONFIGURATION ---
-const VERSION = "2.6.11";
+const VERSION = "2.6.12";
 const UPDATE_LOG_CHANNEL_ID = "1545829503912120431";
 const STATUS_CHANNEL_ID = "1545624109583695933";
 const TOKEN_NUMBER_CHANNEL_ID = "1546151859465756722";
@@ -74,7 +74,7 @@ const PROFILE_CHANNEL_ID = "1546312357142073416";
 
 const CHANGELOG = `🔧 Bot Update v${VERSION}
 
-• Timeouts on validation – no more stuck commands.
+• Added mute status & reason to /profile and auto-profile.
 • tmcToken.json: { "bearer": "...", "refresh_token": "..." }
 • fridaToken.json: { "token": "...", "refresh_token": "..." }
 • Real API validation with 60‑second caching – fast and accurate.
@@ -194,12 +194,19 @@ async function fetchAccountStats(bearer) {
             if (body && body.startsWith('{')) {
                 const parsed = JSON.parse(body);
                 const account = parsed.data || parsed.user || parsed.account || parsed;
+                // Extract mute info
+                const isMuted = account.is_muted || account.muted || false;
+                const muteReason = account.mute_reason || account.muted_reason || null;
+                const muteExpires = account.mute_expires || account.muted_until || null;
                 return {
                     success: true,
                     display_name: account.display_name || account.username || account.usn || 'unknown',
                     research_points: account.research_points || account.researchPoints || 0,
                     credits: account.credits || 0,
-                    uid: account.id || account.uid || 'unknown'
+                    uid: account.id || account.uid || 'unknown',
+                    isMuted: isMuted,
+                    muteReason: muteReason,
+                    muteExpires: muteExpires ? new Date(muteExpires).toISOString() : null
                 };
             }
             return { success: false, error: 'Non-JSON response' };
@@ -852,6 +859,16 @@ async function postAutoProfile() {
         const expiry = getTokenExpiryMs(token.bearer);
         const ttl = expiry ? Math.floor((expiry - Date.now()) / 1000) : 0;
 
+        // Build mute info
+        let muteInfo = 'Not available';
+        if (stats.isMuted) {
+            muteInfo = '🔇 **Yes**';
+            if (stats.muteReason) muteInfo += `\nReason: ${stats.muteReason}`;
+            if (stats.muteExpires) muteInfo += `\nUntil: ${new Date(stats.muteExpires).toUTCString()}`;
+        } else if (stats.isMuted === false) {
+            muteInfo = '✅ No';
+        }
+
         const embed = new EmbedBuilder()
             .setTitle('📊 Animal Company Profile')
             .setColor(0x5865F2)
@@ -860,7 +877,8 @@ async function postAutoProfile() {
                 { name: '🆔 User ID', value: stats.success ? stats.uid : 'unknown', inline: true },
                 { name: '🔬 Research Points', value: stats.success ? stats.research_points.toLocaleString() : 'unknown', inline: true },
                 { name: '💰 Credits', value: stats.success ? stats.credits.toLocaleString() : 'unknown', inline: true },
-                { name: '⏳ Token Expiry', value: ttl > 0 ? formatRemainingTime(expiry) : 'EXPIRED', inline: true }
+                { name: '⏳ Token Expiry', value: ttl > 0 ? formatRemainingTime(expiry) : 'EXPIRED', inline: true },
+                { name: '🔇 Muted', value: muteInfo, inline: false }
             )
             .setFooter({ text: `EAM.LOL | Updated every hour` })
             .setTimestamp();
@@ -901,12 +919,19 @@ async function fetchAccountStats(bearer) {
             if (body && body.startsWith('{')) {
                 const parsed = JSON.parse(body);
                 const account = parsed.data || parsed.user || parsed.account || parsed;
+                // Extract mute info
+                const isMuted = account.is_muted || account.muted || false;
+                const muteReason = account.mute_reason || account.muted_reason || null;
+                const muteExpires = account.mute_expires || account.muted_until || null;
                 return {
                     success: true,
                     display_name: account.display_name || account.username || account.usn || 'unknown',
                     research_points: account.research_points || account.researchPoints || 0,
                     credits: account.credits || 0,
-                    uid: account.id || account.uid || 'unknown'
+                    uid: account.id || account.uid || 'unknown',
+                    isMuted: isMuted,
+                    muteReason: muteReason,
+                    muteExpires: muteExpires ? new Date(muteExpires).toISOString() : null
                 };
             }
             return { success: false, error: 'Non-JSON response' };
@@ -1876,6 +1901,17 @@ client.on('interactionCreate', async interaction => {
                 const stats = await fetchAccountStats(token.bearer);
                 const expiry = getTokenExpiryMs(token.bearer);
                 const ttl = expiry ? Math.floor((expiry - Date.now()) / 1000) : 0;
+
+                // Build mute info
+                let muteInfo = 'Not available';
+                if (stats.isMuted) {
+                    muteInfo = '🔇 **Yes**';
+                    if (stats.muteReason) muteInfo += `\nReason: ${stats.muteReason}`;
+                    if (stats.muteExpires) muteInfo += `\nUntil: ${new Date(stats.muteExpires).toUTCString()}`;
+                } else if (stats.isMuted === false) {
+                    muteInfo = '✅ No';
+                }
+
                 const embed = new EmbedBuilder()
                     .setTitle('📊 Animal Company Profile')
                     .setColor(0x5865F2)
@@ -1884,7 +1920,8 @@ client.on('interactionCreate', async interaction => {
                         { name: '🆔 User ID', value: stats.success ? stats.uid : 'unknown', inline: true },
                         { name: '🔬 Research Points', value: stats.success ? stats.research_points.toLocaleString() : 'unknown', inline: true },
                         { name: '💰 Credits', value: stats.success ? stats.credits.toLocaleString() : 'unknown', inline: true },
-                        { name: '⏳ Token Expiry', value: ttl > 0 ? formatRemainingTime(expiry) : 'EXPIRED', inline: true }
+                        { name: '⏳ Token Expiry', value: ttl > 0 ? formatRemainingTime(expiry) : 'EXPIRED', inline: true },
+                        { name: '🔇 Muted', value: muteInfo, inline: false }
                     )
                     .setTimestamp();
                 return interaction.editReply({ embeds: [embed], flags: 64 });
