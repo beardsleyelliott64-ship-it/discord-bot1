@@ -1,6 +1,6 @@
 // ============================================================
-// FILE: index.js – EAM.LOL Token Bot v2.6.9
-// tmcToken.json (flat) & fridaToken.json (token/refresh)
+// FILE: index.js – EAM.LOL Token Bot v2.6.11
+// FIX: Timeouts on validation – no more stuck commands.
 // ============================================================
 
 const {
@@ -65,7 +65,7 @@ const client = new Client({
 });
 
 // --- CONFIGURATION ---
-const VERSION = "2.6.9";
+const VERSION = "2.6.11";
 const UPDATE_LOG_CHANNEL_ID = "1545829503912120431";
 const STATUS_CHANNEL_ID = "1545624109583695933";
 const TOKEN_NUMBER_CHANNEL_ID = "1546151859465756722";
@@ -74,11 +74,11 @@ const PROFILE_CHANNEL_ID = "1546312357142073416";
 
 const CHANGELOG = `🔧 Bot Update v${VERSION}
 
-• tmcToken.json now uses flat format: { "bearer": "...", "refresh_token": "..." }
-• fridaToken.json uses: { "token": "...", "refresh_token": "..." }
+• Timeouts on validation – no more stuck commands.
+• tmcToken.json: { "bearer": "...", "refresh_token": "..." }
+• fridaToken.json: { "token": "...", "refresh_token": "..." }
 • Real API validation with 60‑second caching – fast and accurate.
 • Refresh threshold = 20 minutes.
-• All commands optimized.
 
 What to do:
 • Set a valid REFRESH_TOKEN_1 in environment variables.
@@ -390,7 +390,7 @@ async function validateTokenDetails(bearer, refreshToken) {
     }
 }
 
-// --- RefreshTokenOnly (no retry on 401) ---
+// --- RefreshTokenOnly with timeout on validation ---
 async function refreshTokenOnly(refreshTk, retries = 2) {
     let lastError = null;
     let lastResponse = null;
@@ -428,10 +428,20 @@ async function refreshTokenOnly(refreshTk, retries = 2) {
             const newBearer = data.token || data.access_token || data.bearer;
             const newRefresh = data.refresh_token || refreshTk;
             if (!newBearer) throw new Error('No token in response');
-            const apiCheck = await validateTokenDetails(newBearer, newRefresh);
+
+            // ---- TIMEOUT: validateTokenDetails with 5-second limit ----
+            let apiCheck;
+            try {
+                const validationPromise = validateTokenDetails(newBearer, newRefresh);
+                const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('Validation timed out')), 5000));
+                apiCheck = await Promise.race([validationPromise, timeoutPromise]);
+            } catch (err) {
+                throw new Error(`API validation timed out: ${err.message}`);
+            }
             if (!apiCheck.valid) {
                 throw new Error(`API validation failed: ${apiCheck.apiError}`);
             }
+
             const newExpiry = getTokenExpiryMs(newBearer);
             if (newExpiry === null) throw new Error('No expiry claim in new token');
             if (newExpiry <= Date.now()) throw new Error('New token already expired');
@@ -1030,7 +1040,7 @@ async function deliverTokenToUser(user) {
     const genId = generateGenerationId();
     const expiryText = humanExpiry(tokenObj.expiresAt);
 
-    // ========== tmcToken.json – flat: { bearer, refresh_token } ==========
+    // ========== tmcToken.json – flat ==========
     const tmcTokenData = { bearer: tokenObj.bearer, refresh_token: tokenObj.refresh };
     const tmcJsonString = JSON.stringify(tmcTokenData, null, 2);
     const tmcJsonBuffer = Buffer.from(tmcJsonString, 'utf-8');
@@ -1042,7 +1052,7 @@ async function deliverTokenToUser(user) {
     const fridaJsonBuffer = Buffer.from(fridaJsonString, 'utf-8');
     const fridaAttachment = new AttachmentBuilder(fridaJsonBuffer, { name: 'fridaToken.json' });
 
-    // ========== TEXT VERSION (token.txt) – unchanged ==========
+    // ========== TEXT VERSION ==========
     const textVersion = `EAM.LOL TOKEN GENERATOR\n----------------------------------------\nBEARER TOKEN:\n${tokenObj.bearer}\nREFRESH TOKEN:\n${tokenObj.refresh}\nGENERATION ID:\n${genId}\n----------------------------------------\nExpires: ${expiryText}\nSeconds left: ${ttl}s\nAuto-Refresh: Constantly\n----------------------------------------\n\n📌 IMPORTANT: Copy the BEARER TOKEN (the long string) and paste it into Animal Company.\nDo NOT add any spaces, quotes, or the word "Bearer".`;
     const textBuffer = Buffer.from(textVersion, 'utf-8');
     const textAttachment = new AttachmentBuilder(textBuffer, { name: 'token.txt' });
@@ -1508,7 +1518,7 @@ const commandsData = [
     new SlashCommandBuilder().setName('profile').setDescription('Show your Animal Company profile (username, UID, research points, etc.)')
 ].map(cmd => cmd.toJSON());
 
-// --- STATUS PANEL FUNCTIONS ---
+// --- STATUS PANEL FUNCTIONS (with timeout) ---
 async function updateStatusPanel() {
     try {
         const channel = client.channels.cache.get(STATUS_CHANNEL_ID);
@@ -1516,7 +1526,9 @@ async function updateStatusPanel() {
             console.error(`[ERROR] Status channel ${STATUS_CHANNEL_ID} not found.`);
             return;
         }
+
         await cleanupDuplicateStatusPanels(STATUS_CHANNEL_ID);
+
         const token = tokenStock.length > 0 ? tokenStock[0] : null;
         let statusText = '🔴 token-expired';
         let color = 0xED4245;
@@ -1531,8 +1543,18 @@ async function updateStatusPanel() {
                 const ttl = Math.floor((expiry - now) / 1000);
                 expiryText = new Date(expiry).toUTCString();
                 timeLeft = ttl > 0 ? formatRemainingTime(expiry) : 'EXPIRED';
-                const apiCheck = await validateTokenDetails(token.bearer, token.refresh);
-                const apiValid = apiCheck.valid;
+
+                let apiValid = false;
+                try {
+                    const validationPromise = validateTokenDetails(token.bearer, token.refresh);
+                    const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('Validation timeout')), 2000));
+                    const result = await Promise.race([validationPromise, timeoutPromise]);
+                    apiValid = result.valid;
+                } catch (err) {
+                    console.warn('[STATUS] Validation timed out or failed, assuming unknown.');
+                    apiValid = false;
+                }
+
                 if (ttl <= 0 || !apiValid) {
                     statusText = '🔴 token-expired';
                     color = 0xED4245;
@@ -1600,6 +1622,7 @@ async function updateStatusChannelName() {
     try {
         const channel = client.channels.cache.get(STATUS_CHANNEL_ID);
         if (!channel) return;
+
         const token = tokenStock.length > 0 ? tokenStock[0] : null;
         let newName = '🟠 token-none';
         if (token && token.bearer) {
@@ -1607,8 +1630,16 @@ async function updateStatusChannelName() {
             if (expiry !== null) {
                 const now = Date.now();
                 const ttl = Math.floor((expiry - now) / 1000);
-                const apiCheck = await validateTokenDetails(token.bearer, token.refresh);
-                const valid = apiCheck.valid && ttl > 0;
+                let valid = false;
+                try {
+                    const validationPromise = validateTokenDetails(token.bearer, token.refresh);
+                    const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('Validation timeout')), 2000));
+                    const result = await Promise.race([validationPromise, timeoutPromise]);
+                    valid = result.valid && ttl > 0;
+                } catch (err) {
+                    console.warn('[STATUS] Validation timed out, assuming unknown.');
+                    valid = false;
+                }
                 if (ttl <= 0 || !valid) {
                     newName = '🔴 token-expired';
                 } else if (ttl < 300) {
@@ -2212,7 +2243,7 @@ client.on('interactionCreate', async interaction => {
                 return interaction.reply({ embeds: [embed], flags: 64 });
             }
 
-            // --- ADMIN COMMANDS (stock, generator, force_refresh, remove-stock, reset-stock, gen-codes, remove-token, refresh_cooldown_all, panel, stock_main) ---
+            // --- ADMIN COMMANDS ---
             const adminCommandList = ['stock', 'stock_main', 'generator', 'force_refresh', 'remove-stock', 'reset-stock', 'gen-codes', 'remove-token', 'refresh_cooldown_all', 'panel'];
             if (adminCommandList.includes(commandName)) {
                 if (!hasAdminAccess(interaction)) return interaction.reply({ content: 'Access Denied.', flags: 64 });
