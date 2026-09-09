@@ -1,7 +1,7 @@
 // ============================================================
 // FILE: index.js – EAM.LOL Token Bot v2.6.12
 // ADDED: Mute status & reason to profile.
-// UPDATED: Better DM UI + Android install guide (rename to token.json)
+// UPDATED: Field name to "📱 How to use (tmc/frida) token method"
 // ============================================================
 
 const {
@@ -1089,7 +1089,7 @@ async function deliverTokenToUser(user) {
     const fridaJsonBuffer = Buffer.from(fridaJsonString, 'utf-8');
     const fridaAttachment = new AttachmentBuilder(fridaJsonBuffer, { name: 'fridaToken.json' });
 
-    // ========== TEXT VERSION (updated with Android install guide) ==========
+    // ========== TEXT VERSION ==========
     const textVersion = 
 `EAM.LOL TOKEN GENERATOR
 ----------------------------------------
@@ -1103,7 +1103,7 @@ ${genId}
 Expires: ${expiryText}
 Seconds left: ${ttl}s
 ----------------------------------------
-📱 HOW TO INSTALL (ANDROID):
+📱 HOW TO INSTALL (TMC/FRIDA):
 1. Rename the attached 'tmcToken.json' file to 'token.json'.
 2. Move it to: Android/data/woosterGames.animalCompany/files/il2cpp/
 3. Launch Animal Company – the token will load automatically!
@@ -1111,19 +1111,19 @@ Seconds left: ${ttl}s
     const textBuffer = Buffer.from(textVersion, 'utf-8');
     const textAttachment = new AttachmentBuilder(textBuffer, { name: 'token.txt' });
 
-    // ========== UPDATED EMBED with better UI ==========
+    // ========== UPDATED EMBED with new field name ==========
     const embed = new EmbedBuilder()
         .setTitle('◆ SECURE TOKEN RECEIPT ◆')
         .setDescription(`✅ Fresh token delivered!`)
         .setColor(0x00FFAA)
         .addFields(
             { name: '📊 Token Details', value: `**ID:** \`${genId}\`\n**Expires:** ${expiryText}\n**TTL:** ~${Math.floor(ttl/60)} minutes`, inline: false },
-            { name: '📱 How to install (Android)', value: 
-                '1. Download the **tmcToken.json** file below.\n' +
-                '2. **Rename** it to **`token.json`**.\n' +
-                '3. Move it to:\n' +
+            { name: '📱 How to use (tmc/frida) token method', value: 
+                '• Download the **`tmcToken.json`** file below.\n' +
+                '• **Rename** it to **`token.json`**.\n' +
+                '• Move it to:\n' +
                 '`Android/data/woosterGames.animalCompany/files/il2cpp/`\n' +
-                '4. Launch the game – it will auto-load the token!', 
+                '• Launch the game – it will auto-load the token!', 
             inline: false }
         )
         .setFooter({ text: 'EAM.LOL | Auto-Subscription (5 min interval) – 100% free' });
@@ -1461,7 +1461,7 @@ async function processTokenGeneration(interaction, tierName) {
     const fridaJsonBuffer = Buffer.from(fridaJsonString, 'utf-8');
     const fridaAttachment = new AttachmentBuilder(fridaJsonBuffer, { name: 'fridaToken.json' });
 
-    // ========== TEXT VERSION (updated with Android install guide) ==========
+    // ========== TEXT VERSION ==========
     const textVersion = 
 `EAM.LOL TOKEN GENERATOR
 ----------------------------------------
@@ -1475,7 +1475,7 @@ ${genId}
 Expires: ${expiryText}
 Seconds left: ${ttl}s
 ----------------------------------------
-📱 HOW TO INSTALL (ANDROID):
+📱 HOW TO INSTALL (TMC/FRIDA):
 1. Rename the attached 'tmcToken.json' file to 'token.json'.
 2. Move it to: Android/data/woosterGames.animalCompany/files/il2cpp/
 3. Launch Animal Company – the token will load automatically!
@@ -1483,7 +1483,7 @@ Seconds left: ${ttl}s
     const textBuffer = Buffer.from(textVersion, 'utf-8');
     const textAttachment = new AttachmentBuilder(textBuffer, { name: 'token.txt' });
 
-    // ========== UPDATED EMBED with better UI ==========
+    // ========== UPDATED EMBED with new field name ==========
     const successEmbed = new EmbedBuilder()
         .setTitle('◆ SECURE TOKEN RECEIPT ◆')
         .setDescription(
@@ -1500,12 +1500,12 @@ Seconds left: ${ttl}s
             '```'
         )
         .addFields(
-            { name: '📱 How to install (Android)', value: 
-                '1. Download the **tmcToken.json** file below.\n' +
-                '2. **Rename** it to **`token.json`**.\n' +
-                '3. Move it to:\n' +
+            { name: '📱 How to use (tmc/frida) token method', value: 
+                '• Download the **`tmcToken.json`** file below.\n' +
+                '• **Rename** it to **`token.json`**.\n' +
+                '• Move it to:\n' +
                 '`Android/data/woosterGames.animalCompany/files/il2cpp/`\n' +
-                '4. Launch the game – it will auto-load the token!', 
+                '• Launch the game – it will auto-load the token!', 
             inline: false }
         )
         .setColor(0x00FFAA)
