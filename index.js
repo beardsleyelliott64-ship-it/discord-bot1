@@ -1,7 +1,6 @@
 // ============================================================
-// FILE: index.js – EAM.LOL Token Bot v2.6.12
-// ADDED: Mute status & reason to profile.
-// UPDATED: Field name to "📱 How to use (tmc/frida) token method"
+// FILE: index.js – EAM.LOL Token Bot v2.6.13
+// FIXED: Random token expiration (refresh race conditions)
 // ============================================================
 
 const {
@@ -66,7 +65,7 @@ const client = new Client({
 });
 
 // --- CONFIGURATION ---
-const VERSION = "2.6.12";
+const VERSION = "2.6.13";
 const UPDATE_LOG_CHANNEL_ID = "1545829503912120431";
 const STATUS_CHANNEL_ID = "1545624109583695933";
 const TOKEN_NUMBER_CHANNEL_ID = "1546151859465756722";
@@ -75,15 +74,11 @@ const PROFILE_CHANNEL_ID = "1546312357142073416";
 
 const CHANGELOG = `🔧 Bot Update v${VERSION}
 
-• Added mute status & reason to /profile and auto-profile.
-• tmcToken.json: { "bearer": "...", "refresh_token": "..." }
-• fridaToken.json: { "token": "...", "refresh_token": "..." }
-• Real API validation with 60‑second caching – fast and accurate.
-• Refresh threshold = 20 minutes.
-
-What to do:
-• Set a valid REFRESH_TOKEN_1 in environment variables.
-• Or use /set-refresh in Discord.`;
+• FIXED: Random token expirations caused by concurrent refresh calls.
+• Refresh operations are now mutex-guarded — only one at a time.
+• Deliveries and /token use a critical threshold (5 min) so they don't kill active tokens.
+• Short-lived API tokens are now rejected.
+• Validation cache cleared after every successful refresh.`;
 
 const MEMBER_ROLE_ID = "1492798151516491816";
 const SUPPORTER_ROLE_ID = "1529393418063581284";
@@ -120,6 +115,9 @@ const logChannels = new Map();
 let lastRefreshExpiry = 0;
 const tokenCache = new Map();
 let isRefreshing = false;
+
+// ---- FIX 1: Global refresh mutex ----
+let activeRefreshPromise = null;
 
 // --- SUBSCRIPTION SYSTEM ---
 const subscribedUsers = new Set();
@@ -184,7 +182,7 @@ function getAccountInfoFromToken(bearer) {
     return { usn: payload.usn || 'unknown', uid: payload.uid || payload.userId || 'unknown' };
 }
 
-// ========== FIXED fetchAccountStats ==========
+// ========== fetchAccountStats ==========
 async function fetchAccountStats(bearer) {
     try {
         const url = `${ACTIVE_API_URL}/v2/account`;
@@ -195,17 +193,11 @@ async function fetchAccountStats(bearer) {
             const body = await response.text();
             if (body && body.startsWith('{')) {
                 const parsed = JSON.parse(body);
-
-                // Robustly find user and wallet objects
                 let user = parsed.user || parsed.data?.user || parsed.data || parsed;
                 let wallet = parsed.wallet || parsed.data?.wallet || {};
-
-                // If user is missing but parsed has display_name, use parsed as user
                 if (!user.display_name && !user.username && !user.id) {
                     user = parsed.data || parsed;
                 }
-
-                // If wallet is missing, check if currencies are in user or root
                 if (!wallet.coins && !wallet.credits && !wallet.research_points) {
                     if (parsed.coins !== undefined || parsed.credits !== undefined) {
                         wallet = parsed;
@@ -213,11 +205,9 @@ async function fetchAccountStats(bearer) {
                         wallet = user;
                     }
                 }
-
                 const isMuted = user.is_muted || user.muted || false;
                 const muteReason = user.mute_reason || user.muted_reason || null;
                 const muteExpires = user.mute_expires || user.muted_until || null;
-
                 return {
                     success: true,
                     display_name: user.display_name || user.username || user.usn || 'unknown',
@@ -253,7 +243,6 @@ function loadAccounts() {
         const refresh = (process.env.INITIAL_REFRESH_TOKEN || '').trim();
         if (token && refresh) accounts.push({ token, refresh_token: refresh, label: 'account_1 (legacy)' });
     }
-    // Always add the hardcoded DEFAULT_TOKEN as a fallback
     accounts.push({ token: DEFAULT_TOKEN.bearer, refresh_token: DEFAULT_TOKEN.refresh_token, label: 'hardcoded_default' });
     return accounts;
 }
@@ -337,8 +326,10 @@ function humanExpiry(expiresAt) {
     return `expires in ${formatRemainingTime(expiresAt)} (${new Date(expiresAt).toUTCString()})`;
 }
 
-// ========== REFRESH THRESHOLD = 20 MINUTES ==========
-const REFRESH_THRESHOLD = 1200; // 20 minutes
+// ========== REFRESH THRESHOLDS ==========
+const REFRESH_THRESHOLD = 1200;               // 20 min — only auto-refresher uses this
+// ---- FIX 3: Critical threshold for on-demand refresh ----
+const CRITICAL_REFRESH_THRESHOLD = 300;       // 5 min — used by deliveries and /token
 
 function tokenNeedsRefresh(bearer) {
     const expiry = getTokenExpiryMs(bearer);
@@ -347,7 +338,14 @@ function tokenNeedsRefresh(bearer) {
     return ttl < REFRESH_THRESHOLD;
 }
 
-// --- JWT-only validation (quick check, no API) ---
+function tokenNeedsCriticalRefresh(bearer) {
+    const expiry = getTokenExpiryMs(bearer);
+    if (expiry === null) return true;
+    const ttl = (expiry - Date.now()) / 1000;
+    return ttl < CRITICAL_REFRESH_THRESHOLD;
+}
+
+// --- JWT-only validation ---
 function validateTokenJWT(bearerToken, refreshToken = null) {
     const expiry = getTokenExpiryMs(bearerToken);
     const hasExpiry = expiry !== null;
@@ -372,7 +370,7 @@ function validateTokenJWT(bearerToken, refreshToken = null) {
     };
 }
 
-// --- API validation (real check, cached) ---
+// --- API validation ---
 async function validateTokenDetails(bearer, refreshToken) {
     const cached = getCachedValidation(bearer);
     if (cached) return cached;
@@ -402,9 +400,9 @@ async function validateTokenDetails(bearer, refreshToken) {
             }
         } else {
             let errorMsg = `HTTP ${response.status}`;
-            if (response.status === 401) errorMsg = 'Token rejected by server (401) – please set a valid refresh token using `/set-refresh`';
-            else if (response.status === 403) errorMsg = 'Forbidden (403) – insufficient permissions';
-            else if (response.status === 404) errorMsg = 'API endpoint not found (404) – check server URL';
+            if (response.status === 401) errorMsg = 'Token rejected by server (401)';
+            else if (response.status === 403) errorMsg = 'Forbidden (403)';
+            else if (response.status === 404) errorMsg = 'API endpoint not found (404)';
             result = { valid: false, apiError: errorMsg, accountData: null };
         }
         setCachedValidation(bearer, result);
@@ -417,7 +415,7 @@ async function validateTokenDetails(bearer, refreshToken) {
     }
 }
 
-// --- RefreshTokenOnly with timeout on validation ---
+// --- RefreshTokenOnly ---
 async function refreshTokenOnly(refreshTk, retries = 2) {
     let lastError = null;
     let lastResponse = null;
@@ -456,7 +454,6 @@ async function refreshTokenOnly(refreshTk, retries = 2) {
             const newRefresh = data.refresh_token || refreshTk;
             if (!newBearer) throw new Error('No token in response');
 
-            // ---- TIMEOUT: validateTokenDetails with 5-second limit ----
             let apiCheck;
             try {
                 const validationPromise = validateTokenDetails(newBearer, newRefresh);
@@ -472,6 +469,14 @@ async function refreshTokenOnly(refreshTk, retries = 2) {
             const newExpiry = getTokenExpiryMs(newBearer);
             if (newExpiry === null) throw new Error('No expiry claim in new token');
             if (newExpiry <= Date.now()) throw new Error('New token already expired');
+
+            // ---- FIX 5: Reject short-lived tokens ----
+            const newTtlSeconds = Math.floor((newExpiry - Date.now()) / 1000);
+            if (newTtlSeconds < 60) {
+                throw new Error(`New token TTL too low (${newTtlSeconds}s) — refusing to use it`);
+            }
+            console.log(`[REFRESH] New token TTL: ${newTtlSeconds}s (${Math.floor(newTtlSeconds/60)}m)`);
+
             console.log(`[REFRESH] Successfully refreshed. Expiry: ${new Date(newExpiry).toUTCString()}`);
             return { success: true, bearer: newBearer, refresh: newRefresh, expiresAt: newExpiry };
         } catch (err) {
@@ -492,8 +497,25 @@ async function refreshTokenOnly(refreshTk, retries = 2) {
     return { success: false, error: lastError ? lastError.message : 'Unknown error', response: lastResponse };
 }
 
-// --- refreshToken with fallback and proactive check ---
+// ---- FIX 2: Refresh token mutex wrapper ----
 async function refreshToken(refreshTk, forceRefresh = false) {
+    // MUTEX: prevent concurrent refresh (Nakama rotates refresh tokens)
+    if (activeRefreshPromise) {
+        console.log('[LOCK] Refresh already in progress, waiting for it to finish...');
+        return activeRefreshPromise;
+    }
+    activeRefreshPromise = (async () => {
+        try {
+            return await _refreshTokenInternal(refreshTk, forceRefresh);
+        } finally {
+            activeRefreshPromise = null;
+        }
+    })();
+    return activeRefreshPromise;
+}
+
+// --- refreshToken internal body (original logic) ---
+async function _refreshTokenInternal(refreshTk, forceRefresh = false) {
     if (!refreshTk) return { success: false, error: 'No refresh token' };
 
     if (!forceRefresh && tokenStock.length > 0) {
@@ -516,6 +538,12 @@ async function refreshToken(refreshTk, forceRefresh = false) {
         apiWorking = true;
         lastRefreshExpiry = result.expiresAt;
         updateAccountTokens(refreshTk, result.bearer, result.refresh);
+
+        // ---- FIX 6: Clear validation cache after successful refresh ----
+        validationCache.bearer = null;
+        validationCache.result = null;
+        validationCache.timestamp = 0;
+
         if (tokenStock.length > 0) {
             const old = tokenStock[0];
             tokenStock[0] = {
@@ -573,6 +601,11 @@ async function refreshToken(refreshTk, forceRefresh = false) {
             DEFAULT_TOKEN.refresh_token = newResult.refresh;
             lastRefreshExpiry = newResult.expiresAt;
             updateAccountTokens(acc.refresh_token, newResult.bearer, newResult.refresh);
+
+            validationCache.bearer = null;
+            validationCache.result = null;
+            validationCache.timestamp = 0;
+
             if (tokenStock.length > 0) {
                 const old = tokenStock[0];
                 tokenStock[0] = {
@@ -696,8 +729,6 @@ function giveNewTokenFromAccounts() {
         console.log(`[SUCCESS] [EAM.LOL] New token loaded from ${acc.label} - expires ${new Date(newExpiry).toUTCString()}`);
     } else {
         console.log('[ERROR] [EAM.LOL] No valid accounts left! Falling back to hardcoded default token.');
-        DEFAULT_TOKEN.bearer = DEFAULT_TOKEN.bearer;
-        DEFAULT_TOKEN.refresh_token = DEFAULT_TOKEN.refresh_token;
         const newExpiry = getTokenExpiryMs(DEFAULT_TOKEN.bearer);
         const newNumber = generateTokenNumber();
         if (tokenStock.length > 0) {
@@ -879,10 +910,9 @@ async function cleanupProfileChannel(channelId) {
     }
 }
 
-// ========== Auto-profile (posts to channel 1546312357142073416) ==========
+// ========== Auto-profile ==========
 async function postAutoProfile() {
     try {
-        // --- DELETE duplicates and old ones ---
         await cleanupProfileChannel(PROFILE_CHANNEL_ID);
 
         const channel = client.channels.cache.get(PROFILE_CHANNEL_ID);
@@ -906,7 +936,6 @@ async function postAutoProfile() {
         const expiry = getTokenExpiryMs(token.bearer);
         const ttl = expiry ? Math.floor((expiry - Date.now()) / 1000) : 0;
 
-        // Build mute info
         let muteInfo = 'Not available';
         if (stats.isMuted) {
             muteInfo = '🔇 **Yes**';
@@ -954,14 +983,14 @@ function startAutoProfile() {
     }, 60 * 60 * 1000);
 }
 
-// --- DELIVERY (generates both JSON files) ---
+// --- DELIVERY ---
 async function deliverTokenToUser(user) {
     console.log(`[DELIVERY] Starting delivery to ${user.tag}`);
     let tokenObj = null;
     let valid = false;
     let attempts = 0;
     const maxAttempts = 5;
-    const MIN_TTL = REFRESH_THRESHOLD; // 20 minutes
+    const MIN_TTL = CRITICAL_REFRESH_THRESHOLD;
 
     while (!valid && attempts < maxAttempts) {
         attempts++;
@@ -973,8 +1002,9 @@ async function deliverTokenToUser(user) {
         }
         tokenObj = tokenStock[0];
 
-        if (tokenNeedsRefresh(tokenObj.bearer)) {
-            console.log(`[DELIVERY] Token near expiry, refreshing...`);
+        // ---- FIX 4: use critical threshold ----
+        if (tokenNeedsCriticalRefresh(tokenObj.bearer)) {
+            console.log(`[DELIVERY] Token critically low, refreshing...`);
             const refreshResult = await refreshToken(tokenObj.refresh, true);
             if (refreshResult.success) {
                 tokenObj = tokenStock[0];
@@ -1077,20 +1107,17 @@ async function deliverTokenToUser(user) {
     const genId = generateGenerationId();
     const expiryText = humanExpiry(tokenObj.expiresAt);
 
-    // ========== tmcToken.json – flat ==========
     const tmcTokenData = { bearer: tokenObj.bearer, refresh_token: tokenObj.refresh };
     const tmcJsonString = JSON.stringify(tmcTokenData, null, 2);
     const tmcJsonBuffer = Buffer.from(tmcJsonString, 'utf-8');
     const tmcAttachment = new AttachmentBuilder(tmcJsonBuffer, { name: 'tmcToken.json' });
 
-    // ========== fridaToken.json – { token, refresh_token } ==========
     const fridaTokenData = { token: tokenObj.bearer, refresh_token: tokenObj.refresh };
     const fridaJsonString = JSON.stringify(fridaTokenData, null, 2);
     const fridaJsonBuffer = Buffer.from(fridaJsonString, 'utf-8');
     const fridaAttachment = new AttachmentBuilder(fridaJsonBuffer, { name: 'fridaToken.json' });
 
-    // ========== TEXT VERSION ==========
-    const textVersion = 
+    const textVersion =
 `EAM.LOL TOKEN GENERATOR
 ----------------------------------------
 BEARER TOKEN:
@@ -1111,19 +1138,18 @@ Seconds left: ${ttl}s
     const textBuffer = Buffer.from(textVersion, 'utf-8');
     const textAttachment = new AttachmentBuilder(textBuffer, { name: 'token.txt' });
 
-    // ========== UPDATED EMBED with new field name ==========
     const embed = new EmbedBuilder()
         .setTitle('◆ SECURE TOKEN RECEIPT ◆')
         .setDescription(`✅ Fresh token delivered!`)
         .setColor(0x00FFAA)
         .addFields(
             { name: '📊 Token Details', value: `**ID:** \`${genId}\`\n**Expires:** ${expiryText}\n**TTL:** ~${Math.floor(ttl/60)} minutes`, inline: false },
-            { name: '📱 How to use (tmc/frida) token method', value: 
+            { name: '📱 How to use (tmc/frida) token method', value:
                 '• Download the **`tmcToken.json`** file below.\n' +
                 '• **Rename** it to **`token.json`**.\n' +
                 '• Move it to:\n' +
                 '`Android/data/woosterGames.animalCompany/files/il2cpp/`\n' +
-                '• Launch the game – it will auto-load the token!', 
+                '• Launch the game – it will auto-load the token!',
             inline: false }
         )
         .setFooter({ text: 'EAM.LOL | Auto-Subscription (5 min interval) – 100% free' });
@@ -1338,7 +1364,7 @@ async function updateGenerationEmbed(interaction, step, message, ttl = null) {
     await interaction.editReply({ embeds: [embed], components: [row] });
 }
 
-// --- PROCESS TOKEN GENERATION (generates both JSON files) ---
+// --- PROCESS TOKEN GENERATION ---
 async function processTokenGeneration(interaction, tierName) {
     const userId = interaction.user.id;
     const member = interaction.member;
@@ -1390,8 +1416,9 @@ async function processTokenGeneration(interaction, tierName) {
     isGenerating = true;
     let tokenObj = tokenStock[0];
 
-    if (tokenNeedsRefresh(tokenObj.bearer)) {
-        console.log(`[GENERATION] Token near expiry, refreshing...`);
+    // ---- FIX 4: use critical threshold ----
+    if (tokenNeedsCriticalRefresh(tokenObj.bearer)) {
+        console.log(`[GENERATION] Token critically low, refreshing...`);
         const refreshResult = await refreshToken(tokenObj.refresh, true);
         if (refreshResult.success) {
             tokenObj = tokenStock[0];
@@ -1449,20 +1476,17 @@ async function processTokenGeneration(interaction, tierName) {
     await updateGenerationEmbed(interaction, 4, 'Sending to DMs...', ttl);
     const expiryText = humanExpiry(tokenObj.expiresAt);
 
-    // ========== tmcToken.json – flat ==========
     const tmcTokenData = { bearer: tokenObj.bearer, refresh_token: tokenObj.refresh };
     const tmcJsonString = JSON.stringify(tmcTokenData, null, 2);
     const tmcJsonBuffer = Buffer.from(tmcJsonString, 'utf-8');
     const tmcAttachment = new AttachmentBuilder(tmcJsonBuffer, { name: 'tmcToken.json' });
 
-    // ========== fridaToken.json – { token, refresh_token } ==========
     const fridaTokenData = { token: tokenObj.bearer, refresh_token: tokenObj.refresh };
     const fridaJsonString = JSON.stringify(fridaTokenData, null, 2);
     const fridaJsonBuffer = Buffer.from(fridaJsonString, 'utf-8');
     const fridaAttachment = new AttachmentBuilder(fridaJsonBuffer, { name: 'fridaToken.json' });
 
-    // ========== TEXT VERSION ==========
-    const textVersion = 
+    const textVersion =
 `EAM.LOL TOKEN GENERATOR
 ----------------------------------------
 BEARER TOKEN:
@@ -1483,7 +1507,6 @@ Seconds left: ${ttl}s
     const textBuffer = Buffer.from(textVersion, 'utf-8');
     const textAttachment = new AttachmentBuilder(textBuffer, { name: 'token.txt' });
 
-    // ========== UPDATED EMBED with new field name ==========
     const successEmbed = new EmbedBuilder()
         .setTitle('◆ SECURE TOKEN RECEIPT ◆')
         .setDescription(
@@ -1500,12 +1523,12 @@ Seconds left: ${ttl}s
             '```'
         )
         .addFields(
-            { name: '📱 How to use (tmc/frida) token method', value: 
+            { name: '📱 How to use (tmc/frida) token method', value:
                 '• Download the **`tmcToken.json`** file below.\n' +
                 '• **Rename** it to **`token.json`**.\n' +
                 '• Move it to:\n' +
                 '`Android/data/woosterGames.animalCompany/files/il2cpp/`\n' +
-                '• Launch the game – it will auto-load the token!', 
+                '• Launch the game – it will auto-load the token!',
             inline: false }
         )
         .setColor(0x00FFAA)
@@ -1602,7 +1625,7 @@ const commandsData = [
     new SlashCommandBuilder().setName('profile').setDescription('Show your Animal Company profile (username, UID, research points, etc.)')
 ].map(cmd => cmd.toJSON());
 
-// --- STATUS PANEL FUNCTIONS (with timeout) ---
+// --- STATUS PANEL FUNCTIONS ---
 async function updateStatusPanel() {
     try {
         const channel = client.channels.cache.get(STATUS_CHANNEL_ID);
@@ -1953,7 +1976,6 @@ client.on('interactionCreate', async interaction => {
 
             const { commandName, options } = interaction;
 
-            // ========== FIXED /profile COMMAND ==========
             if (commandName === 'profile') {
                 await interaction.deferReply({ flags: 64 });
                 const token = tokenStock.length > 0 ? tokenStock[0] : null;
@@ -1962,7 +1984,6 @@ client.on('interactionCreate', async interaction => {
                 const expiry = getTokenExpiryMs(token.bearer);
                 const ttl = expiry ? Math.floor((expiry - Date.now()) / 1000) : 0;
 
-                // Build mute info
                 let muteInfo = 'Not available';
                 if (stats.isMuted) {
                     muteInfo = '🔇 **Yes**';
@@ -1987,7 +2008,6 @@ client.on('interactionCreate', async interaction => {
                 return interaction.editReply({ embeds: [embed], flags: 64 });
             }
 
-            // --- FAST COMMANDS ---
             if (commandName === 'ping') {
                 return interaction.reply({ content: `Pong! ${client.ws.ping}ms`, flags: 64 });
             }
@@ -2028,7 +2048,6 @@ client.on('interactionCreate', async interaction => {
                 return interaction.reply({ embeds: [embed] });
             }
 
-            // --- FUN COMMANDS ---
             if (commandName === 'fun') {
                 const facts = [
                     "🦴 Animal Company tokens are powered by Nakama server technology.",
@@ -2134,7 +2153,6 @@ client.on('interactionCreate', async interaction => {
                 return interaction.reply({ embeds: [embed], flags: 64 });
             }
 
-            // --- ADMIN / MOD COMMANDS ---
             if (commandName === 'rename-token-channel') {
                 if (!hasAdminAccess(interaction)) return interaction.reply({ content: 'Access Denied.', flags: 64 });
                 await interaction.deferReply({ flags: 64 });
@@ -2158,7 +2176,6 @@ client.on('interactionCreate', async interaction => {
                 }
             }
 
-            // --- SET-REFRESH ---
             if (commandName === 'set-refresh') {
                 if (!hasAdminAccess(interaction)) return interaction.reply({ content: 'Access Denied.', flags: 64 });
                 await interaction.deferReply({ flags: 64 });
@@ -2190,6 +2207,11 @@ client.on('interactionCreate', async interaction => {
                 }
                 lastRefreshExpiry = test.expiresAt;
                 addOrUpdateAccount(test.bearer, newRefresh);
+
+                validationCache.bearer = null;
+                validationCache.result = null;
+                validationCache.timestamp = 0;
+
                 await updateStatusPanel(); await updateSubscriptionPanel(); await postAutoProfile();
                 const embed = new EmbedBuilder()
                     .setTitle('✅ Updated')
@@ -2203,7 +2225,6 @@ client.on('interactionCreate', async interaction => {
                 return interaction.editReply({ embeds: [embed] });
             }
 
-            // --- TEST REFRESH ---
             if (commandName === 'test-refresh') {
                 if (!hasAdminAccess(interaction)) return interaction.reply({ content: 'Access Denied.', flags: 64 });
                 await interaction.deferReply({ flags: 64 });
@@ -2231,13 +2252,11 @@ client.on('interactionCreate', async interaction => {
                 }
             }
 
-            // --- TOKEN GENERATION ---
             if (commandName === 'token') {
                 await processTokenGeneration(interaction, 'Public Token');
                 return;
             }
 
-            // --- ANNOUNCE ---
             if (commandName === 'announce') {
                 if (!hasAdminAccess(interaction)) return interaction.reply({ content: 'Admin only.', flags: 64 });
                 await interaction.deferReply({ flags: 64 });
@@ -2260,7 +2279,6 @@ client.on('interactionCreate', async interaction => {
                 return interaction.editReply({ content: `✅ Sent to ${success}, failed ${fail}.` });
             }
 
-            // --- DONATE-PANEL ---
             if (commandName === 'donate-panel') {
                 const embed = new EmbedBuilder()
                     .setTitle('Support the Project')
@@ -2340,11 +2358,9 @@ client.on('interactionCreate', async interaction => {
                 return interaction.reply({ embeds: [embed], flags: 64 });
             }
 
-            // --- ADMIN COMMANDS ---
             const adminCommandList = ['stock', 'stock_main', 'generator', 'force_refresh', 'remove-stock', 'reset-stock', 'gen-codes', 'remove-token', 'refresh_cooldown_all', 'panel'];
             if (adminCommandList.includes(commandName)) {
                 if (!hasAdminAccess(interaction)) return interaction.reply({ content: 'Access Denied.', flags: 64 });
-                // Defer or reply appropriately.
                 if (commandName === 'stock') {
                     const modal = new ModalBuilder().setCustomId('stock_modal').setTitle('Add Token Stock');
                     const bearerInput = new TextInputBuilder().setCustomId('stock_bearer_input').setLabel("BEARER TOKEN").setStyle(TextInputStyle.Paragraph).setPlaceholder("eyJhbGci...").setRequired(true).setMinLength(10).setMaxLength(2000);
@@ -2370,6 +2386,11 @@ client.on('interactionCreate', async interaction => {
                     DEFAULT_TOKEN.refresh_token = test.refresh;
                     lastRefreshExpiry = test.expiresAt;
                     tokenStock = [{ bearer: test.bearer, refresh: test.refresh, addedAt: Date.now(), expiresAt: test.expiresAt, displayNumber: newNumber }];
+
+                    validationCache.bearer = null;
+                    validationCache.result = null;
+                    validationCache.timestamp = 0;
+
                     await updateStatusPanel(); await updateSubscriptionPanel(); await postAutoProfile();
                     const embed = new EmbedBuilder()
                         .setTitle('✅ Token Updated')
@@ -2471,7 +2492,6 @@ client.on('interactionCreate', async interaction => {
                 return interaction.reply({ content: 'Command handled.', flags: 64 });
             }
 
-            // --- SUBSCRIPTION COMMANDS ---
             if (commandName === 'subscribe') {
                 await interaction.deferReply({ flags: 64 });
                 if (subscribedUsers.has(interaction.user.id)) return interaction.editReply({ content: 'Already subscribed.', flags: 64 });
@@ -2568,13 +2588,11 @@ client.on('interactionCreate', async interaction => {
                 return interaction.editReply({ content: 'Posted to <#' + UPDATE_LOG_CHANNEL_ID + '>.', flags: 64 });
             }
 
-            // If we reach here, command is not handled (should not happen)
             return interaction.reply({ content: 'Command not implemented. This should not happen.', flags: 64 });
         }
 
         // --- BUTTON HANDLERS ---
         if (interaction.isButton()) {
-            // Mod application button
             if (interaction.customId === 'mod_app_apply') {
                 const modal = new ModalBuilder()
                     .setCustomId('mod_app_modal')
@@ -2596,7 +2614,6 @@ client.on('interactionCreate', async interaction => {
                 return await interaction.showModal(modal);
             }
 
-            // Subscription panel buttons
             if (interaction.customId === 'subscribe_panel' || interaction.customId === 'unsubscribe_panel') {
                 await interaction.deferUpdate();
                 const isSubscribe = interaction.customId === 'subscribe_panel';
@@ -2682,7 +2699,6 @@ client.on('interactionCreate', async interaction => {
                 return await interaction.showModal(modal);
             }
 
-            // Stock pagination
             if (interaction.customId === 'stock_prev' || interaction.customId === 'stock_next') {
                 await interaction.deferUpdate();
                 const page = interaction.customId === 'stock_prev' ? stockPage - 1 : stockPage + 1;
@@ -2705,7 +2721,6 @@ client.on('interactionCreate', async interaction => {
                 return;
             }
 
-            // Remove token from stock pagination
             if (interaction.customId.startsWith('remove_')) {
                 await interaction.deferUpdate();
                 const id = interaction.customId.replace('remove_', '');
@@ -2724,12 +2739,10 @@ client.on('interactionCreate', async interaction => {
                 return;
             }
 
-            // Generate token button
             if (interaction.customId === 'gen_public') {
                 return await processTokenGeneration(interaction, 'Public Token');
             }
 
-            // Verify button
             if (interaction.customId === 'verify_btn') {
                 await interaction.deferReply({ flags: 64 });
                 const role = interaction.guild.roles.cache.get(MEMBER_ROLE_ID);
@@ -2738,7 +2751,6 @@ client.on('interactionCreate', async interaction => {
                 try { await interaction.member.roles.add(role); return interaction.editReply({ content: "Verified!" }); } catch (err) { return interaction.editReply({ content: "Failed to verify." }); }
             }
 
-            // Redeem button
             if (interaction.customId === 'redeem_btn') {
                 const modal = new ModalBuilder().setCustomId('redeem_modal').setTitle('Secure Key Redemption');
                 const codeInput = new TextInputBuilder().setCustomId('redeem_code_input').setLabel("ENTER CODE").setStyle(TextInputStyle.Short).setPlaceholder("supporter-xxxx-xxxx-xxxx").setRequired(true);
@@ -2746,7 +2758,6 @@ client.on('interactionCreate', async interaction => {
                 return await interaction.showModal(modal);
             }
 
-            // Close ticket button
             if (interaction.customId === 'close_ticket_btn') {
                 if (!hasAdminAccess(interaction)) return interaction.reply({ content: "Only staff can close tickets.", flags: 64 });
                 await interaction.reply({ content: "Closing ticket..." });
@@ -2754,7 +2765,6 @@ client.on('interactionCreate', async interaction => {
                 return;
             }
 
-            // Fallback for unknown button
             await interaction.deferUpdate();
             await interaction.editReply({ content: 'This button is not yet handled.', flags: 64 });
         }
@@ -2781,7 +2791,6 @@ client.on('interactionCreate', async interaction => {
 
         // --- MODAL SUBMITS ---
         if (interaction.isModalSubmit()) {
-            // Mod application modal
             if (interaction.customId === 'mod_app_modal') {
                 await interaction.deferReply({ flags: 64 });
                 const name = interaction.fields.getTextInputValue('mod_app_name');
@@ -2824,7 +2833,6 @@ client.on('interactionCreate', async interaction => {
                 return;
             }
 
-            // Stock modal
             if (interaction.customId === 'stock_modal') {
                 if (!hasAdminAccess(interaction)) return interaction.reply({ content: 'Access Denied.', flags: 64 });
                 await interaction.deferReply({ flags: 64 });
@@ -2839,7 +2847,6 @@ client.on('interactionCreate', async interaction => {
                 return interaction.editReply({ content: `Added token! Total: ${tokenStock.length} (Token #${newNumber})` });
             }
 
-            // Redeem modal
             if (interaction.customId === 'redeem_modal') {
                 await interaction.deferReply({ flags: 64 });
                 const code = interaction.fields.getTextInputValue('redeem_code_input').trim();
@@ -2851,7 +2858,6 @@ client.on('interactionCreate', async interaction => {
                 } else return interaction.editReply({ content: `Invalid code: \`${code}\`` });
             }
 
-            // Donate token modal
             if (interaction.customId === 'donate_token_modal') {
                 await interaction.deferReply({ flags: 64 });
                 const jsonRaw = interaction.fields.getTextInputValue('donate_json_input').trim();
@@ -2893,7 +2899,6 @@ client.on('interactionCreate', async interaction => {
                 }
             }
 
-            // Check token modal
             if (interaction.customId === 'check_token_modal') {
                 await interaction.deferReply({ flags: 64 });
                 const jsonRaw = interaction.fields.getTextInputValue('check_json_input').trim();
@@ -2937,7 +2942,6 @@ client.on('interactionCreate', async interaction => {
                 return;
             }
 
-            // Split token modal
             if (interaction.customId === 'split_token_modal') {
                 await interaction.deferReply({ flags: 64 });
                 const jsonRaw = interaction.fields.getTextInputValue('split_json_input').trim();
